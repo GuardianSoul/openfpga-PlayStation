@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from prepare_native_sdram_io import controller_contract,prepare_project,project_contract
+from prepare_native_sdram_io import controller_contract,fitted_input_delays,prepare_project,project_contract
 from prepare_resource_targets import digest
 from tool_paths import ROOT
 
@@ -81,7 +81,8 @@ class NativeSDRAMIO(unittest.TestCase):
                 self.assertIn(f'set native_sdram_cas {active}\n',(root/'native-sdram-io/pocket_native_sdram_io.sdc').read_text())
 
     def test_unknown_mode_or_parameter_override_rejects_before_writes(self):
-        for value in ('4','runtime_cas','3), .UNKNOWN(1'):
+        for value in ('4','runtime_cas','3), .UNKNOWN(1',
+                      '3), .SPU_FIRST(0','3), .SPU_FIRST(1'):
             with self.subTest(value=value),tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp);ctrl=self.parameterized_fixture(root);wrapper=root/'psx_native_memory.sv'
                 wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
@@ -123,6 +124,49 @@ class NativeSDRAMIO(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     prepare_project(root,digest(ctrl),implementation=True,analysis_only=reason=='analysis')
                 self.assertFalse((root/'native-sdram-io').exists())
+
+    def test_input_taps_preserve_sources_and_timing_constraints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects=[]
+            for name,taps in [('auto',None),('fixed',24)]:
+                root=Path(tmp)/name;root.mkdir();ctrl=self.project(root)
+                wrapper=root/'psx_native_memory.sv'
+                wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
+                                   '.SINGLE_CHIP(1), .CAS_LATENCY(3)) controller'))
+                before={p.name:digest(p) for p in (ctrl,wrapper,root/'pocket.sdc')}
+                r=prepare_project(root,digest(ctrl),implementation=True,input_delay_taps=taps)
+                self.assertEqual(before,{n:digest(root/n) for n in before})
+                self.assertEqual(r['input_delay_taps'],taps)
+                self.assertFalse(r['read_hold_relaxation'])
+                projects.append(root)
+            for name in ('scope.tcl','previous-beat.sdc'):
+                self.assertEqual((projects[0]/'native-sdram-io'/name).read_bytes(),
+                                 (projects[1]/'native-sdram-io'/name).read_bytes())
+            q=(projects[1]/'apf_top.qsf').read_text()
+            pins=re.findall(r'^set_instance_assignment -name D1_DELAY 24 -to "([^"]+)"$',q,re.M)
+            self.assertEqual(set(pins),{f'dram_dq[{i}]' for i in range(16)})
+            self.assertEqual(len(pins),16)
+
+    def test_bad_taps_or_conflicts_reject_before_writes(self):
+        for taps,implementation,conflict in [(-1,True,False),(32,True,False),
+                (1.0,True,False),(True,True,False),(24,False,False),(24,True,True)]:
+            with self.subTest(taps=taps,implementation=implementation,conflict=conflict),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);ctrl=self.project(root);qsf=root/'apf_top.qsf'
+                if conflict:qsf.write_text(qsf.read_text()+'set_instance_assignment -name D1_DELAY 4 -to "dram_dq[*]"\n')
+                before=digest(qsf)
+                with self.assertRaises(ValueError):prepare_project(root,digest(ctrl),implementation=implementation,input_delay_taps=taps)
+                self.assertEqual(digest(qsf),before)
+                self.assertFalse((root/'native-sdram-io').exists())
+
+    def test_fitted_delay_coverage_rejects_ignored_wrong_and_missing_pins(self):
+        table='; Delay Chain Summary ;\n'+''.join(
+            f'; dram_dq[{i}] ; Bidir ; 24 ; (0) ; -- ; -- ; (0) ; (0) ;\n' for i in range(16))
+        self.assertEqual(len(fitted_input_delays(table,24)),16)
+        for broken in (table.replace('; 24 ;','; (0) ;',1),
+                       table.replace('; dram_dq[15] ;','; other[15] ;'),
+                       table+table.splitlines()[1]+'\n',
+                       table.replace('; Bidir ;','; Output ;',1)):
+            with self.assertRaises(ValueError):fitted_input_delays(broken,24)
 
     @unittest.skipUnless(shutil.which('tclsh'),'Tcl interpreter unavailable')
     def test_io_recipe_clock_guard_runs_before_applying_the_capture_exception(self):

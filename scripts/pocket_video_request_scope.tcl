@@ -5,6 +5,24 @@ set request_channel ${request_parent}psx_video_config_cdc:channel|
 proc request_regs {tail n} {
     set request_channel {*|gpu_videoout_async:igpu_videoout_async|psx_video_request_cdc:video_request|psx_video_config_cdc:channel|}
     set r [get_registers -nowarn ${request_channel}${tail}]
+    # The exact query can return the sticky flag and named physical copies.
+    # Keep every returned node and the existing first-stage cut; only this
+    # logical flag may have more than one FF, in one request-channel instance.
+    if {$tail eq "src_fault" && $n==1} {
+        set instances {}
+        foreach_in_collection node $r {
+            set name [get_node_info -name $node]
+            if {![regexp {^(.*\|gpu_videoout_async:igpu_videoout_async\|psx_video_request_cdc:video_request\|psx_video_config_cdc:channel)\|src_fault(~DUPLICATE[0-9]*)?$} $name ignored instance replica]} {
+                error "Unrecognized request source fault register: $name"
+            }
+            lappend instances $instance
+        }
+        if {[get_collection_size $r]<1 || [llength [lsort -unique $instances]]!=1} {
+            error "Missing/ambiguous request source fault geometry"
+        }
+        puts "REQUEST_FAULT_PHYSICAL [get_collection_size $r] logical_1"
+        return $r
+    }
     if {[get_collection_size $r]!=$n} {error "Missing request CDC registers $tail"}
     return $r
 }

@@ -6,6 +6,7 @@ broken RTL copies to fail the coherence/held-payload assertions. This is a
 protocol simulation, not metastability, fitted timing, or Pocket qualification.
 """
 import json
+import argparse
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +17,9 @@ from tool_paths import ROOT, find_tool
 
 
 def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--width',type=int,choices=(4,5,6),default=4)
+    args=parser.parse_args()
     parent = ROOT/'build/sim/config-cdc'
     parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='checks-', dir=parent))
@@ -42,7 +46,7 @@ def main():
         folder.mkdir()
         binary = folder/'tb.vvp'
         command = [compiler, '-g2012', '-s', 'tb', f'-Ptb.SH={sh}', f'-Ptb.DH={dh}',
-            f'-Ptb.DP={phase}', '-o', str(binary), str(source), str(bench)]
+            f'-Ptb.DP={phase}',f'-Ptb.WIDTH={args.width}', '-o', str(binary), str(source), str(bench)]
         with (folder/'compile.log').open('w') as log:
             compiled = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=60)
         result = dict(name=name, rtl_sha256=digest(source), compiler_command=command,
@@ -80,7 +84,7 @@ def main():
         run('fault-'+name, source, expected_fault=marker)
     identity = all(digest(Path(p)) == sha for p, sha in protected.items())
     passed = identity and len(runs) == 6 and all(r['accepted'] for r in runs)
-    report = dict(passed=passed, source_identity_verified=identity, source_sha256=protected,
+    report = dict(passed=passed, payload_width=args.width,source_identity_verified=identity, source_sha256=protected,
         input_archives=archive, runs=runs, coherent_stable_levels_verified=passed,
         fault_controls_rejected=passed, hardware_verified=False, timing_verified=False,
         limitations=['Intermediate source levels may coalesce; never use for pulses or lossless commands',

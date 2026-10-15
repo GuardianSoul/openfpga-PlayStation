@@ -13,6 +13,7 @@ the whole game was finished.
 | Metal Gear Solid | — | Boots, looks right | Short test only | pre-release |
 | Rayman 2 | — | Boots, looks right | Short test only | pre-release |
 | Tekken 3 | USA | Playable | Fights, graphics and CD music correct | 0.5.0 |
+| WipEout | — | Playable | Saving and CD music correct | 0.5.1 |
 
 ## Status levels
 

@@ -33,7 +33,14 @@ module psx_sdram_ctrl #(
     // clk later (the read tags pass through one extra stage). That clk moves
     // read completion past a clk1x hand-off edge: reads, cache fills, DMA and
     // ch3 reads each take one clk1x (29.5 ns) longer; writes do not.
-    parameter integer CAS_LATENCY = 2
+    parameter integer CAS_LATENCY = 2,
+    // SPU_FIRST: a pending ch3 (SPU RAM) request is served right after
+    // refresh, ahead of the DMA FIFO, ch1 and ch2, and ends a DMA FIFO write
+    // chain. The SPU has a hard 768-clk1x sample deadline and waits for each
+    // access; served last, a DMA burst or CPU traffic can starve it (audio
+    // underflow seen on hardware, WipEout CD music). SPU RAM shares no
+    // addresses with main RAM, so no ordering between channels changes.
+    parameter integer SPU_FIRST = 0
 ) (
     input  wire         init,
     input  wire         clk,
@@ -164,7 +171,8 @@ module psx_sdram_ctrl #(
     wire [26:0] fifo_adr  = LATE_START ? head_adr : dmafifo_adr;
     wire [31:0] fifo_data = LATE_START ? head_data : dmafifo_data;
     wire [26:0] ch3_a     = LATE_START ? ch3_adr_q : ch3_addr;
-    wire [26:0] idle_addr = fifo_v ? fifo_adr : (pend1 || (!LATE_START && ch1_req)) ? ch1_addr
+    wire        spu_first = SPU_FIRST != 0 && pend3;
+    wire [26:0] idle_addr = spu_first ? ch3_a : fifo_v ? fifo_adr : (pend1 || (!LATE_START && ch1_req)) ? ch1_addr
                           : (pend2 || (!LATE_START && ch2_req)) ? ch2_addr : ch3_a;
 
     // ------------------------------------------------------------- refresh
@@ -378,7 +386,7 @@ module psx_sdram_ctrl #(
                         dq_out <= wdata[31:16]; dq_oe <= 1; dqm <= ~wbe[3:2];
                         if (ch3_write) start_ch3w = 1;
                         if (from_fifo && fifo_v && fifo_adr[24:10] == addr[24:10]
-                            && chain != CHAIN_LIMIT[5:0] && ref_owed == 0 && !force_pend && !force_rise) begin
+                            && chain != CHAIN_LIMIT[5:0] && ref_owed == 0 && !force_pend && !force_rise && !spu_first) begin
                             a <= {2'b00, 1'b0, addr[25], addr[9:2], 1'b1};
                             addr <= fifo_adr; wdata <= fifo_data; wbe <= 4'b1111;
                             take_fifo = 1; chain <= chain + 1'b1;
@@ -388,7 +396,7 @@ module psx_sdram_ctrl #(
                     default: ;
                 endcase
             end else begin
-                // Idle: refresh, then dmafifo, ch1, ch2, ch3.
+                // Idle: refresh, then dmafifo, ch1, ch2, ch3 (SPU_FIRST: ch3 right after refresh).
                 a <= idle_addr[22:10]; ba <= idle_addr[24:23]; ncs <= idle_addr[26];
                 if (ref_owed != 0 || force_pend || force_rise) begin
                     chosen = OP_REFRESH;
@@ -399,6 +407,12 @@ module psx_sdram_ctrl #(
                         else ref_owed <= ref_owed - 1'b1 + (ref_timer == 0);
                     end else ref_owed <= ref_owed - 1'b1 + (ref_timer == 0 && ref_owed != 4'd8);
                     last <= 8;
+                end else if (spu_first) begin
+                    pend3 <= 0;
+                    addr <= ch3_a; wdata <= LATE_START ? ch3_din_q : ch3_din; wbe <= LATE_START ? ch3_be_q : ch3_be;
+                    cmd <= C_ACT;
+                    if (LATE_START ? ch3_rnw_q : ch3_rnw) begin chosen = OP_READ1; kind <= K_CH3; last <= 11; end
+                    else begin chosen = OP_WRITE; from_fifo <= 0; ch3_write <= 1; last <= 6; end
                 end else if (fifo_v) begin
                     chosen = OP_WRITE;
                     addr <= fifo_adr; wdata <= fifo_data; wbe <= 4'b1111;

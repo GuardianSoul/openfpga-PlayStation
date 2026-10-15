@@ -23,7 +23,7 @@ built on the MiSTer PSX core.
    `Assets/playstation`. Merge them with existing folders; nothing is
    overwritten.
 3. Copy your BIOS to `Assets/playstation/common/` on the SD card and name
-   it `scph5501.bin` (US console, the tested BIOS).
+   it `scph5501.bin` (the file name the core looks for).
 4. Copy your games to `Assets/playstation/common/`, one folder per disc,
    and make their game files with pupdate or Pocket Sync (see
    [Games](#games)).
@@ -107,7 +107,7 @@ in simulation but not yet played through on a Pocket.
 | L / R | L1 / R1 |
 | Select / Start | Select / Start |
 
-The core emulates a digital pad. L2/R2 and analog sticks are not mapped yet.
+The core emulates a digital pad. Hold Select and press L, R, Y or A for L2, R2, L3 or R3. Tap Select on its own for Select. Analog sticks are not mapped yet.
 
 ## Settings
 
@@ -192,7 +192,6 @@ before it goes into a build.
 
 ## Known issues
 
-- Only one BIOS is tested so far (SCPH-5501, US).
 - Some games may run slower than on a real console.
 - Multi-disc games have not been tested beyond their first disc yet.
 
@@ -228,7 +227,10 @@ by hardware tests. Even so, review it with that origin in mind.
 - [PS-FPGA](https://github.com/PS-FPGA/ps-fpga) GTE by Romain Piquois
   (Laxer3a).
 - [pocket_sotn](https://github.com/akoaysigod/pocket_sotn) by akoaysigod:
-  the PSRAM video RAM design and the approach to fitting the MiSTer core.
+  the memory layout this core uses (main RAM on SDRAM, video RAM across
+  both PSRAM chips), the PSRAM video RAM and memory card code, the Pocket
+  SDRAM timing fixes, and the approach to fitting the MiSTer core on the
+  Pocket.
 - Adam Gastineau (agg23) and [MIRLO64](https://github.com/tortugaveloz/MIRLO64)
   by tortuga: Pocket platform glue and audio output.
 

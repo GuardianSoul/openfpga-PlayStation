@@ -22,6 +22,24 @@ if {[get_collection_size $dst]!=1 || [get_collection_size $fifo]<20} {error "Mis
 set fault_meta [get_registers ${request_parent}fault_meta]
 set fault_sync [get_registers ${request_parent}fault_sync]
 if {[get_collection_size $fault_meta]!=1 || [get_collection_size $fault_sync]!=1} {error "Missing request fault stages"}
+proc request_initialized_regs {} {
+    global request_channel
+    # This exact pre-existing query can return a named physical copy. Keep
+    # every returned target; one logical state/instance must still be present.
+    set r [get_registers -nowarn ${request_channel}dst_initialized]
+    set instances {}
+    foreach_in_collection node $r {
+        set name [get_node_info -name $node]
+        if {![regexp {^(.*)\|dst_initialized(~DUPLICATE[0-9]*)?$} $name -> instance replica]} {
+            error "Unrecognized request initialized register $name"
+        }
+        lappend instances $instance
+    }
+    if {[get_collection_size $r]==0 || [llength [lsort -unique $instances]]!=1} {
+        error "Missing/ambiguous request initialized geometry"
+    }
+    return $r
+}
 set corner 0
 foreach_in_collection condition [get_available_operating_conditions] {
     set_operating_conditions $condition
@@ -55,7 +73,8 @@ foreach_in_collection condition [get_available_operating_conditions] {
             report_timing -$kind -from $a -to $b -npaths 20 -detail full_path -file [file join $output corner${corner}-${meta}-second-${kind}.txt]
         }
         foreach name {src_fault dst_initialized} {
-            report_timing -$kind -to [request_regs $name 1] -npaths 100 -detail full_path -file [file join $output corner${corner}-${name}-${kind}.txt]
+            if {$name eq "dst_initialized"} {set state [request_initialized_regs]} else {set state [request_regs $name 1]}
+            report_timing -$kind -to $state -npaths 100 -detail full_path -file [file join $output corner${corner}-${name}-${kind}.txt]
         }
     }
     foreach pipe {src_reset_pipe dst_reset_pipe} {

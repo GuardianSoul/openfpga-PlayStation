@@ -3,6 +3,24 @@
 proc video_cfg_regs {tail n} {
     set prefix {*|gpu_videoout_async:igpu_videoout_async|psx_video_config_cdc:video_config|}
     set r [get_registers -nowarn "${prefix}${tail}"]
+    # Quartus can keep both the primary sticky fault flag and a named replica.
+    # Retain this exact query/collection and its existing first-stage cut;
+    # validate one logical flag in one instance instead of one physical FF.
+    if {$tail eq "src_fault" && $n==1} {
+        set instances {}
+        foreach_in_collection node $r {
+            set name [get_node_info -name $node]
+            if {![regexp {^(.*\|gpu_videoout_async:igpu_videoout_async\|psx_video_config_cdc:video_config)\|src_fault(~DUPLICATE[0-9]*)?$} $name ignored instance replica]} {
+                error "Unrecognized video source fault register: $name"
+            }
+            lappend instances $instance
+        }
+        if {[get_collection_size $r]<1 || [llength [lsort -unique $instances]]!=1} {
+            error "Missing/ambiguous video source fault geometry"
+        }
+        puts "VIDEO_FAULT_PHYSICAL [get_collection_size $r] logical_1"
+        return $r
+    }
     if {[get_collection_size $r]!=$n} {error "Missing video config registers $tail: [get_collection_size $r], expected$n"}
     return $r
 }

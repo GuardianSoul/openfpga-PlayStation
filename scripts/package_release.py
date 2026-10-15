@@ -22,7 +22,7 @@ from tool_paths import ROOT
 
 AUTHOR = 'GuardianSoul'
 REPO = f'https://github.com/{AUTHOR}/openfpga-PlayStation'
-SOURCE_AUTHOR = 'GuardianSoul'          # author of the workspace packages
+SOURCE_AUTHORS = ('GuardianSoul', AUTHOR)   # authors of workspace packages, older and current
 PLATFORM = 'playstation'
 LICENSES = (                       # (source, name in the core's licenses folder)
     (ROOT/'LICENSE', 'LICENSE-GPL-2.0.txt'),
@@ -59,7 +59,7 @@ def main():
     if not timing.get('passed'): parser.error(f'{args.timing}: release timing did not pass')
     if Path(timing['project']).resolve() != Path(report['project']).resolve():
         parser.error(f'{args.timing} is for {timing["project"]}, the package for {report["project"]}')
-    cores = sorted((package/'SD/Cores').glob(f'{SOURCE_AUTHOR}.*'))
+    cores = sorted({c for author in SOURCE_AUTHORS for c in (package/'SD/Cores').glob(f'{author}.*')})
     if len(cores) != 1: parser.error(f'expected one core in {package}/SD/Cores, found {len(cores)}')
     if not (package/f'SD/Platforms/{PLATFORM}.json').is_file(): parser.error('package must use --platform playstation')
 
@@ -103,7 +103,7 @@ def main():
         'Put each game disc (.cue and .bin files) here in its own folder, then make the\n'
         'game files with pupdate or Pocket Sync (see the README). No BIOS or game is included.\n')
 
-    names = [SOURCE_AUTHOR] if SOURCE_AUTHOR != AUTHOR else []
+    names = [a for a in SOURCE_AUTHORS if a != AUTHOR]
     private = re.compile('|'.join([*map(re.escape, names), r'/(?:home|run/media|tmp)/']), re.I)
     for path in sorted(sd.rglob('*')):
         if path.is_file() and path.suffix != '.rbf_r':

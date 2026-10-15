@@ -17,13 +17,50 @@ from prepare_pocket_config_cdc import assignments, scoped_hold_text
 from prepare_resource_targets import digest
 from tool_paths import ROOT
 
-# Edge/tag contract reviewed with the datasheet-timed model and full routed
-# prototype. A new controller revision must be reviewed before using this
-# implementation recipe, even when its port/mode syntax remains compatible.
+# Per-READ edge/tag contract reviewed with the datasheet-timed model. Routed
+# prototypes qualify only their exact compiled sources/projects. A controller
+# revision needs a new capture review; every new project still needs a fresh
+# full fit and pin/edge audit, even when port/mode syntax remains compatible.
 REVIEWED_CAS3_CAPTURE_SHA256 = {
     '17b708d26aebcaebb4acfaa138bc550f5bfe5e7a14ebcb4e3e7f6f739627decb',
     'f8825c97d3ad7038992e84842232a53117be13747775effc30daeaf9d7f67465',
+    # e467767: registered request/head/startup inputs; PHY, read tags, shift
+    # and READ-command bodies unchanged. Timed data and late-DQ control checked.
+    'd368cde48a2996f13a030a892c02bff747b5d10afd1cb2346b8a510f8fb60928',
+    # 9341a90, DEFAULT SPU_FIRST=0 only: pin cells, capture state/results,
+    # MRS and READ/tag bodies byte-identical to d368 above; strict CL3 model
+    # and late-DQ control checked. wrapper_contract still rejects explicit
+    # SPU_FIRST overrides. This is not a routed fit or priority-path signoff.
+    'e96f00a8a26ab2c47b77ba6ed8a066f7653e1215e83872b2aa1d417a83753adf',
 }
+
+
+def fitted_input_delays(report, expected_taps):
+    """Require all 16 requested D1 settings in the actual Fitter report.
+
+    This proves the physical settings were used, not that timing passed.
+    Actual setup/hold, capture edges and other clock domains need their audits.
+    """
+    if type(expected_taps) is not int or not 0<=expected_taps<=31:
+        raise ValueError('Expected Cyclone V D1 setting 0..31')
+    sections=report.split('; Delay Chain Summary ')
+    if len(sections)!=2:
+        raise ValueError('Expected one Fitter Delay Chain Summary')
+    table=sections[1].split('; Pad To Core Delay Chain Fanout',1)[0]
+    rows={}
+    for line in table.splitlines():
+        columns=[c.strip() for c in line.split(';')]
+        if len(columns)<5 or not re.fullmatch(r'dram_dq\[\d+\]',columns[1]):continue
+        name=columns[1]
+        if name in rows or columns[2]!='Bidir':
+            raise ValueError('Duplicate or non-bidirectional SDRAM delay row: '+name)
+        value=columns[3].strip('()')
+        if not value.isdigit() or int(value)!=expected_taps:
+            raise ValueError('Fitted SDRAM D1 differs from request: '+name+' = '+columns[3])
+        rows[name]=int(value)
+    if set(rows)!={f'dram_dq[{i}]' for i in range(16)}:
+        raise ValueError('Missing or unexpected SDRAM D1 pin coverage')
+    return rows
 
 
 def controller_contract(text, cas_override=None):
@@ -74,11 +111,17 @@ def project_contract(directory, expected_controller_sha256):
 
 
 def prepare_project(directory, expected_controller_sha256, *, board_min_ns=0.0,
-                    board_max_ns=0.5, analysis_only=False, implementation=False):
+                    board_max_ns=0.5, analysis_only=False, implementation=False,
+                    input_delay_taps=None):
     if not all(math.isfinite(x) for x in (board_min_ns,board_max_ns)) or not 0<=board_min_ns<=board_max_ns<=2:
         raise ValueError('Require finite 0 <= board minimum <= maximum <= 2 ns per leg')
+    if input_delay_taps is not None and (
+            not implementation or type(input_delay_taps) is not int or not 0<=input_delay_taps<=31):
+        raise ValueError('D1 input taps require the reviewed I/O implementation and an integer 0..31')
     directory=Path(directory).resolve();qsf=directory/'apf_top.qsf';sdc=directory/'pocket.sdc'
     q=qsf.read_text();saved=sdc.read_text()
+    if input_delay_taps is not None and re.search(r'^.*\bD1_DELAY\b.*\bdram_dq\b',q,re.M):
+        raise ValueError('Conflicting SDRAM D1 input-delay assignment')
     # Check the parent; retain reviewed scoped exceptions byte-for-byte.
     _,removed=scoped_hold_text(saved)
     if removed:raise ValueError('Remove inherited whole-clock cuts before adding Native pin timing')
@@ -116,6 +159,12 @@ set_multicycle_path -setup 2 -from $native_sdram_inputs -to $native_sdram_caps
             'set_instance_assignment -name ALLOW_SYNCH_CTRL_USAGE OFF -to "core_top:ic|psx_native_memory:native_memory|psx_sdram_ctrl:controller|dq_oe"',
             'set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to "dram_dq[*]"',
         ]
+        if input_delay_taps is not None:
+            # D1 is buffer -> packed input register, not the D3 core path.
+            # Tap count is a physical setting, not a nanosecond guarantee.
+            # Keep next-beat hold timed and re-fit/audit every composition.
+            physical += [f'set_instance_assignment -name D1_DELAY {input_delay_taps} -to "dram_dq[{bit}]"'
+                         for bit in range(16)]
         q+=f'\nset_global_assignment -name SDC_FILE "{capture}"\n'+'\n'.join(physical)+'\n'
     qsf.write_text(q)
     report=dict(cas_latency=cas,cas_wrapper_override=override,
@@ -130,6 +179,7 @@ set_multicycle_path -setup 2 -from $native_sdram_inputs -to $native_sdram_caps
                 clock_or_RTL_changed=False,multicycle_added=implementation,false_paths_added=False,
                 implementation_recipe=implementation,read_setup_multicycle=2 if implementation else 1,
                 read_hold_relaxation=False,physical_assignments=physical,
+                input_delay_taps=input_delay_taps,
                 before=before,added=[dict(path=str(p),sha256=digest(p)) for p in added],
                 limitations=['Board flight/load assumptions require qualification',
                              'Default one-edge input checks do not prove the consumed beat identity',
@@ -146,6 +196,7 @@ if __name__=='__main__':
     p.add_argument('--board-max-ns',type=float,default=.5)
     p.add_argument('--analysis-only',action='store_true')
     p.add_argument('--implement-cas3-io',action='store_true',help='Apply the reviewed CAS3 read-edge and targeted I/O packing/delay recipe; requires a fresh full fit and edge/pin audits')
+    p.add_argument('--input-delay-taps',type=int,help='Opt-in Cyclone V D1 setting (0..31) on all 16 SDRAM DQ pins; requires --implement-cas3-io and a fresh physical fit. No timing relaxation.')
     a=p.parse_args();print(json.dumps(prepare_project(a.project,a.expected_controller_sha256,
         board_min_ns=a.board_min_ns,board_max_ns=a.board_max_ns,analysis_only=a.analysis_only,
-        implementation=a.implement_cas3_io),indent=2))
+        implementation=a.implement_cas3_io,input_delay_taps=a.input_delay_taps),indent=2))

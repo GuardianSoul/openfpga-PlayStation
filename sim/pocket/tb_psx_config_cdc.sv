@@ -1,14 +1,15 @@
 `timescale 1ns/1ps
 module tb;
+    parameter integer WIDTH=4;
     parameter real SH=6.734,DH=14.76255,DP=0;
     reg sc=0,dc=0,srun=1,drun=1,reset=1;
     always #(SH) if(srun) sc=~sc;
     initial begin #(DP);forever #(DH) if(drun) dc=~dc;end
-    reg [3:0] desired=0;
-    wire current;wire [3:0] actual;
-    psx_config_cdc #(.WIDTH(4)) dut (.src_clk(sc),.dst_clk(dc),.reset_async(reset),
+    reg [WIDTH-1:0] desired=0;
+    wire current;wire [WIDTH-1:0] actual;
+    psx_config_cdc #(.WIDTH(WIDTH)) dut (.src_clk(sc),.dst_clk(dc),.reset_async(reset),
         .src_data(desired),.src_current(current),.dst_data(actual));
-    reg [3:0] expected=0,held=0;
+    reg [WIDTH-1:0] expected=0,held=0;
     reg was_request=0,was_ack=0,busy_before=0;
     integer epochs=0,publishes=0,commits=0,stable_cases=0,checks=0;
     // Capture each complete source publication; the destination must commit
@@ -41,7 +42,7 @@ module tb;
             was_ack=dut.acknowledge;
         end
     end
-    task settle(input [3:0] value);
+    task settle(input [WIDTH-1:0] value);
         integer age;
         begin
             @(negedge sc);desired=value;#0.002;
@@ -54,10 +55,10 @@ module tb;
     initial begin
         repeat(4) @(negedge sc);reset=0;epochs++;
         settle(0);
-        for(integer a=0;a<16;a++) for(integer b=0;b<16;b++) begin settle(4'(a));settle(4'(b));end
+        for(integer a=0;a<(1<<WIDTH);a++) for(integer b=0;b<(1<<WIDTH);b++) begin settle(WIDTH'(a));settle(WIDTH'(b));end
         // Continuous source-clock changes intentionally coalesce; the last
         // complete value must arrive, with no torn intermediate publication.
-        for(integer i=0;i<1024;i++) begin @(negedge sc);desired=4'((i*13)^7);end
+        for(integer i=0;i<1024;i++) begin @(negedge sc);desired=WIDTH'((i*13)^7);end
         settle(10);
         @(negedge dc);drun=0;
         repeat(20) begin @(negedge sc);desired=~desired;end
@@ -70,10 +71,10 @@ module tb;
         @(negedge dc);drun=0;
         #2;reset=1;epochs++;
         repeat(5) @(negedge sc);reset=0;
-        @(negedge sc);desired=15;
+        @(negedge sc);desired={WIDTH{1'b1}};
         repeat(15) @(negedge sc);
         if(current) $fatal(1,"Stale ACK crossed a stopped-clock reset");
-        drun=1;settle(15);
+        drun=1;settle({WIDTH{1'b1}});
         // Hold source clock after publication: destination may finish, but
         // payload must remain stable until the source sees its fresh ACK.
         @(negedge sc);desired=3;
@@ -82,9 +83,9 @@ module tb;
         repeat(15) @(negedge dc);
         if(actual!==3) $fatal(1,"Held source packet was not committed");
         srun=1;settle(3);
-        if(publishes<500 || commits<500 || stable_cases!=517) $fatal(1,"Configuration coverage missing");
+        if(publishes<500 || commits<500 || stable_cases!=(2*(1<<(2*WIDTH))+5)) $fatal(1,"Configuration coverage missing");
         $display("PASS CONFIG_CDC publishes=%0d commits=%0d stable=%0d epochs=%0d checks=%0d",publishes,commits,stable_cases,epochs,checks);
         $finish;
     end
-    initial begin #3000000;$fatal(1,"Configuration test timeout");end
+    initial begin #(3000000*(WIDTH>5 ? 4:1));$fatal(1,"Configuration test timeout");end
 endmodule

@@ -16,18 +16,32 @@ create_timing_netlist
 read_sdc
 update_timing_netlist
 # Geometry and scope are checked by the project's pocket_config_scope.tcl.
-set payload [config_regs payload 4]; set destination [config_regs dst_data 4]
-set host [get_registers {*|biosregion_host[*] *|region_host[*]}]
+set width 4
+if {[info exists config_width]} {set width $config_width}
+if {$width ni {4 5 6}} {error "Unknown host configuration payload width"}
+set payload [config_regs payload $width]; set destination [config_regs dst_data $width]
+set host_patterns [list {*|biosregion_host[*]} {*|region_host[*]}]
+if {$width>=5} {lappend host_patterns {core_top:ic|pause_host} {core_top:ic|pause_host~DUPLICATE*}}
+if {$width==6} {lappend host_patterns {core_top:ic|isPal_host} {core_top:ic|isPal_host~DUPLICATE*}}
+set host [get_registers $host_patterns]
 # Physical synthesis can replicate a host bit. Keep every replica in the raw
 # crossing report, while still requiring all four original logical bits.
 set host_bits [dict create]
 foreach_in_collection r $host {
     set name [get_node_info -name $r]
     if {![regexp {\|(biosregion_host|region_host)\[([01])\](~DUPLICATE[0-9]*)?$} $name -> field bit replica]} {
-        error "Unexpected config host source register $name"
+        if {$width>=5 && [regexp {^core_top:ic\|pause_host(~DUPLICATE[0-9]*)?$} $name -> replica]} {
+            set field pause_host;set bit 0
+        } elseif {$width==6 && [regexp {^core_top:ic\|isPal_host(~DUPLICATE[0-9]*)?$} $name -> replica]} {
+            set field isPal_host;set bit 0
+        } else {
+            error "Unexpected config host source register $name"
+        }
     }
     if {$replica eq ""} {dict set host_bits "$field/$bit" 1}
 }
+if {$width>=5 && ![dict exists $host_bits pause_host/0]} {error "Missing coherent host pause source"}
+if {$width==6 && ![dict exists $host_bits isPal_host/0]} {error "Missing coherent host PAL source"}
 foreach field {biosregion_host region_host} {
     foreach bit {0 1} {
         if {![dict exists $host_bits "$field/$bit"]} {error "Missing config host source $field/$bit"}

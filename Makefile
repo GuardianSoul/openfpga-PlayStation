@@ -1,6 +1,6 @@
 .PHONY: test test-python test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache preflight resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte inspect-assets diagnose-bios
 
-test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec
+test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-memcard-format test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec
 
 .PHONY: test-sdram-selector test-sdram-ctrl release
 .PHONY: test-native-sdram-spec check-native-sdram-spec
@@ -22,6 +22,7 @@ release:
 test-sdram-ctrl:
 	python3 scripts/run_sdram_ctrl.py
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 2 --compare-cl2
+	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 3 --spu-first
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 300 --dclk 0.5 --tret 0.5 --expect-fail
 	python3 scripts/run_sdram_ctrl.py --cas 2 --ops 300 --dclk 5 --tret 5 --no-reference --expect-fail
 
@@ -46,6 +47,11 @@ test-video-config-pipeline:
 .PHONY: test-config-cdc test-config-cdc-system
 test-config-cdc:
 	python3 scripts/run_config_cdc.py
+
+.PHONY: test-status-cdc
+test: test-status-cdc
+test-status-cdc:
+	python3 scripts/run_status_cdc.py
 
 test-config-cdc-system:
 	python3 scripts/run_shared_sdram_system.py --reset-only --release-init --config-cdc
@@ -132,6 +138,10 @@ test-cd-disc-swap:
 
 test-memcard-window:
 	python3 scripts/run_memcard_window.py
+
+.PHONY: test-memcard-format
+test-memcard-format:
+	python3 scripts/run_memcard_format.py
 
 .PHONY: test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k
 test-dma-m10k:
@@ -535,3 +545,8 @@ test-native-sdram-system:
 .PHONY: test-sdram-shared
 test-sdram-shared:
 	python3 scripts/run_sdram_shared.py
+
+test: test-pad-combo
+.PHONY: test-pad-combo
+test-pad-combo:
+	python3 scripts/run_pad_combo.py

@@ -202,6 +202,7 @@ def main():
     parser.add_argument('--slots480', action='store_true', help='480i lines use 480-tall scaler slots 5-7 (package with --slots480)')
     parser.add_argument('--perf-log', action='store_true', help='Per-frame memory-wait counters saved to SD at bridge 0x40000000 (rtl/pocket/psx_perf_log.sv; package with --boot-log, needs --cd-stream)')
     parser.add_argument('--sotn-memory', action='store_true', help='pocket_sotn layout: main RAM, BIOS and SPU RAM on MiSTer sdram.sv at clk3x with the Pocket fixes (references/pocket_sotn/rtl/sdram.sv, rtl/pocket/psx_native_memory.sv); VRAM on both PSRAMs (pocket_sotn vram_psram.vhd)')
+    parser.add_argument('--sdram-spu-first', action='store_true', help='With --sdram-ctrl clean: serve SPU RAM (ch3) right after refresh, ahead of DMA and CPU, so the SPU keeps its sample deadline (audio underflow on WipEout CD music)')
     parser.add_argument('--sdram-cas', type=int, choices=(2, 3), default=2, help='With --sdram-ctrl clean: CAS latency (the Pocket SDRAM datasheet needs CL3 at 101.6 MHz; same capture window one clk later)')
     parser.add_argument('--sdram-ctrl', choices=('sotn', 'clean'), default='sotn', help="With --sotn-memory: pocket_sotn's sdram.sv (GPL-3.0-or-later) or the MIT clean-room rtl/memory/psx_sdram_ctrl.sv")
     parser.add_argument('--psram-main', action='store_true', help='Main RAM, BIOS and SPU RAM on both PSRAM chips (rtl/pocket/psx_psram_clients.sv, PocketQuake recipe at 104.17 MHz); VRAM alone on SDRAM')
@@ -234,7 +235,9 @@ def main():
     parser.add_argument('--fit-effort-max', action='store_true', help='Fitter: STANDARD FIT effort and maximum router timing optimization (release builds: closes the small fast-corner hold misses that Auto Fit leaves)')
     parser.add_argument('--static-host-cuts', action='store_true', help='Native release timing: false paths for quasi-static host settings (pause, isPal) and the diagnostic service readbacks of cd_top/pausing; video-out synchronizers kept out of RAM shift registers')
     parser.add_argument('--memcard-slot', action='store_true', help='With --sotn-memory: memory card 1 always present, its image in vram_psram region 1, loaded from and saved to an APF nonvolatile slot (pocket_sotn pocket_memcard.vhd; package --memcard-slot)')
+    parser.add_argument('--memcard-format', action='store_true', help='With --memcard-slot: a new or all-zero card file is formatted before the CPU starts, so games without a format option can save (rtl/pocket/pocket_memcard_format.vhd)')
     parser.add_argument('--memcard-lean', action='store_true', help='Memory card buffer without its two 64-bit copy registers (scripts/prepare_memcard_lean.py)')
+    parser.add_argument('--pad-combos', action='store_true', help='Select-held combos for L2/R2/L3/R3 on the handheld (rtl/pocket/psx_pocket_pad_combo.sv replaces psx_pocket_pad.sv)')
     parser.add_argument('--digital-pad', action='store_true', help='Digital-pad-only controller port (rtl/pocket/joypad_pad_digital.vhd, lockstep-equal to MiSTer for the Pocket tie-offs)')
     parser.add_argument('--vram-credit-timing', action='store_true', help="Codex's 4ea39ea VRAM BUSY timing repair (scripts/prepare_vram_credit_timing.py)")
     parser.add_argument('--cd-full', action='store_true', help='Restore the CD commands the FFVII-minimum trim dropped (Play, Forward, Backward, GetTN, GetTD, GetQ, VideoCD): CD audio, TOC queries')
@@ -289,8 +292,11 @@ def main():
     if args.boot_trace and not args.debug_overlay: parser.error('--boot-trace needs --debug-overlay')
     if args.debug_overlay:
         rgb = "        apf_rgb<=(!hblank && !psx_vblank) ? {video_r,video_g,video_b} : 24'h0;"
-        if text.count(rgb) != 1: parser.error('APF video block not found')
-        text = text.replace(rgb, "        apf_rgb<=(!hblank && !psx_vblank) ? dbg_rgb : 24'h0;")
+        if text.count(rgb) == 1:
+            text = text.replace(rgb, "        apf_rgb<=(!hblank && !psx_vblank) ? dbg_rgb : 24'h0;")
+        elif text.count('        .rgb_in({video_r,video_g,video_b}),') == 1:   # psx_apf_video formatter
+            text = text.replace('        .rgb_in({video_r,video_g,video_b}),', '        .rgb_in(dbg_rgb),')
+        else: parser.error('APF video block not found')
         anchor = '    // APF scaler protocol:'
         overlay = OVERLAY.replace('DBG_ASYNC_ACK', 'vx_ack' if args.vram_async else "1'b0")
         if args.lean_trace:
@@ -505,6 +511,8 @@ def main():
         copy.write_text(gte_m10k_text(Path(paths[0]).read_text()))
         qsf_path.write_text(q.replace(f'"{paths[0]}"', f'"{copy}"'))
         sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + '\n' + GTE_M10K_SDC)
+    if args.memcard_format and not args.memcard_slot:
+        parser.error('--memcard-format needs --memcard-slot')
     if args.memcard_lean:
         if args.stub_memcards: parser.error('--memcard-lean needs the memory card devices')
         from prepare_memcard_lean import memcard_lean_text
@@ -520,6 +528,12 @@ def main():
         pinned = f'"{root}/references/PSX_MiSTer/rtl/joypad_pad.vhd"'
         if qsf_text.count(pinned) != 1: parser.error('joypad_pad.vhd not in project')
         qsf_path.write_text(qsf_text.replace(pinned, f'"{root}/rtl/pocket/joypad_pad_digital.vhd"'))
+    if args.pad_combos:
+        qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
+        pads = re.findall(r'"([^"]*/psx_pocket_pad\.sv)"', qsf_text)
+        if len(pads) != 1: parser.error('--pad-combos: expected one psx_pocket_pad.sv in the project (release host trim base)')
+        combo = Path(__file__).resolve().parents[1]/'rtl/pocket/psx_pocket_pad_combo.sv'
+        qsf_path.write_text(qsf_text.replace(f'"{pads[0]}"', f'"{combo}"'))
     if args.stub_mdec:
         qsf_text = (out/'apf_top.qsf').read_text()
         tops = [Path(m) for m in re.findall(r'"([^"]*/psx_top\.vhd)"', qsf_text)]
@@ -655,6 +669,7 @@ def main():
         old_sdram = [l for l in q.splitlines() if l.endswith('/sdram.sv" -library work')]
         if len(old_sdram) != 1: parser.error('--sotn-memory: expected one sdram.sv in the project')
         if args.sdram_cas != 2 and args.sdram_ctrl != 'clean': parser.error('--sdram-cas needs --sdram-ctrl clean')
+        if args.sdram_spu_first and args.sdram_ctrl != 'clean': parser.error('--sdram-spu-first needs --sdram-ctrl clean')
         if args.sdram_ctrl == 'clean':
             # MIT clean-room controller (rtl/memory/psx_sdram_ctrl.sv), same
             # ports as sdram.sv: a project copy of the glue instantiates it.
@@ -663,7 +678,7 @@ def main():
             if glue_text.count('    sdram #(.SINGLE_CHIP(1)) controller (') != 1: parser.error('--sdram-ctrl clean: glue instance not found')
             glue = out/'psx_native_memory.sv'
             glue.write_text(glue_text.replace('    sdram #(.SINGLE_CHIP(1)) controller (',
-                f'    psx_sdram_ctrl #(.SINGLE_CHIP(1), .CAS_LATENCY({args.sdram_cas})) controller ('))
+                f'    psx_sdram_ctrl #(.SINGLE_CHIP(1), .CAS_LATENCY({args.sdram_cas}){", .SPU_FIRST(1)" if args.sdram_spu_first else ""}) controller ('))
         else:
             controller, glue = f'{sotn}/rtl/sdram.sv', root/'rtl/pocket/psx_native_memory.sv'
         q = q.replace(old_sdram[0], f'set_global_assignment -name SYSTEMVERILOG_FILE "{controller}" -library work')
@@ -692,26 +707,36 @@ def main():
         once_card('        .aux_req(1\'b0),.aux_we(1\'b0),.aux_addr(21\'b0),.aux_din(32\'b0),.aux_dout(),.aux_done(),.card_write(),\n',
                   '        .aux_req(mc_aux_req),.aux_we(mc_aux_we),.aux_addr(mc_aux_addr),.aux_din(mc_aux_din),.aux_dout(mc_aux_dout),\n'
                   '        .aux_done(mc_aux_done),.card_write(mc_card_write),\n')
-        once_card('    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),\n', MEMCARD_SLOT + '    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),\n')
+        slot = MEMCARD_SLOT
+        if args.memcard_format:
+            slot = (slot.replace('    pocket_memcard memcard_slot (', '    wire memcard_load_done;\n    pocket_memcard_format memcard_slot (')
+                    .replace('.card_write(mc_card_write));', '.card_write(mc_card_write),.load_done(memcard_load_done));'))
+        once_card('    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),\n', slot + '    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),\n')
         once_card('    reg memcard1_available=0;\n', "    wire memcard1_available=1'b1;   // --memcard-slot: card 1 always present\n")
         once_card("        if(bridge_wr && bridge_addr==32'h11000108) memcard1_available<=bridge_wr_data[0:0];\n", '')
         mux = "        if (bridge_addr[31:24]==8'hf8) bridge_rd_data=cmd_bridge_rd_data;"
         once_card(mux, mux + "\n        if (bridge_addr[31:17]==15'h1000) bridge_rd_data=memcard_rd_data;   // card slot 0x20000000")
+        root = Path(__file__).resolve().parents[1]
+        entity = 'pocket_memcard_format' if args.memcard_format else 'pocket_memcard'
+        source = root/'rtl/pocket/pocket_memcard_format.vhd' if args.memcard_format else root/'references/pocket_sotn/pocket/src/fpga/core/pocket_memcard.vhd'
         q = (out/'apf_top.qsf').read_text()
-        (out/'apf_top.qsf').write_text(q + f'set_global_assignment -name VHDL_FILE "{Path(__file__).resolve().parents[1]}/references/pocket_sotn/pocket/src/fpga/core/pocket_memcard.vhd" -library work\n'
+        (out/'apf_top.qsf').write_text(q + f'set_global_assignment -name VHDL_FILE "{source}" -library work\n'
             # Keep its synchronizers in flip-flops: Quartus otherwise merges
             # rd_tog_s into a RAM shift register (with the video request
             # sync), where neither the constraint below nor metastability
             # settling applies.
-            'set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "core_top:ic|pocket_memcard:memcard_slot"\n')
+            f'set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "core_top:ic|{entity}:memcard_slot"\n')
         sdc = out/'pocket.sdc'
-        sdc.write_text(sdc.read_text() + '\n# pocket_memcard: toggle synchronizers and held request/response words.\n'
+        sdc.write_text(sdc.read_text() + ('\n# pocket_memcard: toggle synchronizers and held request/response words.\n'
             'set_false_path -to [get_registers {*|pocket_memcard:*|rd_tog_s[0] *|pocket_memcard:*|rd_ack_s[0] *|mc_idle74[0]}]\n'
             # boot_ready_card (a clk_74a register) only asserts the boot gate's
             # reset synchronizer asynchronously; its release is synchronized.
             'set_false_path -from [get_registers {*|boot_ready_card}] -to [get_registers {*boot_gate*|reset_pipe[*]}]\n'
             'set_max_delay 13 -from [get_registers {*|pocket_memcard:*|rd_word[*] *|pocket_memcard:*|rd_data[*]}]\n'
-            'set_min_delay 0 -from [get_registers {*|pocket_memcard:*|rd_word[*] *|pocket_memcard:*|rd_data[*]}]\n')
+            'set_min_delay 0 -from [get_registers {*|pocket_memcard:*|rd_word[*] *|pocket_memcard:*|rd_data[*]}]\n'
+            # --memcard-format: the boot gate's ready level enters clk2x through done_s.
+            + ('set_false_path -to [get_registers {*|pocket_memcard:*|done_s[0]}]\n' if args.memcard_format else ''))
+            .replace('pocket_memcard:', entity + ':'))
     if args.static_host_cuts:
         # gpu_videoout_async's _s1/_s2 synchronizers stay in flip-flops:
         # Quartus otherwise maps videoout_request_s1 into an altshift_taps
@@ -1143,6 +1168,11 @@ CHIP_CLOCK_PINS""" + text[end:]
     reg boot_ready_card=0;
     always @(posedge clk_74a) begin mc_idle74<={{mc_idle74[0],!mc_busy}}; boot_ready_card<=({ready[0]}) && mc_idle74[1]; end
 ''' + gate)
+        if args.memcard_format:
+            # The card is checked (and a new one formatted) once the BIOS and
+            # every slot are loaded; the CPU then still waits for !mc_busy.
+            if text.count('    wire memcard_load_done;\n') != 1: parser.error('--memcard-format: card slot wiring not found')
+            text = text.replace(gate, f'    assign memcard_load_done=({ready[0]});\n' + gate)
         anchor = '    reg [31:0] service_read;\n'
         if text.count(anchor) != 1: parser.error('--memcard-slot: service read anchor not found')
         text = text.replace(anchor, "    reg table_pick=1'b0;\n    always @(posedge clk_74a) table_pick<=!table_pick;\n" + anchor)

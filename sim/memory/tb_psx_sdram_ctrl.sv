@@ -17,7 +17,7 @@
 `timescale 1ns/1ps
 `default_nettype none
 module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter integer SEED = 1,
-                     parameter integer OPS = 4000, parameter integer CAS = 2,
+                     parameter integer OPS = 4000, parameter integer CAS = 2, parameter integer SPU_FIRST = 0,
                      // ns: forwarded chip-clock delay, chip clock-to-data max / hold min, data return delay
                      parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0) (
     input wire clk3, clk1,
@@ -64,7 +64,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
             .dmafifo_adr(fifo_adr[fifo_r[3:0]]), .dmafifo_data(fifo_dat[fifo_r[3:0]]),
             .dmafifo_empty(fifo_empty), .dmafifo_read(fifo_read));
     end else begin : new_dut
-        psx_sdram_ctrl #(.CAS_LATENCY(CAS)) dut (
+        psx_sdram_ctrl #(.CAS_LATENCY(CAS), .SPU_FIRST(SPU_FIRST)) dut (
             .init(init), .clk(clk3), .clk_base(clk1), .SDRAM_EN(1'b1),
             .SDRAM_DQ(dq), .SDRAM_A(a), .SDRAM_DQML(dqml), .SDRAM_DQMH(dqmh), .SDRAM_BA(ba), .SDRAM_nCS(ncs),
             .SDRAM_nWE(nwe), .SDRAM_nRAS(nras), .SDRAM_nCAS(ncas), .SDRAM_CKE(cke), .SDRAM_CLK(chip_clk),
@@ -372,7 +372,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     end
 endmodule
 
-module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2,
+module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2, parameter integer SPU_FIRST = 0,
                           parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0);
     reg clk3 = 0, clk1 = 0;
     always #4.921 clk3 = ~clk3;     // 101.6064 MHz
@@ -380,7 +380,7 @@ module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED 
     wire done_new, done_ref;
     integer err_new, err_ref;
     integer seed;
-    sdram_bench #(.USE_REF(0), .PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
+    sdram_bench #(.USE_REF(0), .PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
 `ifdef WITH_REFERENCE
     sdram_bench #(.USE_REF(1), .PREFIX("reference"), .OPS(OPS), .SEED(SEED), .CAS(2), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) reference (.clk3(clk3), .clk1(clk1), .done(done_ref), .errors(err_ref));
 `else

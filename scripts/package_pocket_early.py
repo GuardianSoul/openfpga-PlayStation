@@ -31,6 +31,7 @@ def main():
     parser.add_argument('--version', default='0.0.1')
     parser.add_argument('--allow-timing-failure', action='store_true')
     parser.add_argument('--memcard-slot', action='store_true', help='Memory card 1 save slot (prepare --memcard-slot)')
+    parser.add_argument('--pad-combos', action='store_true', help='Explain the Select combos in info.txt (prepare --pad-combos); the Controls list stays plain because combos cannot be remapped')
     parser.add_argument('--boot-log', action='store_true', help='Add the nonvolatile boot-trace slot (prepare --boot-trace)')
     parser.add_argument('--disc', action='store_true', help='Disc slot 0 (.bin from SD, prepare --cd-stream); BIOS moves to slot 0x20')
     parser.add_argument('--multi-track', type=int, default=0, help='Discs as instance JSONs: cue slot 100, track bins 101..100+N (prepare --multi-track N)')
@@ -66,7 +67,7 @@ def main():
     def write(name, value): (core/name).write_text(json.dumps(value, indent=2)+'\n')
     write('core.json', {'core': {'magic': 'APF_VER_1', 'metadata': {
         'platform_ids': [args.platform], 'shortname': name,
-        'description': 'Early PlayStation hardware test: BIOS boot only, not playable',
+        'description': 'Early PlayStation core' if args.disc else 'Early PlayStation hardware test: BIOS boot only',
         'author': 'GuardianSoul', 'url': 'https://github.com/GuardianSoul/openfpga-PlayStation',
         'version': args.version, 'date_release': '2026-10-14'},
         'framework': {'target_product': 'Analogue Pocket', 'version_required': '1.1',
@@ -142,8 +143,17 @@ def main():
     write('interact.json', {'interact': {'magic': 'APF_VER_1', 'variables': variables, 'messages': []}})
     write('variants.json', {'variants': {'magic': 'APF_VER_1', 'variant_list': []}})
     write('audio.json', {'audio': {'magic': 'APF_VER_1'}})
-    (core/'info.txt').write_text('Early PlayStation hardware test.\n* Boots your BIOS only; no disc or memory card support\n'
-        '* Built with known timing violations; glitches are expected\n* Not playable\n')
+    info = ['Early PlayStation core.']
+    if args.disc:
+        info.append('* Discs: ' + ('pick a game instance (.json from scripts/make_pocket_instances.py; '
+                    '.chd and single-.bin images need its --convert first)' if args.multi_track else 'one .bin image'))
+    else: info.append('* Boots your BIOS only; no disc support')
+    info.append('* Memory card 1 saves to SD' if args.memcard_slot else '* No memory card saves')
+    if args.pad_combos:
+        info.append('* Hold Select: L = L2, R = R2, Square (Y) = L3, Circle (A) = R3. A Select tap still works as '
+                    'Select; Select held alone for one second passes through. Docked controllers keep their own L2/R2/L3/R3.')
+    if args.allow_timing_failure: info.append('* Built with known timing violations; glitches are possible')
+    (core/'info.txt').write_text('\n'.join(info) + '\n')
     assets = sd/'Assets'/args.platform/'common'; assets.mkdir(parents=True)
     (assets/'PLACE-BIOS-HERE.txt').write_text('Place your own 524288-byte PSX BIOS dump here as bios.bin.\nNo BIOS or game is included.\n')
     (sd/'Platforms').mkdir()

@@ -64,6 +64,8 @@ def main():
     parser.add_argument('--tac', type=float, help='ns: chip clock-to-data max (default: datasheet 6.0 at CL2, 5.5 at CL3)')
     parser.add_argument('--toh', type=float, default=2.5, help='ns: chip data hold min')
     parser.add_argument('--compare-cl2', action='store_true', help='with --cas 3: also run CL2 on the same traffic and fail if any access kind idle latency grows by more than one clk1x (mean: 1.5, queueing)')
+    parser.add_argument('--spu-first', action='store_true', help='SPU_FIRST=1: also run SPU_FIRST=0 on the same traffic; ch3 worst-case latency must drop and no access kind may lose correctness')
+    parser.add_argument('--spu-first-param', type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument('--expect-fail', action='store_true', help='control: pass only if the controller misreads (delays outside its capture window)')
     args = parser.parse_args()
     iverilog, vvp = find_tool('iverilog'), find_tool('vvp')
@@ -71,13 +73,15 @@ def main():
     parent = ROOT/'build/sim/sdram-ctrl'; parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     (work/'altddio_out.sv').write_text(ALTDDIO)
-    reference = None if args.no_reference or args.cas != 2 else reference_copy(work)
+    if args.spu_first: args.spu_first_param = 1
+    reference = None if args.no_reference or args.cas != 2 or args.spu_first_param else reference_copy(work)
     tac = args.tac if args.tac is not None else (6.0 if args.cas == 2 else 5.5)
     sources = [work/'altddio_out.sv', ROOT/'rtl/memory/psx_sdram_ctrl.sv', ROOT/'sim/memory/sdram_chip_model.sv',
                ROOT/'sim/memory/tb_psx_sdram_ctrl.sv'] + ([reference] if reference else [])
     defines = ['-DWITH_REFERENCE'] if reference else []
     params = [f'-Ptb_psx_sdram_ctrl.OPS={args.ops}', f'-Ptb_psx_sdram_ctrl.SEED={args.seed}',
-              f'-Ptb_psx_sdram_ctrl.CAS={args.cas}', f'-Ptb_psx_sdram_ctrl.DCLK={args.dclk}',
+              f'-Ptb_psx_sdram_ctrl.CAS={args.cas}', f'-Ptb_psx_sdram_ctrl.SPU_FIRST={args.spu_first_param}',
+              f'-Ptb_psx_sdram_ctrl.DCLK={args.dclk}',
               f'-Ptb_psx_sdram_ctrl.TAC={tac}', f'-Ptb_psx_sdram_ctrl.TOH={args.toh}', f'-Ptb_psx_sdram_ctrl.TRET={args.tret}']
     subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *defines, *params,
                     *map(str, sources)], check=True)
@@ -126,6 +130,18 @@ def main():
             # queueing behind other reads that each grew too
             if dmin > 1 or dmean > 1.5: sys.exit(f'{kind}: CL3 grows latency by {dmin} (min) / {dmean:.2f} (mean) clk1x vs CL2')
         print('CL3 vs CL2 latency growth (clk1x):', json.dumps(growth))
+    if args.spu_first:
+        # Same traffic with the default order: SPU accesses must wait less.
+        base = subprocess.run([sys.executable, __file__, '--ops', str(args.ops), '--seed', str(args.seed), '--cas', str(args.cas),
+                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh), '--no-reference'],
+                              capture_output=True, text=True, timeout=3600)
+        if base.returncode: sys.exit('SPU_FIRST=0 comparison run failed:\n' + base.stdout[-2000:])
+        old = json.loads((Path(re.search(r'"work": "([^"]+)"', base.stdout).group(1))/'report.json').read_text())['latency']
+        table = {k: dict(default=old[k]['ours'], spu_first=report['latency'][k]['ours']) for k in report['latency'] if k in old}
+        print('SPU_FIRST latency (clk1x):', json.dumps(table))
+        for kind in ('ch3read', 'ch3write'):
+            if kind in old and report['latency'][kind]['ours']['max'] >= old[kind]['ours']['max']:
+                sys.exit(f'{kind}: SPU_FIRST does not lower the worst-case latency')
     print('psx_sdram_ctrl passed:', ours_summary)
 
 
