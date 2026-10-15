@@ -1,0 +1,27 @@
+[submodule "references/PlayStation_on_FPGA"]
+	path = references/PlayStation_on_FPGA
+	url = https://github.com/pgate1/PlayStation_on_FPGA.git
+[submodule "references/MIRLO64"]
+	path = references/MIRLO64
+	url = https://github.com/tortugaveloz/MIRLO64.git
+[submodule "references/USB-Blaster_UART"]
+	path = references/USB-Blaster_UART
+	url = https://github.com/pgate1/USB-Blaster_UART.git
+[submodule "references/PSX_MiSTer"]
+	path = references/PSX_MiSTer
+	url = https://github.com/MiSTer-devel/PSX_MiSTer.git
+[submodule "references/PS-FPGA"]
+	path = references/PS-FPGA
+	url = https://github.com/PS-FPGA/ps-fpga.git
+[submodule "references/Laxer3a_PSX"]
+	path = references/Laxer3a_PSX
+	url = https://github.com/Laxer3a/MDEC.git
+[submodule "references/analogue-pocket-utils"]
+	path = references/analogue-pocket-utils
+	url = https://github.com/agg23/analogue-pocket-utils.git
+[submodule "references/PocketQuake"]
+	path = references/PocketQuake
+	url = https://github.com/thinkelastic/PocketQuake.git
+[submodule "references/pocket_sotn"]
+	path = references/pocket_sotn
+	url = https://github.com/akoaysigod/pocket_sotn

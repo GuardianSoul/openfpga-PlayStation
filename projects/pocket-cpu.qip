@@ -1,0 +1,6 @@
+# CPU-to-SDRAM component, not an APF project. clk_core, peripherals and GTE
+# still need their own implementation and physical timing/CDC constraints.
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) pocket-memory.qip]
+foreach source {psx_cpu.sv psx_cpu_bus.sv psx_cpu_pocket.sv} {
+    set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) .. rtl cpu $source]
+}

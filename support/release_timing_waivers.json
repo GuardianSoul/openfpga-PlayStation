@@ -1,0 +1,47 @@
+{
+  "about": "Clock-crossing timing misses accepted for release builds. scripts/release_timing.py applies these; same-clock paths can never be waived. Each entry: clock pair (names or clk1x/clk2x/clk3x, globs allowed), check, the lowest slack accepted in ns, and why it is safe. Review every entry when the design changes.",
+  "waivers": [
+    {
+      "from": "clk2x",
+      "to": "clk1x",
+      "check": "hold",
+      "floor_ns": -0.05,
+      "reason": "Synchronous path between related clocks, not an asynchronous crossing: GTE readData (clk2x) to CPU resultData (clk1x), both from one PLL with aligned edges. The hold miss is 35 ps and only in the fast-corner model (0 C, high voltage); the slow corners have positive hold slack, and NativeR 0.4.2 passed FFVII and Tekken 3 on hardware. A build that misses by more than 50 ps fails and needs another seed or a hold fix."
+    },
+    {
+      "from": "clk1x",
+      "to": "*video*",
+      "check": "setup",
+      "floor_ns": -9.39,
+      "reason": "Reset blanking from the CPU clock into the free-running APF video clock (apf_video rgb forced black while the core is in reset). The signal changes only when the core enters or leaves reset, so a late or metastable sample can only blank or unblank one pixel early or late; no data crosses on this path. Codex's --apf-blank-cdc synchronizer replaces it when area allows."
+    },
+    {
+      "from": "clk1x",
+      "to": "*video*",
+      "check": "hold",
+      "floor_ns": -0.25,
+      "reason": "Reset blanking from the CPU clock into the free-running APF video clock (apf_video rgb forced black while the core is in reset). The signal changes only when the core enters or leaves reset, so a late or metastable sample can only blank or unblank one pixel early or late; no data crosses on this path. Codex's --apf-blank-cdc synchronizer replaces it when area allows. Hold: the video clock is asynchronous to clk1x, so hold slack on this path only moves the sample by a fraction of a video clock; the level is stable for the whole reset. Measured -0.13 to -0.16 ns on the weave seeds; floor -0.25 ns."
+    },
+    {
+      "from": "*video*",
+      "to": "clk1x",
+      "check": "setup",
+      "floor_ns": -6.0,
+      "reason": "Video engine status (videoout_reports, videoout_request) from the APF video clock into the CPU clocks. Each bit lands on the first flop of a two-flop synchronizer (*_s1), so the first stage's slack is not meaningful and the second stage is fully timed. Valid only while those synchronizers are plain registers: Quartus must not merge them into an altshift_taps (M10K), which is checked in the fit report before release. Codex's --video-request-cdc replaces these with scoped constraints. Measured -4.66 (0.4.2) and -5.33 (SC/weave/CL3 seed 7) ns; first-stage slack varies with placement, floor -6.0 ns."
+    },
+    {
+      "from": "*video*",
+      "to": "clk2x",
+      "check": "setup",
+      "floor_ns": -6.0,
+      "reason": "Video engine status (videoout_reports, videoout_request) from the APF video clock into the CPU clocks. Each bit lands on the first flop of a two-flop synchronizer (*_s1), so the first stage's slack is not meaningful and the second stage is fully timed. Valid only while those synchronizers are plain registers: Quartus must not merge them into an altshift_taps (M10K), which is checked in the fit report before release. Codex's --video-request-cdc replaces these with scoped constraints."
+    },
+    {
+      "from": "clk1x",
+      "to": "clk2x",
+      "check": "hold",
+      "floor_ns": -0.06,
+      "reason": "Synchronous path between related clocks, not an asynchronous crossing: GTE gte_writeAddr (clk1x) into the GTERegs shadow MLAB write port (clk2x), both from one PLL with aligned edges. Measured -0.012 ns, only in the fast-corner model (0 C, high voltage); the slow corners have positive hold slack. Valid only for builds that pass the hardware check (GTE-heavy 3D: FFVII battles, Tekken 3). A build that misses by more than 60 ps fails and needs another seed or a hold fix."
+    }
+  ]
+}

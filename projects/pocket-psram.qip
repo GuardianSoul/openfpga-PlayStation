@@ -1,0 +1,5 @@
+# Source bundle for the Pocket PSRAM frontend (both CellularRAM chips as one
+# 32-bit asynchronous memory). Needs psx_mem_bridge.sv from pocket-memory.qip
+# and fast input/output register and pin assignments in the eventual project.
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) .. rtl memory psx_psram.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) .. references analogue-pocket-utils ip mem psram.sv]

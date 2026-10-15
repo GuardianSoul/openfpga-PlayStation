@@ -1,0 +1,48 @@
+{
+  "data": {
+    "magic": "APF_VER_1",
+    "data_slots": [
+      {
+        "name": "Disc",
+        "id": 0,
+        "required": true,
+        "parameters": "0x09",
+        "deferload": true,
+        "extensions": ["bin"],
+        "size_maximum": "0x40000000",
+        "address": "0x24000000"
+      },
+      {
+        "name": "BIOS",
+        "id": "0x20",
+        "required": true,
+        "parameters": "0x08",
+        "filename": "bios.bin",
+        "size_exact": 524288,
+        "address": "0x00000000"
+      },
+      {
+        "name": "Memory Card 1",
+        "id": "0x10",
+        "required": false,
+        "parameters": "0x00",
+        "nonvolatile": true,
+        "filename": "card1.mcr",
+        "extensions": ["mcr"],
+        "size_exact": 131072,
+        "address": "0x21000000"
+      },
+      {
+        "name": "Memory Card 2",
+        "id": "0x11",
+        "required": false,
+        "parameters": "0x00",
+        "nonvolatile": true,
+        "filename": "card2.mcr",
+        "extensions": ["mcr"],
+        "size_exact": 131072,
+        "address": "0x22000000"
+      }
+    ]
+  }
+}
