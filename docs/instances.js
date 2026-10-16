@@ -179,8 +179,10 @@
   }
 
   // Split merged single-.bin cues under common into <name>/ folders next to
-  // them; the originals stay. CHD images are reported, not converted.
-  async function convert(card, common, log) {
+  // them. With removeOriginals the merged .bin and its cue are deleted once
+  // the split is written, so a small card needs room for one game at a time.
+  // CHD images are reported, not converted.
+  async function convert(card, common, log, removeOriginals = false) {
     let done = 0, failed = 0;
     const images = [...await walk(await dirAt(card, common), (n) => /\.chd$/i.test(n)),
                     ...await walk(await dirAt(card, common), (n) => /\.cue$/i.test(n))];
@@ -200,6 +202,11 @@
       try {
         const out = await splitCue(card, image, dest);
         log(`converted ${shown} -> ${out.slice(common.length).join('/')}`); done++;
+        if (removeOriginals) {
+          await removeFile(card, join(folder, files[0][0]));
+          await removeFile(card, image);
+          log(`removed the original ${files[0][0]} and ${image[image.length - 1]}`);
+        }
       } catch (error) {
         const parent = await dirAt(card, folder);
         try { await parent.removeEntry(base, { recursive: true }); } catch (e) { /* nothing written */ }
@@ -259,7 +266,8 @@
 
   // Write Assets/<platform>/<core>/<game>.json for every playable disc under
   // Assets/<platform>/common. options: {core: 'GuardianSoul.PlayStation',
-  // platform: 'playstation', convert: bool}. log(line) gets the report.
+  // platform: 'playstation', convert: bool, removeOriginals: bool}. log(line)
+  // gets the report.
   async function makeInstances(card, options, log = () => {}) {
     const { core, platform = 'playstation' } = options;
     let declared = null;
@@ -276,7 +284,7 @@
     const summary = { written: 0, skipped: 0, converted: 0, convertFailed: 0, shared: 0, lines: [] };
     const say = (line) => { summary.lines.push(line); log(line); };
     if (options.convert) {
-      [summary.converted, summary.convertFailed] = await convert(card, common, say);
+      [summary.converted, summary.convertFailed] = await convert(card, common, say, Boolean(options.removeOriginals));
       say(`${summary.converted} images converted, ${summary.convertFailed} failed`);
     }
     const discTracks = {};

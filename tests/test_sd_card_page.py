@@ -113,6 +113,24 @@ class SdCardPage(unittest.TestCase):
             for skipped in ('Long Game', 'Busy', 'Gap', 'Broken/Broken.cue', 'Short/Short.cue'):
                 self.assertTrue(any(line.startswith(f'skip {skipped}') for line in js.stdout.splitlines()), skipped)
 
+    def test_page_can_replace_merged_images(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            make_card(card)
+            merged = card/'Assets/playstation/common/Merged'
+            subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(card), '--core', CORE, '--convert', '--remove-originals'],
+                           check=True, capture_output=True, text=True)
+            self.assertEqual(sorted(p.name for p in merged.iterdir()), ['Game'])
+            self.assertEqual(sorted(p.name for p in (merged/'Game').iterdir()),
+                             ['Game (Track 01).bin', 'Game (Track 02).bin', 'Game (Track 03).bin', 'Game.cue'])
+            game = json.loads((card/'Assets/playstation'/CORE/'Game.json').read_text())['instance']
+            self.assertEqual(game['data_path'], 'Merged/Game/')
+            # A second run finds nothing left to split and keeps the game file.
+            again = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(card), '--core', CORE, '--convert', '--remove-originals'],
+                                   check=True, capture_output=True, text=True)
+            self.assertIn('0 images converted', again.stdout)
+            self.assertIn('wrote Game.json (3 tracks)', again.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

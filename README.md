@@ -78,7 +78,8 @@ holds all of its discs. pupdate and Pocket Sync can't make that yet, so
 use the **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
 page: open it in Chrome or Edge on a computer, pick the SD card, and press
 *Make game files*. Nothing to install, and nothing is uploaded. It also
-splits merged `.bin` images into one file per track.
+fixes games stored as one big `.bin` file: it splits them into one file per
+track and then deletes the big original.
 
 When the game asks for the next disc, open the Pocket menu, choose **Core
 Settings → Disc** and pick the disc. The core opens and closes the lid for

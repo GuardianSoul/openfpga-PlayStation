@@ -77,8 +77,9 @@
     <h2><span class="step">2</span>Make the game files</h2>
     <p id="core-row" class="hidden">Core: <select id="core"></select></p>
     <label><input type="checkbox" id="convert" checked>
-      <span>Split merged <code>.bin</code> images into one file per track. The split copy goes in a folder next to
-        the original and needs the same free space. The original stays.</span></label>
+      <span><b>Fix games stored as one big <code>.bin</code> file.</b> The core needs one file per track. The page
+        splits the game into a new folder next to it, then deletes the big original. You only need free space
+        for one game at a time.</span></label>
     <button id="run" disabled>Make game files</button>
     <div id="result" class="hidden">
       <p id="summary"></p>
@@ -95,6 +96,8 @@
       <li>Starts the game's shared memory card, <code>Saves/playstation/common/&lt;game&gt;.sav</code>, as a copy
         of your most recently used disc's card. An existing shared card is never overwritten. Your other saves
         stay where they are.</li>
+      <li>Splits a game stored as one big <code>.bin</code> file into one file per track, in a folder next to it,
+        and then deletes the big file and its <code>.cue</code> (with the box ticked).</li>
       <li>Lists every disc it skipped and why. CHD images need converting on a computer first (see the README).</li>
     </ul>
     <p class="muted">Run it again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
@@ -156,7 +159,8 @@
     try {
       if ((await card.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('the browser was not allowed to change the card');
       const result = await PocketInstances.makeInstances(card, {
-        core: option.value, platform: option.dataset.platform, convert: $('convert').checked,
+        core: option.value, platform: option.dataset.platform,
+        convert: $('convert').checked, removeOriginals: $('convert').checked,
       }, (line) => { log.textContent += line + '\n'; log.scrollTop = log.scrollHeight; });
       summary.className = 'ok';
       summary.textContent = `Done: ${result.written} game file${result.written === 1 ? '' : 's'} written` +

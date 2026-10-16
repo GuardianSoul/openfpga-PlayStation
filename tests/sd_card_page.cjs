@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Runs the SD card page's logic (docs/instances.js) on a folder, through
 // a small stand-in for the browser's File System Access API.
-//   node tests/sd_card_page.cjs <card> --core GuardianSoul.PlayStation [--convert]
+//   node tests/sd_card_page.cjs <card> --core GuardianSoul.PlayStation [--convert] [--remove-originals]
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -68,6 +68,7 @@ async function main() {
     core: option('--core') || 'GuardianSoul.PlayStation',
     platform: option('--platform') || 'playstation',
     convert: args.includes('--convert'),
+    removeOriginals: args.includes('--remove-originals'),
   }, (line) => console.log(line));
   return summary;
 }
