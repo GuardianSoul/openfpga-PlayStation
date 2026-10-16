@@ -77,9 +77,9 @@
     <h2><span class="step">2</span>Make the game files</h2>
     <p id="core-row" class="hidden">Core: <select id="core"></select></p>
     <label><input type="checkbox" id="convert" checked>
-      <span><b>Fix games stored as one big <code>.bin</code> file.</b> The core needs one file per track. The page
-        splits the game into a new folder next to it, then deletes the big original. You only need free space
-        for one game at a time.</span></label>
+      <span><b>Split games that keep all their tracks in one <code>.bin</code> file.</b> Games with CD music
+        need one <code>.bin</code> per track. The page writes the split copy to a new folder next to the game and
+        then deletes the original, so you only need free space for one game at a time.</span></label>
     <button id="run" disabled>Make game files</button>
     <div id="result" class="hidden">
       <p id="summary"></p>
