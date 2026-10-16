@@ -3,7 +3,8 @@
 
 The release core is built from a generated Quartus project. This collects
 every file that project compiles (HDL, IP, ROM images, constraints, QSF/QPF)
-into PlayStation-<version>-source.tar.gz with relative paths, so anyone can
+into GuardianSoul.PlayStation_<version>_<date>_source.tar.gz (named like the
+core zip) with relative paths, so anyone can
 open it in Quartus and rebuild the same bitstream. It applies the public
 export's name rewrites and refuses the bundle when a file still names the
 workspace, or when any input carries an Apache-2.0 or GPL-3 license header
@@ -12,6 +13,7 @@ workspace, or when any input carries an Apache-2.0 or GPL-3 license header
   python3 scripts/release_source.py <fitted project> --version 0.1.0
 """
 import argparse
+import datetime
 import io
 import json
 from pathlib import Path
@@ -145,6 +147,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('project', type=Path)
     parser.add_argument('--version', required=True)
+    parser.add_argument('--date', default=datetime.date.today().isoformat(), help='Release date, as in the core zip name')
     parser.add_argument('--output', type=Path, default=ROOT/'build/release/source')
     args = parser.parse_args()
     project = args.project.resolve()
@@ -171,7 +174,7 @@ def main():
     if problems:
         raise SystemExit('Source bundle stopped:\n  ' + '\n  '.join(problems[:60]))
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
-    top = f'PlayStation-{args.version}-source'
+    top = f'{AUTHOR}.PlayStation_{args.version}_{args.date}_source'
     archive = out/f'{top}.tar.gz'
     with tarfile.open(archive, 'w:gz') as tar:
         for name, data in sorted(entries.items()):

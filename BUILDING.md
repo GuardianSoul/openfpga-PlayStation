@@ -31,7 +31,7 @@ is needed.
 
 ## Rebuild a release
 
-Every release comes with `PlayStation-<version>-source.tar.gz`: the exact
+Every release comes with `GuardianSoul.PlayStation_<version>_<date>_source.tar.gz`: the exact
 Quartus project its bitstream was built from, with all its sources. Open
 `project/apf_top.qpf` in Quartus Prime Lite 25.1 and compile. The fitter
 seed is already set in `apf_top.qsf`.
@@ -47,7 +47,7 @@ make release RC_PROJECT=<fitted project> RC_PACKAGE=<package folder> VERSION=0.1
 ```
 
 This checks timing, then writes `build/release/package/GuardianSoul.PlayStation_<version>_<date>.zip`
-and `build/release/source/PlayStation-<version>-source.tar.gz`. The timing
+and `build/release/source/GuardianSoul.PlayStation_<version>_<date>_source.tar.gz`. The timing
 check passes only when every path within one clock meets timing. A miss
 between two clocks needs an entry in `support/release_timing_waivers.json`
 that says why it is safe.
