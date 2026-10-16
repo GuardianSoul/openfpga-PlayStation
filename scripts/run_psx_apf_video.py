@@ -10,7 +10,7 @@ def main():
     folder = ROOT/'build/sim/psx-apf-video'; folder.mkdir(parents=True, exist_ok=True)
     video = ['rtl/pocket/psx_apf_video.sv', 'rtl/pocket/psx_perf_log.sv']
     psram = ['sim/pocket/psram_behavior.sv', 'rtl/pocket/psx_psram_pair.sv', 'rtl/pocket/psx_psram_clients.sv']
-    for bench, sources in (('tb_psx_apf_video', video), ('tb_apf_slot', video), ('tb_apf_interlace', video), ('tb_apf_interlace:w0', video),
+    for bench, sources in (('tb_psx_apf_video', video), ('tb_apf_slot', video), ('tb_apf_pad', video), ('tb_apf_probe', video), ('tb_apf_vsblank', video), ('tb_apf_pal288', video), ('tb_apf_center', video), ('tb_apf_videotest', video), ('tb_apf_interlace', video), ('tb_apf_interlace:w0', video),
                            ('tb_perf_log', video), ('tb_perf_log:s1', video), ('tb_bios_patch', ['rtl/pocket/psx_bios_patch.sv']), ('tb_native_loader', ['rtl/pocket/psx_native_memory.sv']), ('tb_psram_pair', psram), ('tb_psram_pair:0', psram), ('tb_psram_clients', psram)):
         bench, _, paired = bench.partition(':')
         weave = paired == 'w0'

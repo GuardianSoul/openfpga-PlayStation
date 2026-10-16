@@ -27,11 +27,27 @@ REVIEWED_CAS3_CAPTURE_SHA256 = {
     # e467767: registered request/head/startup inputs; PHY, read tags, shift
     # and READ-command bodies unchanged. Timed data and late-DQ control checked.
     'd368cde48a2996f13a030a892c02bff747b5d10afd1cb2346b8a510f8fb60928',
-    # 9341a90, DEFAULT SPU_FIRST=0 only: pin cells, capture state/results,
+    # 9341a90: pin cells, capture state/results,
     # MRS and READ/tag bodies byte-identical to d368 above; strict CL3 model
-    # and late-DQ control checked. wrapper_contract still rejects explicit
-    # SPU_FIRST overrides. This is not a routed fit or priority-path signoff.
+    # and late-DQ control checked. Priority=1 separately exercises the same
+    # per-READ capture contract. Neither case establishes a routed fit.
     'e96f00a8a26ab2c47b77ba6ed8a066f7653e1215e83872b2aa1d417a83753adf',
+    # 63a17be: only DMA ring ramstyle/no_rw_check and a simulation occupancy
+    # assertion differ from e96f00 above. Removing those exact two changes
+    # restores that whole file; pin cells/MRS/READ tags/capture are unchanged.
+    # Strict CL3/default/SPU_FIRST and late-DQ negative control checked.
+    # This accepts the capture contract, not a routed result for the new RAM.
+    '79c0209ac2230aa39c3b69e3aa617e236a1c80aa8036fae1e6a24ac0fa49202d',
+    # c713c1d: only ch1/ch2 pending-address storage/selection changes from
+    # 79c0209 above; PHY/MRS/read tags/capture pipeline are unchanged.
+    # Frozen CL3/default+SPU_FIRST data and late-DQ controls reviewed.
+    # This accepts the capture contract, not routing, warm reset or the board.
+    '71f8ebae2beadb49023596f09552142fd84a5aaeb1752fd481c3553fc38427e7',
+}
+REVIEWED_SPU_FIRST_CAPTURE_SHA256 = {
+    'e96f00a8a26ab2c47b77ba6ed8a066f7653e1215e83872b2aa1d417a83753adf',
+    '79c0209ac2230aa39c3b69e3aa617e236a1c80aa8036fae1e6a24ac0fa49202d',
+    '71f8ebae2beadb49023596f09552142fd84a5aaeb1752fd481c3553fc38427e7',
 }
 
 
@@ -89,13 +105,27 @@ def controller_contract(text, cas_override=None):
     return cas
 
 
-def wrapper_contract(text):
+def wrapper_parameters(text):
     instances=re.findall(r'psx_sdram_ctrl\s*#\(([^\n]+)\)\s+controller\s*\(',text)
     if len(instances)!=1 or text.count('.clk(clk3x), .clk_base(clk1x)')!=1:
         raise ValueError('Unknown single-chip Native clock/instance wiring')
-    parameters=re.fullmatch(r'\s*\.SINGLE_CHIP\(1\)(?:,\s*\.CAS_LATENCY\(([23])\))?\s*',instances[0])
+    parameters=re.fullmatch(r'\s*\.SINGLE_CHIP\(1\)(?:,\s*\.CAS_LATENCY\(([23])\))?(?:,\s*\.SPU_FIRST\(([01])\))?\s*',instances[0])
     if not parameters:raise ValueError('Unknown Native SDRAM parameter override')
-    return int(parameters[1]) if parameters[1] else None
+    return tuple(int(x) if x is not None else None for x in parameters.groups())
+
+
+def wrapper_contract(text):
+    # Preserve the existing public CAS-only return value.
+    return wrapper_parameters(text)[0]
+
+
+def controller_priority(text, override):
+    defaults=re.findall(r'parameter\s+integer\s+SPU_FIRST\s*=\s*([01])\b',text)
+    if not defaults and 'SPU_FIRST' not in text:
+        if override is not None:raise ValueError('Controller has no SPU_FIRST parameter')
+        return 0
+    if len(defaults)!=1:raise ValueError('Unknown SPU_FIRST default')
+    return int(defaults[0]) if override is None else override
 
 
 def project_contract(directory, expected_controller_sha256):
@@ -105,8 +135,9 @@ def project_contract(directory, expected_controller_sha256):
     wrappers=[p for kind,p in assigned if kind=='SYSTEMVERILOG_FILE' and p.name=='psx_native_memory.sv']
     if len(controllers)!=1 or digest(controllers[0])!=expected_controller_sha256 or len(wrappers)!=1:
         raise ValueError('Expected one identity-checked clean Native SDRAM controller and wrapper')
-    override=wrapper_contract(wrappers[0].read_text())
+    override,priority_override=wrapper_parameters(wrappers[0].read_text())
     cas=controller_contract(controllers[0].read_text(),override)
+    controller_priority(controllers[0].read_text(),priority_override)
     return controllers[0],wrappers[0],cas,override
 
 
@@ -126,8 +157,12 @@ def prepare_project(directory, expected_controller_sha256, *, board_min_ns=0.0,
     _,removed=scoped_hold_text(saved)
     if removed:raise ValueError('Remove inherited whole-clock cuts before adding Native pin timing')
     controller,wrapper,cas,override=project_contract(directory,expected_controller_sha256)
+    priority_override=wrapper_parameters(wrapper.read_text())[1]
+    priority=controller_priority(controller.read_text(),priority_override)
     if implementation and (analysis_only or cas!=3 or expected_controller_sha256 not in REVIEWED_CAS3_CAPTURE_SHA256):
         raise ValueError('I/O implementation requires strict CAS3 with a reviewed capture-contract source')
+    if implementation and priority and expected_controller_sha256 not in REVIEWED_SPU_FIRST_CAPTURE_SHA256:
+        raise ValueError('SPU-first capture requires its separately reviewed controller source')
     work=directory/'native-sdram-io'
     if work.exists() or 'pocket_native_sdram_io' in q:
         raise ValueError('Native SDRAM pin model already prepared')
@@ -168,6 +203,7 @@ set_multicycle_path -setup 2 -from $native_sdram_inputs -to $native_sdram_caps
         q+=f'\nset_global_assignment -name SDC_FILE "{capture}"\n'+'\n'.join(physical)+'\n'
     qsf.write_text(q)
     report=dict(cas_latency=cas,cas_wrapper_override=override,
+                spu_first=priority,spu_first_wrapper_override=priority_override,
                 controller_default_cas=controller_contract(controller.read_text()),
                 controller=dict(path=str(controller),sha256=expected_controller_sha256),
                 wrapper=dict(path=str(wrapper),sha256=digest(wrapper)),

@@ -5,6 +5,9 @@
 // with disc B while cd_top is reading (0x8A update), the sequencer opens the
 // lid, the loader drains and remounts, the lid closes, and disc B is read.
 // InstantSeek enabled; authored images, no game assets.
+// With DISC_MENU (prepare --disc-menu), both discs are in the APF table
+// (disc A slot 0, disc B slot 0x100) and the swap starts from the core
+// menu's Disc setting through psx_disc_menu instead of a 0x8A reload.
 `timescale 1ns/1ps
 module tb_cd_swap_apf;
 logic clk1x=0;
@@ -65,25 +68,38 @@ wire allcomplete,slot_update,table_active,target_read,target_done,host_busy,read
 wire [15:0] update_id,target_id,disc_slot_id;wire [9:0] table_addr;wire [2:0] target_error;
 wire disc_change_done,has_disc,disc_pending,stream_idle,disc_select_strobe;
 wire [7:0] disc_generation;wire [19:0] sector_count;
-wire change_req,change_done,lid_open,swap_busy;
+wire change_req,change_done,lid_open,swap_busy,guest_idle;
 reg transport_reset=1;
-psx_cd_stream loader(.host_clk(hclk),.host_reset(transport_reset),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),
+wire [3:0] discs_present;
+`ifdef DISC_MENU
+psx_cd_stream #(.DISC_STEP(16'h100)) loader(
+`else
+psx_cd_stream loader(
+`endif.host_clk(hclk),.host_reset(transport_reset),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),
  .bridge_data(bridge_data),.allcomplete(allcomplete),.slot_update(slot_update),.slot_update_id(update_id),
  .slot_update_size(update_size),.table_active(table_active),.table_grant(1'b1),.table_addr(table_addr),.table_q(table_q),
  .target_read(target_read),.target_ready(1'b1),.target_id(target_id),.target_offset(target_offset),
  .target_bridge(target_bridge),.target_length(target_length),.target_done(target_done),
  .target_error(target_error),.host_busy(host_busy),.read_error(read_error),
  .clk(clk1x),.reset(transport_reset),.host_region(2'd2),.disc_slot_id(disc_slot_id),
- .disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done),.has_disc(has_disc),
- .disc_pending(disc_pending),.cd_hps_req(cd_hps_req),.cd_hps_lba(cd_hps_lba),.cd_hps_ack(cd_hps_ack),
+ .disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done),.has_disc(has_disc),.discs_present(discs_present),
+ .disc_pending(disc_pending),.guest_idle(guest_idle),.cd_hps_req(cd_hps_req),.cd_hps_lba(cd_hps_lba),.cd_hps_ack(cd_hps_ack),
  .cd_hps_write(cd_hps_write),.cd_hps_data(cd_hps_data),.disc_generation(disc_generation),
  .sector_count(sector_count),.stream_idle(stream_idle),
  .trackinfo_addr(trackinfo_addr),.trackinfo_data(trackinfo_data),.trackinfo_write(trackinfo_write));
+wire menu_request;reg [1:0] disc_setting=0;
 psx_disc_swap #(.OPEN_CYCLES(300000),.CLOSE_CYCLES(200000)) swap(.clk(clk1x),.reset(transport_reset),
- .manual_lid_open(1'b0),.swap_request(1'b0),.disc_pending(disc_pending),.change_req(change_req),
+ .manual_lid_open(1'b0),.swap_request(menu_request),.disc_pending(disc_pending),.quiet(guest_idle),.change_req(change_req),
  .change_done(change_done),.lid_open(lid_open),.busy(swap_busy));
+`ifdef DISC_MENU
+psx_disc_menu #(.FIRST_SLOT(16'h0),.STEP(16'h100),.DISCS(2)) select(.clk(clk1x),.reset(transport_reset),
+ .disc_setting(disc_setting),.change_req(change_req),.change_done(change_done),.disc_slot_id(disc_slot_id),
+ .disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done),.discs_present(discs_present),.swap_request(menu_request));
+`else
+assign menu_request=1'b0;
 psx_disc_select select(.clk(clk1x),.reset(transport_reset),.change_req(change_req),.change_done(change_done),
  .disc_slot_id(disc_slot_id),.disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done));
+`endif
 always @* begin hascd=has_disc;lidopen=lid_open;end
 core_bridge_cmd apf_commands(.clk(hclk),.bridge_endian_little(1'b1),.bridge_addr(bridge_addr),
  .bridge_rd(bridge_rd),.bridge_rd_data(command_data),.bridge_wr(bridge_wr),.bridge_wr_data(bridge_data),
@@ -128,20 +144,44 @@ initial begin
  wait(!transport_reset);
  write_bus(32'hf8002000,swap32(32'h20));write_bus(32'hf8002004,swap32(32'd524288));
  write_bus(32'hf8002008,swap32(32'h0));write_bus(32'hf800200c,swap32(sectors_a*2352));
+`ifdef DISC_MENU
+`ifndef DISC_MENU_ABSENT
+ write_bus(32'hf8002010,swap32(32'h100));write_bus(32'hf8002014,swap32(sectors_b*2352));
+`else
+ // Declared in data.json but not in the game file: APF lists it, size 0.
+ write_bus(32'hf8002010,swap32(32'h100));write_bus(32'hf8002014,swap32(32'h0));
+`endif
+`endif
  host_command(16'h8f);
  forever begin
+`ifdef DISC_MENU
+  if(reload_now && !reloaded) begin
+   // The user picks Disc 2 in the core menu (a clk_74a register). With
+   // DISC_MENU_ABSENT the game file has no disc 2: the core returns to disc 1.
+`ifndef DISC_MENU_ABSENT
+   current=1;
+`endif
+   reloaded=1;@(negedge hclk);disc_setting=1;
+  end
+`else
   if(reload_now && !reloaded) begin
    // The user loads disc B into slot 0 from the Pocket menu.
    current=1;reloaded=1;
    write_bus(32'hf8000020,swap32(32'h0));write_bus(32'hf8000024,swap32(sectors_b*2352));host_command(16'h8a);
   end
+`endif
   read_bus(32'hf8001000,status);
   if(status[31:16]==16'h636d) begin
    if(status[15:0]!=16'h0180) $fatal(1,"APF target opcode %h",status[15:0]);
    read_bus(32'hf8001020,id);read_bus(32'hf8001024,offset);read_bus(32'hf8001028,addr);read_bus(32'hf800102c,length);
+`ifdef DISC_MENU
+   if((id!=0 && id!=16'h100) || length!=2352 || offset+2352>(id ? sectors_b:sectors_a)*2352) $fatal(1,"APF read shape");
+   f=id ? file_b:file_a;
+`else
    if(id!=0 || length!=2352 || offset+2352>(current ? sectors_b:sectors_a)*2352) $fatal(1,"APF read shape");
-   write_bus(32'hf8001000,swap32(32'h62750000));
    f=current ? file_b:file_a;
+`endif
+   write_bus(32'hf8001000,swap32(32'h62750000));
    if($fseek(f,offset,0)!=0) $fatal(1,"Disc seek failed");
    for(integer n=0;n<588;n++) begin
     b0=$fgetc(f);b1=$fgetc(f);b2=$fgetc(f);b3=$fgetc(f);if(b3<0) $fatal(1,"Image truncated");
@@ -233,9 +273,34 @@ task init_and_id(input [7:0] region_letter);
  for(integer i=0;i<8;i++) begin response(value);if(i==7 && value!=region_letter) $fatal(1,"GetID region wrong %02x",value);end
  checks++;ack_irq();
 endtask
+integer lid_opens=0;
+always @(posedge lid_open) lid_opens++;
 initial begin
  repeat(12) @(negedge clk1x);reset=0;ss_reset=0;transport_reset=0;
  wait(has_disc);repeat(100) @(negedge clk1x);
+`ifdef DISC_MENU_BOOT
+`ifdef DISC_MENU_ABSENT
+ // A remembered disc the game file lacks, right after start: the drive must
+ // stay on disc 1 with no remount at all (nothing for the BIOS to catch).
+ reload_now=1;
+ repeat(3000000) @(negedge clk1x);
+ if(lid_opens!=0 || tables!=1 || !has_disc || swap_busy) $fatal(1,"Remembered absent disc changed the drive: lid=%0d tables=%0d",lid_opens,tables);
+ write_reg(0,1);write_reg(2,31);ack_irq();
+ init_and_id(8'h41);read_sector0(0);
+ $display("PASS CD swap via APF checks=%0d apf_reads=%0d tables=%0d getstat_polls=0 drained_irqs=0 cycles=%0d boot_absent=1",checks,apf_reads,tables,cycles);$finish;
+`endif
+ // The remembered Disc setting arrives right after start, before anything
+ // read the disc: the swap must happen without opening the lid.
+ reload_now=1;
+ begin : quiet_swap
+  integer n;n=0;
+  while(!(tables==2 && has_disc && !swap_busy)) begin @(negedge clk1x);n++;if(n>40000000) $fatal(1,"Boot disc choice never mounted (tables=%0d)",tables);end
+ end
+ if(lid_opens!=0) $fatal(1,"Lid opened for a boot-time disc choice");
+ write_reg(0,1);write_reg(2,31);ack_irq();
+ init_and_id(8'h41);read_sector0(1);
+ $display("PASS CD swap via APF checks=%0d apf_reads=%0d tables=%0d getstat_polls=0 drained_irqs=0 cycles=%0d quiet=1",checks,apf_reads,tables,cycles);$finish;
+`endif
  write_reg(0,1);write_reg(2,31);ack_irq();
  init_and_id(8'h41);
  read_sector0(0);
@@ -244,7 +309,17 @@ initial begin
  command(8'h06);wait_irq(3);response(value);ack_irq();
  wait_irq(1);response(value);ack_irq();
  reload_now=1;
+`ifdef DISC_MENU_ABSENT
+ // Disc 2 is not in the game file: the choice is ignored, disc A stays in
+ // and the lid never opens.
+ repeat(3000000) @(negedge clk1x);
+ if(lid_opens!=0 || tables!=1 || !has_disc || swap_busy || discs_present!=4'b0001)
+  $fatal(1,"Absent disc choice changed the drive: lid=%0d tables=%0d has=%b present=%b",lid_opens,tables,has_disc,discs_present);
+ $display("PASS CD swap via APF checks=%0d apf_reads=%0d tables=%0d getstat_polls=0 drained_irqs=%0d cycles=%0d kept=1",checks,apf_reads,tables,drained,cycles);$finish;
+`endif
+`ifndef DISC_MENU
  wait(disc_pending);
+`endif
  wait(lid_open);repeat(2000) @(negedge clk1x);
  drain_irqs();
  getstat(value);if(!(value&8'h10)) $fatal(1,"Shell-open bit not set during the swap: %02x",value);opened_seen=1;checks++;
@@ -259,7 +334,7 @@ initial begin
  end
  checks++;
  init_and_id(8'h41);
- read_sector0(1);
+read_sector0(1);
  if(checks!=2048*2+4 || read_error) $fatal(1,"Swap checks incomplete %0d",checks);
  $display("PASS CD swap via APF checks=%0d apf_reads=%0d tables=%0d getstat_polls=%0d drained_irqs=%0d cycles=%0d",checks,apf_reads,tables,polls,drained,cycles);$finish;
 end

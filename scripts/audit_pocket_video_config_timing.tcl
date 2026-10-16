@@ -22,11 +22,15 @@ set video_regs [get_registers -nowarn ${scope}*]
 if {[get_collection_size $fifo_keepers]<20 || [get_collection_size $video_regs]<100} {error "Missing video FIFO/consumer geometry"}
 set first {};set second {}
 foreach {a b} {wr_addr_gray_rd wr_addr_gray_rd_r rd_addr_gray_wr rd_addr_gray_wr_r} {
+    # Validate logical coverage and named physical copies in the same scope
+    # routine that applies the bounds; include every copy in timing reports.
+    video_cfg_regs [format {dual_clock_fifo:snapshots|%s[*]} $a] 4
+    video_cfg_regs [format {dual_clock_fifo:snapshots|%s[*]} $b] 4
     lappend first [format {%s%s[*]} $fifo_scope $a]
     lappend second [format {%s%s[*]} $fifo_scope $b]
 }
 set first [get_registers $first];set second [get_registers $second]
-if {[get_collection_size $first]!=8 || [get_collection_size $second]!=8} {error "Video Gray stages not8/8"}
+if {[get_collection_size $first]<8 || [get_collection_size $second]<8} {error "Missing physical video Gray stages"}
 set status_first [get_registers [list ${scope}psx_video_config_cdc:video_config|source_online_meta ${scope}psx_video_config_cdc:video_config|destination_online_meta]]
 set status_second [get_registers [list ${scope}psx_video_config_cdc:video_config|source_online_sync ${scope}psx_video_config_cdc:video_config|destination_online_sync]]
 if {[get_collection_size $status_first]!=2 || [get_collection_size $status_second]!=2} {error "Video online stages not2/2"}

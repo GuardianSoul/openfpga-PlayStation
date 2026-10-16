@@ -73,7 +73,10 @@ module tb_cd_stream;
 `ifndef CD_STREAM_TRACKS
 `define CD_STREAM_TRACKS 1
 `endif
- psx_cd_stream #(.DEFAULT_SLOT(16'h20),.NBUF(`CD_STREAM_NBUF),.MAX_TRACKS(`CD_STREAM_TRACKS)) dut(.host_clk(hclk),.host_reset(host_reset),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),
+`ifndef CD_STREAM_LC
+`define CD_STREAM_LC 16'h0
+`endif
+ psx_cd_stream #(.DEFAULT_SLOT(16'h20),.NBUF(`CD_STREAM_NBUF),.MAX_TRACKS(`CD_STREAM_TRACKS),.LIBCRYPT_SLOT(`CD_STREAM_LC)) dut(.host_clk(hclk),.host_reset(host_reset),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),
   .bridge_data(bridge_data),.allcomplete(allcomplete),.slot_update(slot_update),.slot_update_id(update_id),
   .slot_update_size(update_size),.table_active(table_active),.table_grant(table_grant),.table_addr(table_addr),.table_q(table_q),
   .target_read(target_read),.target_ready(target_ready),.target_id(target_id),.target_offset(target_offset),.target_bridge(target_bridge),
@@ -108,8 +111,21 @@ module tb_cd_stream;
  // Disc 0x31: track 2 is not whole sectors.
  integer mt_sectors[0:2]='{20,162,155};
  integer size_a,size_b,size_a2,generation=0;
+ // LibCrypt build (case 8): slot 0x63 holds an .sbi with four 14-byte
+ // entries, lanes 0 and 2: 03:08:05 (mask bit 15), 03:08:06 (no bit),
+ // 03:18:49 (bit 10), 03:35:42 (bit 0) -> mask 0x8401.
+ localparam integer SBI_BYTES=4+4*14;
+ function automatic [7:0] sbi_byte(input integer offset);
+  integer k,b;reg [23:0] msf;
+  if(offset<4) return offset==0 ? "S" : offset==1 ? "B" : offset==2 ? "I" : 8'h00;
+  k=(offset-4)/14;b=(offset-4)%14;
+  msf=k==0 ? 24'h030805 : k==1 ? 24'h030806 : k==2 ? 24'h031849 : 24'h033542;
+  if(b<3) return msf[23-8*b-:8];
+  return b==3 ? 8'h01 : 8'(k*7+b);
+ endfunction
  function automatic [7:0] disc_byte(input integer slot,input integer offset);
   integer s,b;s=offset/2352;b=offset%2352;
+  if(slot==16'h63) return sbi_byte(offset);
   return 8'((b*29)^(s*101)^(slot*57)^(b>>3)^(s>>2)^(slot==16'h20 ? generation*13 : 0));
  endfunction
  function automatic integer slot_size(input integer slot);
@@ -121,6 +137,7 @@ module tb_cd_stream;
   if(slot==16'h230) return mt_sectors[2]*2352;
   if(slot==16'h31) return 7*2352;
   if(slot==16'h131) return 160*2352+100;
+  if(slot==16'h63) return SBI_BYTES;
   return -1;
  endfunction
 
@@ -157,10 +174,11 @@ module tb_cd_stream;
   write_bus(32'hf8002048,swap(32'h130));write_bus(32'hf800204c,swap(mt_sectors[1]*2352));
   write_bus(32'hf8002050,swap(32'h31));write_bus(32'hf8002054,swap(7*2352));
   write_bus(32'hf8002058,swap(32'h131));write_bus(32'hf800205c,swap(160*2352+100));
+  if(`CD_STREAM_LC!=0) begin write_bus(32'hf8002060,swap(32'h63));write_bus(32'hf8002064,swap(SBI_BYTES));end
  endtask
  reg op_table=0,op_allcomplete=0,op_update=0;integer update_value=0;
  integer apf_latency=0,apf_spacing=0,fail_offset=-1,reads=0,read_bytes=0;
- integer apf_seed=7;
+ integer apf_seed=7,sbi_reads=0;
  reg apf_enabled=1,apf_shuffle=0,apf_serving=0;
  task automatic serve_target();
   reg [31:0] status,id,offset,addr,length,word;integer delay;
@@ -176,6 +194,14 @@ module tb_cd_stream;
   if(status[15:0]!=16'h0180) $fatal(1,"APF target opcode %h",status[15:0]);
   read_bus(32'hf8001020,id);read_bus(32'hf8001024,offset);
   read_bus(32'hf8001028,addr);read_bus(32'hf800102c,length);
+  if(id==16'h63) begin
+   // The .sbi: one read of the whole file into a staging window.
+   if(length!=SBI_BYTES || offset!=0 || addr<32'h24000000 || addr[11:0]!=0) $fatal(1,"APF .sbi read shape");
+   write_bus(32'hf8001000,swap(32'h62750000));
+   for(integer n=0;n<(SBI_BYTES+3)/4;n++)
+    write_bus(addr+n*4,{sbi_byte(n*4+3),sbi_byte(n*4+2),sbi_byte(n*4+1),sbi_byte(n*4)});
+   sbi_reads++;write_bus(32'hf8001000,swap(32'h6f6b0000));return;
+  end
   if(length!=2352 || offset%2352!=0 || addr<32'h24000000 || addr>=32'h24000000+`CD_STREAM_NBUF*32'h1000 || addr[11:0]!=0)
    $fatal(1,"APF sector read shape id=%h offset=%0d addr=%h length=%0d",id,offset,addr,length);
   write_bus(32'hf8001000,swap(32'h62750000));apf_serving=1;
@@ -226,6 +252,7 @@ module tb_cd_stream;
   for(integer i=0;i<400;i++) begin
    reg [31:0] want;
    want=which==0 ? meta_a[i] : which==1 ? meta_b[i] : which==2 ? meta_a2[i] : which==4 ? meta_mt[i] : meta_big[i];
+   if(i==3 && `CD_STREAM_LC!=0) want|=32'h8401;   // the .sbi's LibCrypt mask (case 8)
    if(table_seen[i]!==want) $fatal(1,"Track table word %0d=%h expected %h",i,table_seen[i],want);
    checks++;
   end
@@ -368,6 +395,36 @@ module tb_cd_stream;
     select(16'h31);if(has_disc) $fatal(1,"Partial-sector track accepted");
     select(16'h20);if(!has_disc || sector_count!=sectors_a) $fatal(1,"Single-track disc after multi-track");check_table(0);
     sequential(16'h20,sectors_a,150,3,0);
+   end
+   7: begin
+    // APF 0x8A for the mounted disc slot right after the first mount, before
+    // the guest has read anything (seen at start-up?): remount at once, no
+    // pending file, sectors keep coming. After a read, a 0x8A is a disc
+    // change again and waits for the swap (as in case 3).
+    @(negedge hclk);update_value=size_a;op_update=1;
+    for(integer n=0;track_writes!=800;n++) begin
+     @(posedge cclk);
+     if(n>2000000) $fatal(1,"Early slot update left the disc pending=%b has=%b (no remount)",disc_pending,has_disc);
+    end
+    repeat(3000) @(negedge cclk);
+    if(disc_pending || !has_disc) $fatal(1,"Early slot update left the disc pending=%b has=%b",disc_pending,has_disc);
+    check_table(0);
+    sequential(16'h20,sectors_a,150,4,0);fetch(16'h20,sectors_a,170,0);
+    @(negedge hclk);generation=1;update_value=size_a2;op_update=1;
+    wait(disc_pending);repeat(3000) @(negedge cclk);
+    if(track_writes!=800) $fatal(1,"Slot reload after a read remounted without a swap");
+    fetch(16'h20,sectors_a,171,1);
+    select(16'h20);
+    if(disc_pending || !has_disc) $fatal(1,"Reload swap state after early remount");
+    check_table(2);fetch(16'h20,30,150,0);fetch(16'h20,30,179,0);
+   end
+   8: begin
+    // LibCrypt build: every mount reads the .sbi and puts its mask in
+    // track word 3; buffer 0 serves sectors normally afterwards.
+    if(sbi_reads!=1) $fatal(1,"Expected one .sbi read, got %0d",sbi_reads);
+    sequential(16'h20,sectors_a,150,6,0);fetch(16'h20,sectors_a,170,0);
+    select(16'h21);if(!has_disc || sbi_reads!=2) $fatal(1,"Second mount .sbi reads=%0d",sbi_reads);
+    check_table(1);fetch(16'h21,sectors_b,150,0);sequential(16'h21,sectors_b,151,4,0);
    end
    default: begin
     // Pregap, sequential prefetch, repeat, seeks, image end, past end.

@@ -55,7 +55,7 @@ entity pocket_memcard_format is
       busy           : out std_logic := '1';   -- load FIFO not empty or a transfer running
       aux_req        : out std_logic := '0';
       aux_we         : out std_logic := '0';
-      aux_addr       : out std_logic_vector(20 downto 0) := (others => '0');
+      aux_addr       : out std_logic_vector(20 downto 0);
       aux_din        : out std_logic_vector(31 downto 0) := (others => '0');
       aux_dout       : in  std_logic_vector(31 downto 0);
       aux_done       : in  std_logic;
@@ -69,9 +69,11 @@ architecture arch of pocket_memcard_format is
    constant SLOT_BASE : std_logic_vector(3 downto 0) := x"2";
    constant PSRAM_BASE : unsigned(20 downto 0) := to_unsigned(16#40000#, 21);   -- region 1
 
-   -- load FIFO: {word index(14:0), data(31:0)}
-   signal fifo_wrreq  : std_logic := '0';
-   signal fifo_data   : std_logic_vector(46 downto 0) := (others => '0');
+   -- load FIFO: {word index(14:0), data(31:0)}, written straight from the
+   -- bridge write (the FIFO RAM registers it)
+   signal slot_wr     : std_logic;
+   signal fifo_wrreq  : std_logic;
+   signal fifo_data   : std_logic_vector(46 downto 0);
    signal fifo_wrfull : std_logic;
    signal fifo_rdreq  : std_logic := '0';
    signal fifo_q      : std_logic_vector(46 downto 0);
@@ -89,17 +91,19 @@ architecture arch of pocket_memcard_format is
    type tState is (IDLE, FIFO_WAIT, FIFO_WRITE, MEM_WAIT, READ_WAIT, PF_WAIT, FMT_WRITE, FMT_WAIT);
    signal state       : tState := IDLE;
 
-   -- prefetched word
+   -- prefetched word. Its data stays in aux_dout: vram_psram holds that
+   -- until the next aux read, and pf_valid drops whenever another aux access
+   -- starts (the next prefetch starts only after a hit took the word).
    signal pf_valid    : std_logic := '0';
    signal pf_dirty    : std_logic := '0';
    signal pf_word     : unsigned(14 downto 0) := (others => '0');
-   signal pf_data     : std_logic_vector(31 downto 0) := (others => '0');
 
    -- blank-card format
    signal done_s      : std_logic_vector(2 downto 0) := (others => '0');
    signal card_ok     : std_logic := '0';   -- loaded frame 0 starts with "MC"
    signal checked     : std_logic := '0';   -- format decision taken
    signal fmt_word    : unsigned(10 downto 0) := (others => '0');
+   signal aux_word    : unsigned(14 downto 0);
 
    -- Word w (0-2047) of a formatted card's frames 0-63, little-endian bytes.
    function blank_word(w : unsigned(10 downto 0)) return std_logic_vector is
@@ -125,17 +129,15 @@ architecture arch of pocket_memcard_format is
 begin
 
    ---------------------------------------------------------------- clk_74a
+   slot_wr    <= '1' when bridge_wr = '1' and bridge_addr(31 downto 28) = SLOT_BASE and unsigned(bridge_addr(27 downto 17)) = 0 else '0';
+   fifo_wrreq <= slot_wr and not fifo_wrfull;
+   fifo_data  <= bridge_addr(16 downto 2) & bridge_wr_data;
+
    process (clk_74a)
    begin
       if rising_edge(clk_74a) then
-         fifo_wrreq <= '0';
-         if (bridge_wr = '1' and bridge_addr(31 downto 28) = SLOT_BASE and unsigned(bridge_addr(27 downto 17)) = 0) then
-            if (fifo_wrfull = '1') then
-               overflow <= '1';
-            else
-               fifo_wrreq <= '1';
-               fifo_data  <= bridge_addr(16 downto 2) & bridge_wr_data;
-            end if;
+         if (slot_wr = '1' and fifo_wrfull = '1') then
+            overflow <= '1';
          end if;
 
          rd_1 <= bridge_rd;
@@ -165,6 +167,16 @@ begin
    );
 
    ---------------------------------------------------------------- clk2x
+   -- The aux address follows the state: it is stable for the whole request
+   -- (aux_req high in the *_WAIT states). fifo_q holds until the next rdreq,
+   -- rd_word until the read is answered.
+   with state select aux_word <=
+      unsigned(rd_word)                when READ_WAIT,
+      unsigned(fifo_q(46 downto 32))   when MEM_WAIT,
+      resize(fmt_word, 15)             when FMT_WAIT,
+      pf_word                          when others;
+   aux_addr <= std_logic_vector(PSRAM_BASE + aux_word);
+
    process (clk2x)
    begin
       if rising_edge(clk2x) then
@@ -198,25 +210,22 @@ begin
                   elsif (rd_tog_s(2) /= rd_ack) then
                      if (pf_valid = '1' and pf_word = unsigned(rd_word)) then
                         -- prefetch hit: answer now, prefetch the next word
-                        rd_data  <= pf_data;
+                        rd_data  <= aux_dout;
                         rd_ack   <= rd_tog_s(2);
                         pf_valid <= '0';
                         pf_word  <= pf_word + 1;
                         aux_req  <= '1';
                         aux_we   <= '0';
-                        aux_addr <= std_logic_vector(PSRAM_BASE + (pf_word + 1));
                         state    <= PF_WAIT;
                      else                       -- not sequential: read the word itself
                         pf_valid <= '0';
                         aux_req  <= '1';
                         aux_we   <= '0';
-                        aux_addr <= std_logic_vector(PSRAM_BASE + unsigned(rd_word));
                         state    <= READ_WAIT;
                      end if;
                   elsif (pf_valid = '0') then   -- (re)fetch the prefetch word
                      aux_req  <= '1';
                      aux_we   <= '0';
-                     aux_addr <= std_logic_vector(PSRAM_BASE + pf_word);
                      state    <= PF_WAIT;
                   end if;
 
@@ -226,7 +235,6 @@ begin
                when FIFO_WRITE =>
                   aux_req  <= '1';
                   aux_we   <= '1';
-                  aux_addr <= std_logic_vector(PSRAM_BASE + unsigned(fifo_q(46 downto 32)));
                   aux_din  <= fifo_q(31 downto 0);
                   if (unsigned(fifo_q(46 downto 32)) = 0) then   -- word 0: header magic "MC"
                      if (fifo_q(15 downto 0) = x"434D") then card_ok <= '1'; else card_ok <= '0'; end if;
@@ -236,7 +244,6 @@ begin
                when FMT_WRITE =>
                   aux_req  <= '1';
                   aux_we   <= '1';
-                  aux_addr <= std_logic_vector(PSRAM_BASE + resize(fmt_word, 21));
                   aux_din  <= blank_word(fmt_word);
                   state    <= FMT_WAIT;
 
@@ -266,7 +273,6 @@ begin
                when PF_WAIT =>
                   if (aux_done = '1') then
                      aux_req  <= '0';
-                     pf_data  <= aux_dout;
                      pf_valid <= not pf_dirty;
                      state    <= IDLE;
                   end if;

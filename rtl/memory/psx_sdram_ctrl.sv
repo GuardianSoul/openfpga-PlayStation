@@ -164,6 +164,7 @@ module psx_sdram_ctrl #(
     reg [26:0] head_adr = 0;
     reg [31:0] head_data = 0;
     reg [26:0] ch3_adr_q = 0;
+    reg [26:0] ch1_adr_q = 0, ch2_adr_q = 0;   // address captured with pend1 / pend2
     reg [31:0] ch3_din_q = 0;
     reg [3:0]  ch3_be_q = 0;
     reg        ch3_rnw_q = 0;
@@ -172,8 +173,10 @@ module psx_sdram_ctrl #(
     wire [31:0] fifo_data = LATE_START ? head_data : dmafifo_data;
     wire [26:0] ch3_a     = LATE_START ? ch3_adr_q : ch3_addr;
     wire        spu_first = SPU_FIRST != 0 && pend3;
-    wire [26:0] idle_addr = spu_first ? ch3_a : fifo_v ? fifo_adr : (pend1 || (!LATE_START && ch1_req)) ? ch1_addr
-                          : (pend2 || (!LATE_START && ch2_req)) ? ch2_addr : ch3_a;
+    wire [26:0] ch1_a     = LATE_START ? ch1_adr_q : ch1_addr;
+    wire [26:0] ch2_a     = LATE_START ? ch2_adr_q : ch2_addr;
+    wire [26:0] idle_addr = spu_first ? ch3_a : fifo_v ? fifo_adr : (pend1 || (!LATE_START && ch1_req)) ? ch1_a
+                          : (pend2 || (!LATE_START && ch2_req)) ? ch2_a : ch3_a;
 
     // ------------------------------------------------------------- refresh
     reg [10:0] ref_timer = REFRESH_CYCLES[10:0];
@@ -256,7 +259,10 @@ module psx_sdram_ctrl #(
     assign ch3_ready = ch3_read_ready || x_ch3_write;
 
     // DMA words for the clk1x stream
-    reg [31:0] dma_q [0:7];
+    // At most a READ4's words wait here (they drain one per clk1x), so the
+    // ring never holds eight and a write never hits the word being read:
+    // no read-during-write pass-through logic (simulation checks it).
+    (* ramstyle = "MLAB, no_rw_check" *) reg [31:0] dma_q [0:7];
     reg [2:0]  dma_w = 0, dma_r = 0;
     reg [3:0]  dma_n = 0;
     initial for (i = 0; i < 8; i = i + 1) dma_q[i] = 0;
@@ -420,7 +426,7 @@ module psx_sdram_ctrl #(
                     cmd <= C_ACT;
                 end else if (req1) begin
                     took1 = 1; pend1 <= 0;
-                    addr <= ch1_addr; cnt <= ch1_cntDMA;
+                    addr <= ch1_a; cnt <= ch1_cntDMA;
                     cmd <= C_ACT;
                     if (!ch1_rnw) begin
                         chosen = OP_WRITE1; wdata <= {16'b0, ch1_din}; last <= 5;
@@ -433,7 +439,7 @@ module psx_sdram_ctrl #(
                     end
                 end else if (req2) begin
                     took2 = 1; pend2 <= 0;
-                    addr <= ch2_addr; wdata <= ch2_din; wbe <= ch2_be;
+                    addr <= ch2_a; wdata <= ch2_din; wbe <= ch2_be;
                     cmd <= C_ACT;
                     if (ch2_rnw) begin chosen = OP_READ1; kind <= K_CH2; last <= 11; end
                     else begin
@@ -463,8 +469,8 @@ module psx_sdram_ctrl #(
             end
 
             // Requests not started this edge stay pending.
-            if (after_base && ch1_req && !took1) pend1 <= 1;
-            if (after_base && ch2_req && !took2) pend2 <= 1;
+            if (after_base && ch1_req && !took1) begin pend1 <= 1; ch1_adr_q <= ch1_addr; end
+            if (after_base && ch2_req && !took2) begin pend2 <= 1; ch2_adr_q <= ch2_addr; end
 
             // ---------------------------------------- clk1x-facing outputs
             // Events wait for the next before_base edge; events of this very
@@ -481,6 +487,9 @@ module psx_sdram_ctrl #(
                 x_dma_reqprocessed <= p_dmarp || start_dmarp;
                 p_ch1 <= 0; p_ch2 <= 0; p_ch3 <= 0; p_dmarp <= 0;
                 // DMA stream: one word per clk1x cycle, oldest first
+                // synthesis translate_off
+                if (dma_n >= 7) $error("psx_sdram_ctrl: DMA ring nearly full (%0d)", dma_n);
+                // synthesis translate_on
                 if (dma_n != 0) begin
                     x_dma_wr <= 1; x_dma_data <= dma_q[dma_r]; dma_r <= dma_r + 1'b1;
                     dma_n <= dma_n - 1'b1 + ev_dma_word;

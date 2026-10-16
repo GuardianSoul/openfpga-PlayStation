@@ -54,14 +54,19 @@ def main():
         instance = re.search(r'CD_ENTITY cd\([^\n]+\);', text).group()
         text = text.replace(instance, re.sub(r'\.(\w+)\(', lambda m: '.' + ports[m[1].lower()] + '(', instance)).replace('CD_ENTITY', name)
         bench.write_text(text)
-        subprocess.run([verilator, '--binary', '--timing', '-O3', '-j', '4', '-Wno-fatal', '--top-module', 'tb_cd_swap_apf',
-                        '--Mdir', str(directory / 'obj'), str(verilog), str(ROOT / 'sim/reference/mister_memory_models.sv'),
-                        *[str(ROOT / p) for p in ('rtl/pocket/psx_cd_stream.sv', 'rtl/pocket/psx_disc_swap.sv', 'rtl/pocket/psx_disc_select.sv',
-                          'references/MIRLO64/target/pocket/core_bridge_cmd.v', 'references/MIRLO64/platform/pocket/common.v',
-                          'sim/pocket/mf_datatable_model.sv')], str(bench)],
-                       cwd=directory, stdout=log, stderr=subprocess.STDOUT, timeout=600, check=True)
-    def run(meta_b, image_b=directory / 'b/disc_b.bin'):
-        r = subprocess.run([str(directory / 'obj/Vtb_cd_swap_apf'), f'+disc_a={directory / "a/disc_a.bin"}',
+        for obj, defines in (('obj', []), ('obj-menu', ['+define+DISC_MENU']),
+                             ('obj-menu-boot', ['+define+DISC_MENU', '+define+DISC_MENU_BOOT']),
+                             ('obj-menu-absent', ['+define+DISC_MENU', '+define+DISC_MENU_ABSENT']),
+                             ('obj-menu-boot-absent', ['+define+DISC_MENU', '+define+DISC_MENU_BOOT', '+define+DISC_MENU_ABSENT'])):
+            subprocess.run([verilator, '--binary', '--timing', '-O3', '-j', '4', '-Wno-fatal', '--top-module', 'tb_cd_swap_apf',
+                            *defines, '--Mdir', str(directory / obj), str(verilog), str(ROOT / 'sim/reference/mister_memory_models.sv'),
+                            *[str(ROOT / p) for p in ('rtl/pocket/psx_cd_stream.sv', 'rtl/pocket/psx_disc_swap.sv', 'rtl/pocket/psx_disc_select.sv',
+                              'rtl/pocket/psx_disc_menu.sv',
+                              'references/MIRLO64/target/pocket/core_bridge_cmd.v', 'references/MIRLO64/platform/pocket/common.v',
+                              'sim/pocket/mf_datatable_model.sv')], str(bench)],
+                           cwd=directory, stdout=log, stderr=subprocess.STDOUT, timeout=600, check=True)
+    def run(meta_b, image_b=directory / 'b/disc_b.bin', obj='obj'):
+        r = subprocess.run([str(directory / obj / 'Vtb_cd_swap_apf'), f'+disc_a={directory / "a/disc_a.bin"}',
                             f'+disc_b={image_b}', f'+meta_a={meta["a"]}', f'+meta_b={meta_b}',
                             '+sectors_a=12', '+sectors_b=14'], cwd=directory, capture_output=True, text=True, timeout=3600)
         return r.returncode, r.stdout + r.stderr
@@ -74,6 +79,26 @@ def main():
     code, out = run(meta['a'])
     if code == 0: raise SystemExit('Planted no-swap fault not detected')
     print('Planted wrong-table fault rejected')
+    # prepare --disc-menu: both discs in one game file, Disc setting swaps.
+    code, out = run(meta['b'], obj='obj-menu')
+    line = next((l for l in out.splitlines() if 'PASS CD swap via APF' in l), None)
+    print('Disc menu:', line or out[-2000:])
+    if code or not line: raise SystemExit('CD swap via the Disc menu setting failed')
+    # The remembered disc right after start: swapped without the lid.
+    code, out = run(meta['b'], obj='obj-menu-boot')
+    line = next((l for l in out.splitlines() if 'PASS CD swap via APF' in l), None)
+    print('Disc menu at boot:', line or out[-2000:])
+    if code or not line: raise SystemExit('Boot-time Disc choice failed')
+    # A disc the game file does not have (per-core list, remembered): ignored.
+    code, out = run(meta['b'], obj='obj-menu-absent')
+    line = next((l for l in out.splitlines() if 'PASS CD swap via APF' in l), None)
+    print('Disc menu, absent disc:', line or out[-2000:])
+    if code or not line: raise SystemExit('Absent-disc choice not ignored')
+    # A remembered disc the game lacks, at start: disc 1 stays, no remount.
+    code, out = run(meta['b'], obj='obj-menu-boot-absent')
+    line = next((l for l in out.splitlines() if 'PASS CD swap via APF' in l), None)
+    print('Disc menu, remembered absent disc at boot:', line or out[-2000:])
+    if code or not line: raise SystemExit('Remembered absent disc changed the drive at boot')
 
 
 if __name__ == '__main__': main()

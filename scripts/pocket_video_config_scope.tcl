@@ -3,6 +3,26 @@
 proc video_cfg_regs {tail n} {
     set prefix {*|gpu_videoout_async:igpu_videoout_async|psx_video_config_cdc:video_config|}
     set r [get_registers -nowarn "${prefix}${tail}"]
+    # Fitter can replicate a pointer sampling bit to drive several consumers.
+    # Require all four logical bits in ONE exact FIFO instance, retaining all
+    # returned physical copies. A larger count alone is never sufficient.
+    if {$n==4 && [regexp {^dual_clock_fifo:snapshots\|(wr_addr_gray_rd|wr_addr_gray_rd_r|rd_addr_gray_wr|rd_addr_gray_wr_r)\[\*\]$} $tail ignored stem]} {
+        set bits {};set instances {}
+        set expression [format {^(.*\|gpu_videoout_async:igpu_videoout_async\|psx_video_config_cdc:video_config\|dual_clock_fifo:snapshots)\|%s\[([0-3])\](~DUPLICATE[0-9]*)?$} $stem]
+        foreach_in_collection node $r {
+            set name [get_node_info -name $node]
+            if {![regexp $expression $name ignored instance bit replica]} {
+                error "Unrecognized video pointer sampling register: $name"
+            }
+            lappend bits $bit;lappend instances $instance
+        }
+        if {[lsort -integer -unique $bits] ne {0 1 2 3} ||
+            [llength [lsort -unique $instances]]!=1} {
+            error "Missing/ambiguous video pointer sampling bits: $tail"
+        }
+        puts "VIDEO_SAMPLE_PHYSICAL $stem [get_collection_size $r] logical_4"
+        return $r
+    }
     # Quartus can keep both the primary sticky fault flag and a named replica.
     # Retain this exact query/collection and its existing first-stage cut;
     # validate one logical flag in one instance instead of one physical FF.

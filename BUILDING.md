@@ -3,7 +3,7 @@
 ## Tools
 
 - Quartus Prime Lite 25.1 with Cyclone V device support
-- Python 3.10 or newer
+- Python 3.10 or newer, with Pillow for the release images
 - For tests: Icarus Verilog 12, GHDL and Verilator
 
 `scripts/setup_iverilog.sh` and `scripts/setup_ghdl.py` can install pinned
@@ -46,7 +46,7 @@ build. A fitted and packaged build then becomes a release with:
 make release RC_PROJECT=<fitted project> RC_PACKAGE=<package folder> VERSION=0.1.0
 ```
 
-This checks timing, then writes `build/release/package/PlayStation-<version>.zip`
+This checks timing, then writes `build/release/package/GuardianSoul.PlayStation_<version>_<date>.zip`
 and `build/release/source/PlayStation-<version>-source.tar.gz`. The timing
 check passes only when every path within one clock meets timing. A miss
 between two clocks needs an entry in `support/release_timing_waivers.json`
@@ -64,6 +64,7 @@ released core exactly, use its source archive (see above).
 | `scripts/` | Project generators, patch scripts, simulation and packaging tools |
 | `sim/` | Testbenches and behavioral models |
 | `tests/` | Python unit tests |
+| `docs/` | The SD card helper page (served with GitHub Pages from `main`, folder `/docs`) |
 | `support/` | APF data-slot and source descriptions |
 | `references/` | Pinned upstream projects (submodules) |
 | `licenses/` | License texts for project and third-party code |

@@ -6,7 +6,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-from scripts.make_pocket_instances import SECTOR, check, convert, parse_cue, split_cue
+from scripts.make_pocket_instances import SECTOR, check, convert, parse_cue, shared_card_name, split_cue
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,5 +119,109 @@ class Convert(unittest.TestCase):
             self.assertEqual(json.loads((out/'Game.json').read_text())['instance']['data_path'], 'cue/Game/')
 
 
+
+class LibCryptSlot(unittest.TestCase):
+    def run_card(self, card, *extra):
+        subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card),
+                        '--core', 'PSXEarlyLC', *extra], check=True, capture_output=True)
+        return json.loads((card/'Assets/playstation/GuardianSoul.PSXEarlyLC/Ape.json').read_text())['instance']['data_slots']
+
+    def test_sbi_goes_to_slot_99_when_the_core_declares_it(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); game = card/'Assets/playstation/common/Ape'; game.mkdir(parents=True)
+            (game/'Ape.bin').write_bytes(sectors(1, 4))
+            (game/'Ape.cue').write_text('FILE "Ape.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            (game/'Ape.sbi').write_bytes(b'SBI\0' + bytes([3, 8, 5, 1]) + bytes(10))
+            core = card/'Cores/GuardianSoul.PSXEarlyLC'; core.mkdir(parents=True)
+            declared = [{'id': 0}, {'id': 100}, {'id': 101}, {'id': 99}]
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            self.assertIn({'id': 99, 'filename': 'Ape.sbi'}, self.run_card(card))
+            self.assertNotIn(99, [s['id'] for s in self.run_card(card, '--no-libcrypt')])
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared[:3]}}))
+            self.assertNotIn(99, [s['id'] for s in self.run_card(card)])
+
+
+
+class MultiDiscGroup(unittest.TestCase):
+    def test_discs_of_a_game_share_one_instance(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); common = card/'Assets/playstation/common'
+            for n in (1, 2):
+                game = common/f'Game (Disc {n})'; game.mkdir(parents=True)
+                (game/f'Game (Disc {n}).bin').write_bytes(sectors(n, 4))
+                (game/f'Game (Disc {n}).cue').write_text(f'FILE "Game (Disc {n}).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            core = card/'Cores/GuardianSoul.PSXEarlyMD'; core.mkdir(parents=True)
+            declared = [{'id': 0}, {'id': 100}] + [{'id': 101+k} for k in range(19)] + [{'id': 201}, {'id': 202}]
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'; out.mkdir(parents=True)
+            (out/'Game (Disc 2).json').write_text('{}')   # from an earlier run
+            subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
+                           check=True, capture_output=True)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ['Game.json'])
+            instance = json.loads((out/'Game.json').read_text())['instance']
+            self.assertEqual(instance['data_path'], '')
+            self.assertEqual(instance['data_slots'], [{'id': 100, 'filename': 'Game (Disc 1)/Game (Disc 1).cue'},
+                                                      {'id': 101, 'filename': 'Game (Disc 1)/Game (Disc 1).bin'},
+                                                      {'id': 201, 'filename': 'Game (Disc 2)/Game (Disc 2).bin'}])
+
+
+    def test_release_tags_do_not_split_a_game(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); common = card/'Assets/playstation/common'
+            for n, stem in ((1, 'Game (Disc 1) (v1.1)'), (2, 'Game (USA) (Disc 2) (Rev 1)')):
+                game = common/stem; game.mkdir(parents=True)
+                (game/f'{stem}.bin').write_bytes(sectors(n, 4))
+                (game/f'{stem}.cue').write_text(f'FILE "{stem}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            core = card/'Cores/GuardianSoul.PSXEarlyMD'; core.mkdir(parents=True)
+            declared = [{'id': 0}, {'id': 100}] + [{'id': 101+k} for k in range(19)] + [{'id': 201}]
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
+                           check=True, capture_output=True)
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ['Game (v1.1).json'])
+            slots = json.loads((out/'Game (v1.1).json').read_text())['instance']['data_slots']
+            self.assertEqual([s['id'] for s in slots if s['id'] != 16], [100, 101, 201])
+
+
 if __name__ == '__main__':
     unittest.main()
+
+
+class SharedCard(unittest.TestCase):
+    def test_names(self):
+        self.assertEqual(shared_card_name('Final Fantasy VII (USA) (Disc 2)'), 'Final Fantasy VII (USA).sav')
+        self.assertEqual(shared_card_name('Metal Gear Solid (USA) (Disc 1) (Rev 1)'), 'Metal Gear Solid (USA) (Rev 1).sav')
+        self.assertIsNone(shared_card_name('Tekken 3 (USA)'))
+
+    def test_discs_share_one_card(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            common = card/'Assets/playstation/common'
+            for n in (1, 2):
+                d = common/f'Game (Disc {n})'
+                d.mkdir(parents=True)
+                (d/f'Game (Disc {n}).bin').write_bytes(sectors(n, 4))
+                (d/f'Game (Disc {n}).cue').write_text(f'FILE "Game (Disc {n}).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            core = card/'Cores/GuardianSoul.T'
+            core.mkdir(parents=True)
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': [{'id': 16}] + [{'id': n} for n in range(100, 110)]}}))
+            saves = card/'Saves/playstation/GuardianSoul.T'
+            saves.mkdir(parents=True)
+            (saves/'Game (Disc 1).sav').write_bytes(b'old')
+            (saves/'Game (Disc 2).sav').write_bytes(b'new')
+            os.utime(saves/'Game (Disc 1).sav', (1, 1))
+            run = lambda: subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'T'],
+                                         check=True, capture_output=True)
+            run()
+            out = card/'Assets/playstation/GuardianSoul.T'
+            disc = json.loads((out/'Game (Disc 2).json').read_text())['instance']
+            self.assertEqual(disc['data_path'], '')
+            self.assertEqual(disc['data_slots'], [{'id': 100, 'filename': 'Game (Disc 2)/Game (Disc 2).cue'},
+                                                  {'id': 101, 'filename': 'Game (Disc 2)/Game (Disc 2).bin'},
+                                                  {'id': 16, 'filename': 'Game.sav'}])
+            shared = card/'Saves/playstation/common/Game.sav'
+            self.assertEqual(shared.read_bytes(), b'new')
+            # A second run never overwrites the shared card.
+            shared.write_bytes(b'played')
+            run()
+            self.assertEqual(shared.read_bytes(), b'played')

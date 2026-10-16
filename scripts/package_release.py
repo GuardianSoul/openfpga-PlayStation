@@ -2,7 +2,8 @@
 """Turn a packaged Pocket build into the public release zip.
 
 Takes the output folder of package_pocket_early.py (built with --platform
-playstation --disc --memcard-slot) and makes PlayStation-<version>.zip:
+playstation --disc --memcard-slot) and makes
+GuardianSoul.PlayStation_<version>_<date>.zip (Analogue's recommended name):
 the core is renamed to <author>.PlayStation, its metadata and info text are
 the public ones, and every license the bitstream needs goes into the core
 folder. It refuses a build that failed release_timing.py, a debug slot, a
@@ -19,6 +20,7 @@ import shutil
 import zipfile
 
 from tool_paths import ROOT
+import pocket_image
 
 AUTHOR = 'GuardianSoul'
 REPO = f'https://github.com/{AUTHOR}/openfpga-PlayStation'
@@ -29,10 +31,13 @@ LICENSES = (                       # (source, name in the core's licenses folder
     (ROOT/'licenses/MIT.txt', 'MIT.txt'),
     (ROOT/'licenses/dual-clock-fifo-BSD.txt', 'dual-clock-fifo-BSD.txt'),
     (ROOT/'references/MIRLO64/NOTICE', 'MIRLO64-NOTICE.txt'),   # agg23 / openfpga-litex MIT attributions
+    (ROOT/'references/PSX_MiSTer/LICENSE', 'PSX_MiSTer-LICENSE.txt'),
+    # Not MIRLO64's Apache-2.0 LICENSE or the LiteX notice: their memory files
+    # are workspace-only and must not be in a GPL-2.0 release bitstream.
 )
 INFO = """PlayStation core for Analogue Pocket, by {author}.
-Built on the MiSTer PSX core. Early release: Final Fantasy VII is the
-reference game. See the README for compatibility, controls and memory cards.
+A general PlayStation core built on the MiSTer PSX core. See the README for
+compatibility, controls, multi-disc games and memory cards.
 
 You need your own BIOS (Assets/playstation/common/scph5501.bin) and your own
 games. None are included.
@@ -95,6 +100,10 @@ def main():
     shutil.copyfile(ROOT/'THIRD_PARTY_NOTICES.md', notices/'THIRD_PARTY_NOTICES.md')
 
     (sd/'Platforms').mkdir(parents=True)
+    (sd/'Platforms/_images').mkdir()
+    (sd/'Platforms/_images'/f'{PLATFORM}.bin').write_bytes(
+        pocket_image.encode(ROOT/'support/pocket-art/playstation-banner.png', (521, 165)))
+    (core/'icon.bin').write_bytes(pocket_image.encode(ROOT/'support/pocket-art/core-icon.png', (36, 36)))
     (sd/'Platforms'/f'{PLATFORM}.json').write_text(json.dumps({'platform': {
         'category': 'Console', 'name': 'PlayStation', 'year': 1994, 'manufacturer': 'Sony'}}, indent=2)+'\n')
     assets = sd/'Assets'/PLATFORM/'common'; assets.mkdir(parents=True)
@@ -110,7 +119,7 @@ def main():
             text = path.read_text(errors='replace')
             if private.search(text) or private.search(str(path.relative_to(sd))):
                 raise SystemExit(f'workspace name left in {path.relative_to(sd)}')
-    archive_path = out/f'PlayStation-{args.version}.zip'
+    archive_path = out/f'{AUTHOR}.PlayStation_{args.version}_{args.date}.zip'
     with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(sd.rglob('*')):
             if path.is_file(): archive.write(path, path.relative_to(sd))

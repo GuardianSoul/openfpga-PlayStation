@@ -33,6 +33,8 @@ INCOMPATIBLE = re.compile(r'SPDX-License-Identifier:\s*(?:Apache|GPL-3|LGPL-3|AG
                           r'|either version 3 of the License|GNU GENERAL PUBLIC LICENSE\s+Version 3', re.I)
 # Apache-2.0 files without a license header (never built into a release core).
 INCOMPATIBLE_PATHS = ('repo/references/MIRLO64/rtl/', 'repo/rtl/memory/psx_sdr_phy.sv')
+# License texts for workspace-only code (MIRLO64's LiteX-derived PHY).
+WORKSPACE_ONLY_LICENSES = ('LiteX-BSD-2-Clause.txt',)
 # "Found entity N: name File: path" in the Analysis & Synthesis messages.
 FOUND = re.compile(r'Found entity \d+: (\S+) File: (.+?) Line: \d+')
 PACKAGE = re.compile(r'^\s*package\s+\w+\s*(?:is\b|;)', re.I | re.M)
@@ -162,7 +164,9 @@ def main():
             if LEAKS.search(line): problems.append(f'{name}:{number}: {line.strip()[:120]}')
         entries[name] = text.encode()
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'): entries[name] = (ROOT/name).read_bytes()
-    for path in sorted((ROOT/'licenses').iterdir()): entries['licenses/' + path.name] = path.read_bytes()
+    for path in sorted((ROOT/'licenses').iterdir()):
+        if path.name in WORKSPACE_ONLY_LICENSES: continue   # its code is never in a release bitstream
+        entries['licenses/' + path.name] = path.read_bytes()
     entries['README.txt'] = README.format(version=args.version, repo=REPO).encode()
     if problems:
         raise SystemExit('Source bundle stopped:\n  ' + '\n  '.join(problems[:60]))

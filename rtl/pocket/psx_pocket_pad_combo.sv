@@ -1,27 +1,38 @@
 // SPDX-License-Identifier: MIT
-// Drop-in for psx_pocket_pad (same module name and ports) that adds L2/R2/L3/R3
-// for the handheld, which only has L and R. While Select is held:
-//   L = L2, R = R2, Y (Square position) = L3, A (Circle position) = R3.
+// Drop-in for psx_pocket_pad (same module name; extra ports) that adds Select
+// combos for the handheld, which only has L and R. While Select is held, each
+// key enabled in combo_enable (L, R, Y, A, X, B) is held back from the game and
+// reported on combos[] instead. The default layout (buttons[]) routes
+//   Select+L = L2, Select+R = R2, Select+Y (Square) = L3, Select+A (Circle) = R3;
+// prepare --shoulder-setting routes combos[] through menu settings instead.
 // Select itself is held back so a combo never shows the game a Select press:
 // a short tap reaches the game as a pulse when Select is released, and Select
 // held alone longer than the hold window passes through (combos then end
-// until Select is released). A docked controller's own L2/R2/L3/R3 bits pass
-// through unchanged. Button levels are independent bits, synchronized into
-// the free-running CPU clock as in psx_pocket_pad.
+// until Select is released). With every combo disabled, Select passes
+// straight through. A docked controller's own L2/R2/L3/R3 bits pass through
+// (docked[] carries them alone). Button levels are independent bits,
+// synchronized into the free-running CPU clock as in psx_pocket_pad;
+// combo_enable must already be in clk1x.
 module psx_pocket_pad #(
     parameter HOLD_BITS=25, // 2^25 clk1x cycles: 0.99 s at 33.8688 MHz, time to reach L/R/Y/A
     parameter TAP_BITS=22   // tap pulse: 124 ms, several frames of pad polls
 ) (
     input wire clk1x,reset_n,input wire [15:0] apf_keys,
-    output wire [15:0] buttons
+    input wire [5:0] combo_enable,   // L, R, Y, A, X, B
+    output wire [15:0] buttons,
+    output wire [5:0] combos,
+    output wire [3:0] docked         // L2, R2, L3, R3 of a docked controller
 );
-    localparam A=4,Y=7,L1=8,R1=9,L2=10,R2=11,L3=12,R3=13,SELECT=14;
+    localparam A=4,B=5,X=6,Y=7,L1=8,R1=9,L2=10,R2=11,L3=12,R3=13,SELECT=14;
     (* async_reg="true", preserve, dont_merge *) reg [15:0] keys_meta=0,keys_cpu=0;
     reg held=0,combo=0,passed=0,tap=0;
     reg [HOLD_BITS-1:0] timer=0;
     wire select=keys_cpu[SELECT];
-    wire modifier=select&!passed;
-    wire combo_key=keys_cpu[L1]|keys_cpu[R1]|keys_cpu[Y]|keys_cpu[A];
+    wire enabled=|combo_enable;
+    wire modifier=select&!passed&enabled;
+    wire [5:0] keys={keys_cpu[B],keys_cpu[X],keys_cpu[A],keys_cpu[Y],keys_cpu[R1],keys_cpu[L1]};
+    wire combo_key=|(keys&combo_enable);
+    wire [5:0] held_back=combo_enable&{6{modifier}};
     always @(posedge clk1x or negedge reset_n) begin
         if(!reset_n) begin
             keys_meta<=0;keys_cpu<=0;held<=0;combo<=0;passed<=0;tap<=0;timer<=0;
@@ -44,16 +55,19 @@ module psx_pocket_pad #(
             end
         end
     end
+    assign combos=keys&held_back;
+    assign docked=keys_cpu[R3:L2];
     assign buttons[3:0]=keys_cpu[3:0];
-    assign buttons[A]=keys_cpu[A]&!modifier;
-    assign buttons[6:5]=keys_cpu[6:5];
-    assign buttons[Y]=keys_cpu[Y]&!modifier;
-    assign buttons[L1]=keys_cpu[L1]&!modifier;
-    assign buttons[R1]=keys_cpu[R1]&!modifier;
-    assign buttons[L2]=keys_cpu[L2]|keys_cpu[L1]&modifier;
-    assign buttons[R2]=keys_cpu[R2]|keys_cpu[R1]&modifier;
-    assign buttons[L3]=keys_cpu[L3]|keys_cpu[Y]&modifier;
-    assign buttons[R3]=keys_cpu[R3]|keys_cpu[A]&modifier;
-    assign buttons[SELECT]=select&passed|tap;
+    assign buttons[A]=keys_cpu[A]&!held_back[3];
+    assign buttons[B]=keys_cpu[B]&!held_back[5];
+    assign buttons[X]=keys_cpu[X]&!held_back[4];
+    assign buttons[Y]=keys_cpu[Y]&!held_back[2];
+    assign buttons[L1]=keys_cpu[L1]&!held_back[0];
+    assign buttons[R1]=keys_cpu[R1]&!held_back[1];
+    assign buttons[L2]=keys_cpu[L2]|combos[0];
+    assign buttons[R2]=keys_cpu[R2]|combos[1];
+    assign buttons[L3]=keys_cpu[L3]|combos[2];
+    assign buttons[R3]=keys_cpu[R3]|combos[3];
+    assign buttons[SELECT]=enabled ? select&passed|tap : select;
     assign buttons[15]=keys_cpu[15];
 endmodule

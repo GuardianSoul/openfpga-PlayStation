@@ -1,6 +1,6 @@
 .PHONY: test test-python test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache preflight resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte inspect-assets diagnose-bios
 
-test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-memcard-format test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec
+test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-memcard-format test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-joypad-dualshock test-joypad-dualshock-lean test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram
 
 .PHONY: test-sdram-selector test-sdram-ctrl release
 .PHONY: test-native-sdram-spec check-native-sdram-spec
@@ -143,12 +143,44 @@ test-memcard-window:
 test-memcard-format:
 	python3 scripts/run_memcard_format.py
 
-.PHONY: test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k
+.PHONY: test-apf-bridge
+test: test-apf-bridge
+test-apf-bridge:
+	python3 scripts/run_apf_bridge_checks.py
+
+.PHONY: test-apf-pad
+test: test-apf-pad
+test-apf-pad:
+	python3 scripts/run_apf_pad_checks.py
+
+.PHONY: test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-spu-adsr-lean test-gpu-dy-ram
 test-dma-m10k:
 	python3 scripts/run_dma_m10k.py
 
 test-gte-m10k:
 	python3 scripts/run_gte_m10k.py
+
+test-gte-shadow-m10k:
+	python3 scripts/run_gte_shadow_m10k.py
+
+test-spu-engine-m10k:
+	python3 scripts/run_spu_engine_m10k.py
+
+test-gpu-read-late:
+	cd scripts && python3 run_gpu_read_late.py
+
+test-memctrl-lean:
+	python3 scripts/run_memctrl_lean.py
+
+test-cd-sector-pack:
+	python3 scripts/run_cd_sector_pack.py
+
+test-spu-adsr-lean:
+	python3 scripts/run_spu_adsr_voices.py
+	! python3 scripts/run_spu_adsr_voices.py --fault > build/spu-adsr-lean-fault.log 2>&1
+
+test-gpu-dy-ram:
+	cd scripts && python3 run_gpu_dy_ram.py
 
 test-gpu-area-reg:
 	python3 scripts/run_gpu_area_reg.py
@@ -547,6 +579,22 @@ test-sdram-shared:
 	python3 scripts/run_sdram_shared.py
 
 test: test-pad-combo
+.PHONY: test-joypad-replay
+test-joypad-replay:
+	python3 scripts/run_joypad_replay.py
+
+.PHONY: test-ntsc-fixed-vblank
+test-ntsc-fixed-vblank:
+	python3 scripts/run_ntsc_fixed_vblank.py
+
+.PHONY: test-joypad-dualshock-lean
+test-joypad-dualshock-lean:
+	python3 scripts/run_joypad_dualshock_lean.py
+
+.PHONY: test-joypad-dualshock
+test-joypad-dualshock:
+	python3 scripts/run_joypad_dualshock.py
+
 .PHONY: test-pad-combo
 test-pad-combo:
 	python3 scripts/run_pad_combo.py

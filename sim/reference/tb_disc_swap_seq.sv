@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // psx_disc_swap: automatic swap timing, request edges, manual lid, reset.
 module tb_disc_swap_seq;
-  reg clk=0, reset=1, manual=0, req=0, done=0, pending=0;
+  reg clk=0, reset=1, manual=0, req=0, done=0, pending=0, quiet=0;
   wire change_req, lid, busy;
   integer cycle=0, opened_at, change_at, closed_at, checks=0;
   psx_disc_swap #(.OPEN_CYCLES(100), .CLOSE_CYCLES(50)) dut(.clk(clk), .reset(reset), .manual_lid_open(manual),
-      .swap_request(req), .disc_pending(pending), .change_req(change_req), .change_done(done), .lid_open(lid), .busy(busy));
+      .swap_request(req), .disc_pending(pending), .quiet(quiet), .change_req(change_req), .change_done(done), .lid_open(lid), .busy(busy));
   always #5 clk=~clk;
   always @(posedge clk) cycle<=cycle+1;
   // CD service model: acknowledges a change 37 cycles after the request.
@@ -35,6 +35,11 @@ module tb_disc_swap_seq;
     // New file while the user holds the lid open: switch at once, lid stays open, no timed sequence.
     manual=1; tick(2); pending=1; tick(2); if (!change_req || busy) $fatal(1,"open-lid change not requested");
     wait(!pending); tick(2); if (change_req || !lid) $fatal(1,"open-lid change not completed"); manual=0; tick(2); checks++;
+    // Quiet swap (the guest has read nothing yet): change at once, lid never opens.
+    quiet=1; req=1; tick(1);
+    while (busy) begin if (lid) $fatal(1,"lid opened during a quiet swap"); tick(1); end
+    if (!change_req && !done && pending) $fatal(1,"quiet swap incomplete"); req=0; quiet=0; tick(3);
+    if (lid || busy) $fatal(1,"quiet swap left state"); checks++;
     // Glue: change_req rising strobes the selected slot once.
     $display("PASS disc swap sequencer checks=%0d", checks); $finish;
   end

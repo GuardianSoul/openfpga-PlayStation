@@ -7,7 +7,7 @@ module tb_disc_select;
   wire change_req, change_done, lid, busy, strobe; wire [15:0] slot;
   reg loader_done=0; integer strobes=0, mounted_file=1, loaded_file=1, lid_closed_on=0;
   psx_disc_swap #(.OPEN_CYCLES(20), .CLOSE_CYCLES(10)) swap(.clk(clk), .reset(reset), .manual_lid_open(manual),
-      .swap_request(1'b0), .disc_pending(pending), .change_req(change_req), .change_done(change_done), .lid_open(lid), .busy(busy));
+      .swap_request(1'b0), .disc_pending(pending), .quiet(1'b0), .change_req(change_req), .change_done(change_done), .lid_open(lid), .busy(busy));
   psx_disc_select sel(.clk(clk), .reset(reset), .change_req(change_req), .change_done(change_done),
       .disc_slot_id(slot), .disc_select_strobe(strobe), .disc_change_done(loader_done));
   always #5 clk=~clk;

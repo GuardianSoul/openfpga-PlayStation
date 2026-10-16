@@ -175,6 +175,17 @@ SWAP_MENU = '''    reg swap_setting=1'b0;
 '''
 
 
+# --shoulder-setting rows (package_pocket_early.py imports them): menu name,
+# bridge address and the buttons the row can pick (the first is the default).
+SHOULDER_ROWS = (('L Button', 0x5000000C, ('L1', 'L2', 'L3')), ('R Button', 0x50000010, ('R1', 'R2', 'R3')))
+# The Select combo rows: what Select+L/R and Select+Y/A send, each as a pair
+# (name, address, options, default, pad_combos index of the left key). None
+# still holds them back from the game; the defaults are the plain --pad-combos
+# layout (L2/R2 and L3/R3).
+SHOULDER_COMBOS = (('SELECT + L/R', 0x50000014, ('None', 'L1/R1', 'L2/R2', 'L3/R3'), 2, 0),
+                   ('SELECT + Y/A', 0x50000018, ('None', 'L1/R1', 'L2/R2', 'L3/R3'), 3, 2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('run', type=Path)
@@ -196,8 +207,15 @@ def main():
     parser.add_argument('--sio-fixed', action='store_true', help='SIO registers fixed at reset values (rtl/pocket/sio_fixed.vhd; FFVII never uses SIO)')
     parser.add_argument('--no-field-hold', action='store_true', help="Generated tops: psx_apf_video STEADY_INTERLACE(0) (the skip-hold filter flashes old frames on the Pocket's double-buffered scaler)")
     parser.add_argument('--logo-skip-setting', action='store_true', help='Pocket menu checkbox "Skip BIOS logo" (bridge 0x50000004): psx_bios_patch makes the shell return at once (package --logo-skip-setting)')
+    parser.add_argument('--shoulder-setting', action='store_true', help='Pocket menu lists: whether the Pocket\'s L and R press L1/L2/L3 and R1/R2/R3 (bridge 0x5000000C/0x50000010; package --shoulder-setting)')
     parser.add_argument('--weave-setting', action='store_true', help='With --interlace-feature: Pocket menu checkbox "480i weave" (bridge 0x50000000; package --weave-setting)')
     parser.add_argument('--interlace-feature', action='store_true', help='Send APF frame feature bits (interlaced, field) on VS in 480i (needs --scaler-slots)')
+    parser.add_argument('--pad-lines', action='store_true', help='With --scaler-slots: continue each line with black pixels up to its scaler slot width (psx_apf_video PAD_LINES); a short line left the rest of the slot stale (stray row, 2026-10-16)')
+    parser.add_argument('--vs-at-vblank', action='store_true', help='With --scaler-slots: start the APF frame (VS) when vblank rises instead of on the PSX vsync, which in some modes came after the first active line (stray row below the picture; psx_apf_video VS_AT_VBLANK)')
+    parser.add_argument('--pal288', action='store_true', help='With --slots480: scaler slot 7 becomes 320x288 for PAL frames instead of 368x480 (psx_apf_video PAL288; package --pal288)')
+    parser.add_argument('--center-lines', action='store_true', help='With --pad-lines: split the black padding before and after each line so a picture narrower than its scaler slot is centred (psx_apf_video CENTER_LINES)')
+    parser.add_argument('--video-test-setting', action='store_true', help='Diagnostic builds only, with --scaler-slots: Settings list "Video test" (bridge 0x5000004C) switching the APF frame start (VS at vblank or PSX vsync, with or without a black lead line; psx_apf_video VIDEO_TEST; package --video-test-setting)')
+    parser.add_argument('--video-probe', action='store_true', help='Diagnostic builds only, with --scaler-slots: psx_apf_video VIDEO_PROBE colours what the core writes (line count and width as bit blocks, last line red, padding magenta)')
     parser.add_argument('--field-invert', action='store_true', help='Flip the APF odd/even field bit (psx_apf_video FIELD_INVERT)')
     parser.add_argument('--slots480', action='store_true', help='480i lines use 480-tall scaler slots 5-7 (package with --slots480)')
     parser.add_argument('--perf-log', action='store_true', help='Per-frame memory-wait counters saved to SD at bridge 0x40000000 (rtl/pocket/psx_perf_log.sv; package with --boot-log, needs --cd-stream)')
@@ -219,6 +237,14 @@ def main():
     parser.add_argument('--vram-cdc-constraints', action='store_true', help='Apply the guarded VRAM Gray flight/skew and first-stage status constraints before routing; incompatible with --async-hold-cut (Lite suppresses skew checks)')
     parser.add_argument('--psram-sync', action='store_true', help='With --psram-main: PSRAM controller on clk3x (101.6 MHz) and chip clock from the CPU PLL; main RAM through psx_mister_main_sync (no clock crossing)')
     parser.add_argument('--psram-single', action='store_true', help='With --psram-main: chip 0 alone (bring-up fallback; cram1 has not been proven in burst mode)')
+    parser.add_argument('--cd-sector-pack', action='store_true', help='Reset-only builds: cd_top sector buffers at 640 words each, 20 M10K instead of 32 (scripts/prepare_cd_sector_pack.py)')
+    parser.add_argument('--memctrl-lean', action='store_true', help='Reset-only builds: memctrl with its readback-only bits in falling-edge block RAM (rtl/pocket/memctrl_lean.vhd; make test-memctrl-lean)')
+    parser.add_argument('--cd-xa-ring-norw', action='store_true', help='cd_xa ring buffers without read-during-write pass-through logic: written only in RESAMPLE_CLEAR/WRITERING, read only in RESAMPLE_READRING')
+    parser.add_argument('--spu-adsr-lean', action='store_true', help='SPU ADSR tables computed from a registered setting instead of 275 flip-flops (scripts/prepare_spu_adsr_lean.py; cycle-identical)')
+    parser.add_argument('--spu-engine-m10k', action='store_true', help='SPU reverb engine coefficient copy in falling-edge clk1x block RAM instead of an MLAB (scripts/prepare_spu_engine_m10k.py; needs spu-reverb-table and spu-guest-m10k)')
+    parser.add_argument('--gte-shadow-m10k', action='store_true', help='GTE CFC2/MFC2 readback shadows in falling-edge clk2x block RAM instead of MLABs (scripts/prepare_gte_shadow_m10k.py; needs gte-control-ram)')
+    parser.add_argument('--gpu-read-late', action='store_true', help='GPU VRAM read setup (remain/next/wrap) one clk2x after the request (scripts/prepare_gpu_read_late.py; request timing unchanged; fixes the worst clk2x path)')
+    parser.add_argument('--gpu-dy-ram', action='store_true', help='With --gpu-area-reg: gpu_poly y gradients in a falling-edge block RAM instead of 160 flip-flops (scripts/prepare_gpu_dy_ram.py)')
     parser.add_argument('--gpu-area-reg', action='store_true', help="gpu_poly's drawing-area test of xPos from registers (scripts/prepare_gpu_area_reg.py; cycle-identical, fixes the worst gpu_poly setup path)")
     parser.add_argument('--spu-static-readback', action='store_true', help='SPU static control registers read back from block RAM (scripts/prepare_spu_static_readback.py; needs spu-guest-m10k)')
     parser.add_argument('--main-lean', action='store_true', help='SDRAM-layout main adapter reads its read_data directly instead of two 128-bit copies (scripts/prepare_main_lean.py; b01d26d for the async adapter)')
@@ -232,12 +258,21 @@ def main():
     parser.add_argument('--dpram-sdp', action='store_true', help='Specialize explicitly one-writer/one-reader DPRAM callsites to simple dual port M10K; preserve clocks/enables/latency')
     parser.add_argument('--dma-m10k', action='store_true', help='DMA channel tables in falling-edge block RAM instead of MLABs (scripts/prepare_dma_m10k.py; needs dma-chcr-ram)')
     parser.add_argument('--gte-m10k', action='store_true', help='GTE matrix/vector/translation tables in falling-edge clk2x block RAM instead of MLABs (scripts/prepare_gte_m10k.py; adds its multicycle SDC lines)')
+    parser.add_argument('--pack-high', action='store_true', help='Fitter: ALM_REGISTER_PACKING_EFFORT HIGH (denser register packing; lets --disc-swap fit at 1,847 LABs)')
     parser.add_argument('--fit-effort-max', action='store_true', help='Fitter: STANDARD FIT effort and maximum router timing optimization (release builds: closes the small fast-corner hold misses that Auto Fit leaves)')
     parser.add_argument('--static-host-cuts', action='store_true', help='Native release timing: false paths for quasi-static host settings (pause, isPal) and the diagnostic service readbacks of cd_top/pausing; video-out synchronizers kept out of RAM shift registers')
     parser.add_argument('--memcard-slot', action='store_true', help='With --sotn-memory: memory card 1 always present, its image in vram_psram region 1, loaded from and saved to an APF nonvolatile slot (pocket_sotn pocket_memcard.vhd; package --memcard-slot)')
     parser.add_argument('--memcard-format', action='store_true', help='With --memcard-slot: a new or all-zero card file is formatted before the CPU starts, so games without a format option can save (rtl/pocket/pocket_memcard_format.vhd)')
     parser.add_argument('--memcard-lean', action='store_true', help='Memory card buffer without its two 64-bit copy registers (scripts/prepare_memcard_lean.py)')
     parser.add_argument('--pad-combos', action='store_true', help='Select-held combos for L2/R2/L3/R3 on the handheld (rtl/pocket/psx_pocket_pad_combo.sv replaces psx_pocket_pad.sv)')
+    parser.add_argument('--libcrypt', action='store_true', help='With --cd-stream --multi-track: psx_cd_stream reads the disc\'s .sbi from data slot 99 and passes its LibCrypt mask to cd_top (package --libcrypt)')
+    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='With --disc-swap --multi-track: one game file lists every disc (disc n in slots n01, n02, ...); a core menu "Disc" list (bridge 0x50000044) switches between DISCS discs (2-4), so all discs share one memory card (package --disc-menu)')
+    parser.add_argument('--boot-waits-disc', action='store_true', help='With --cd-stream: hold the CPU in reset until the first disc mount reaches cd_top (or 1.8 s after Reset Exit), so a slow first launch cannot boot the BIOS menu')
+    parser.add_argument('--disc-swap', action='store_true', help='With --cd-stream: wire psx_disc_swap/psx_disc_select so loading another disc at run time opens the lid, remounts and closes it (without it a reloaded disc slot serves 0xAA fill forever)')
+    parser.add_argument('--cd-slow-pause', action='store_true', help='MiSTer\'s default "Pause when CD slow": cd_top pauses the guest while a sector fetch from the SD card runs late (pauseOnCDSlow=1 in the PSX wrapper)')
+    parser.add_argument('--trigger-buttons', action='store_true', help='A docked analog controller\'s triggers past 25%% also press L2/R2 (cont1_trig), for pads whose L2/R2 are analog triggers')
+    parser.add_argument('--ntsc-fixed-vblank', action='store_true', help='NTSC pictures always span the fixed 240-line TV window (MiSTer "Fixed VBlank" for NTSC only): a game with a shorter display range gets black lines instead of fewer lines, which the APF scaler left stale (CTR logo)')
+    parser.add_argument('--dualshock', action='store_true', help='Pad 1 is a DualShock (rtl/pocket/joypad_pad_dualshock.vhd, lockstep-equal to the pinned MiSTer joypad_pad) with a docked controller\'s sticks; menu checkbox "DualShock" (bridge 0x50000040, on by default) falls back to a digital pad (package --dualshock)')
     parser.add_argument('--digital-pad', action='store_true', help='Digital-pad-only controller port (rtl/pocket/joypad_pad_digital.vhd, lockstep-equal to MiSTer for the Pocket tie-offs)')
     parser.add_argument('--vram-credit-timing', action='store_true', help="Codex's 4ea39ea VRAM BUSY timing repair (scripts/prepare_vram_credit_timing.py)")
     parser.add_argument('--cd-full', action='store_true', help='Restore the CD commands the FFVII-minimum trim dropped (Play, Forward, Backward, GetTN, GetTD, GetQ, VideoCD): CD audio, TOC queries')
@@ -269,10 +304,13 @@ def main():
     if other: qsf_path.write_text(q); print('Sources repointed to', here, 'from', ', '.join(sorted(other)))
     sdc_path = out/'pocket.sdc'
     if sdc_path.exists():   # its `source` of the APF constraints names a checkout too
+        from prepare_pocket_audio_stream import refresh_audio_scope
         s = sdc_path.read_text()
         for root in {m for m in re.findall(r'"(/[^"]*?)/references/', s) if Path(m) != here}:
             s = s.replace(f'"{root}/references/', f'"{here}/references/')
-        sdc_path.write_text(s)
+        # Copied bases can predate the exact binary-MSB replica resolver.
+        # Refresh only its recognized body; keep every crossing limit/cut.
+        sdc_path.write_text(refresh_audio_scope(s))
     if args.sotn_memory:
         # MIRLO64's SDRAM and PSRAM controllers (Apache-2.0, workspace only)
         # are not instantiated in the Native layout: keep them out of the
@@ -471,8 +509,52 @@ def main():
         polys = re.findall(r'"([^"]*/gpu_poly\.vhd)"', q)
         if len(polys) != 1: parser.error('--gpu-area-reg: expected one gpu_poly.vhd in the project')
         copy = out/'gpu-area-reg'/'gpu_poly.vhd'; copy.parent.mkdir(exist_ok=True)
-        copy.write_text(area_reg_text(Path(polys[0]).read_text()))
+        poly_text = area_reg_text(Path(polys[0]).read_text())
+        if args.gpu_dy_ram:
+            from prepare_gpu_dy_ram import dy_ram_text
+            poly_text = dy_ram_text(poly_text)
+        copy.write_text(poly_text)
         qsf_path.write_text(q.replace(f'"{polys[0]}"', f'"{copy}"'))
+    if args.memctrl_lean:
+        import json as json_mod
+        manifest = json_mod.loads((out/'manifest.json').read_text()) if (out/'manifest.json').exists() else {}
+        if not manifest.get('reset_only'): parser.error('--memctrl-lean needs a reset-only (no savestate) run')
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        mcs = re.findall(r'"([^"]*/memctrl\.vhd)"', q)
+        if len(mcs) != 1: parser.error('--memctrl-lean: expected one memctrl.vhd in the project')
+        lean = Path(__file__).resolve().parents[1]/'rtl/pocket/memctrl_lean.vhd'
+        qsf_path.write_text(q.replace(f'"{mcs[0]}"', f'"{lean}"'))
+    if args.cd_xa_ring_norw:
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        xas = re.findall(r'"([^"]*/cd_xa\.vhd)"', q)
+        if len(xas) != 1: parser.error('--cd-xa-ring-norw: expected one cd_xa.vhd in the project')
+        anchor = '   signal XaRingBufferR       : tXaRingBuffer;\n'
+        xa = Path(xas[0]).read_text()
+        if xa.count(anchor) != 1: parser.error('--cd-xa-ring-norw: ring buffer declaration not found')
+        # One state machine writes the rings (RESAMPLE_CLEAR, RESAMPLE_WRITERING)
+        # and reads them (RESAMPLE_READRING): never in the same cycle.
+        xa = xa.replace(anchor, anchor + '   attribute ramstyle : string;\n'
+                        '   attribute ramstyle of XaRingBufferL : signal is "no_rw_check";\n'
+                        '   attribute ramstyle of XaRingBufferR : signal is "no_rw_check";\n')
+        copy = out/'cd-xa-ring-norw'/'cd_xa.vhd'; copy.parent.mkdir(exist_ok=True); copy.write_text(xa)
+        qsf_path.write_text(q.replace(f'"{xas[0]}"', f'"{copy}"'))
+    if args.gte_shadow_m10k:
+        from prepare_gte_shadow_m10k import shadow_m10k_text
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        regs = re.findall(r'"([^"]*/GTERegs\.sv)"', q)
+        if len(regs) != 1: parser.error('--gte-shadow-m10k: expected one GTERegs.sv in the project')
+        if 'ctrlShadow' not in Path(regs[0]).read_text(): parser.error('--gte-shadow-m10k needs gte-control-ram')
+        copy = out/'gte-shadow-m10k'/'GTERegs.sv'; copy.parent.mkdir(exist_ok=True)
+        copy.write_text(shadow_m10k_text(Path(regs[0]).read_text()))
+        qsf_path.write_text(q.replace(f'"{regs[0]}"', f'"{copy}"'))
+    if args.gpu_read_late:
+        from prepare_gpu_read_late import read_late_text
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        gpus = re.findall(r'"([^"]*/gpu\.vhd)"', q)
+        if len(gpus) != 1: parser.error('--gpu-read-late: expected one gpu.vhd in the project')
+        copy = out/'gpu-read-late'/'gpu.vhd'; copy.parent.mkdir(exist_ok=True)
+        copy.write_text(read_late_text(Path(gpus[0]).read_text()))
+        qsf_path.write_text(q.replace(f'"{gpus[0]}"', f'"{copy}"'))
     if args.spu_static_readback:
         from prepare_spu_static_readback import static_readback_text
         qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
@@ -480,6 +562,22 @@ def main():
         if len(spus) != 1: parser.error('--spu-static-readback: expected one spu.vhd in the project')
         copy = out/'spu-static-readback'/'spu.vhd'; copy.parent.mkdir(exist_ok=True)
         copy.write_text(static_readback_text(Path(spus[0]).read_text()))
+        qsf_path.write_text(q.replace(f'"{spus[0]}"', f'"{copy}"'))
+    if args.spu_adsr_lean:
+        from prepare_spu_adsr_lean import adsr_lean_text
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        spus = re.findall(r'"([^"]*/spu\.vhd)"', q)
+        if len(spus) != 1: parser.error('--spu-adsr-lean: expected one spu.vhd in the project')
+        copy = out/'spu-adsr-lean'/'spu.vhd'; copy.parent.mkdir(exist_ok=True)
+        copy.write_text(adsr_lean_text(Path(spus[0]).read_text()))
+        qsf_path.write_text(q.replace(f'"{spus[0]}"', f'"{copy}"'))
+    if args.spu_engine_m10k:
+        from prepare_spu_engine_m10k import engine_m10k_text
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        spus = re.findall(r'"([^"]*/spu\.vhd)"', q)
+        if len(spus) != 1: parser.error('--spu-engine-m10k: expected one spu.vhd in the project')
+        copy = out/'spu-engine-m10k'/'spu.vhd'; copy.parent.mkdir(exist_ok=True)
+        copy.write_text(engine_m10k_text(Path(spus[0]).read_text()))
         qsf_path.write_text(q.replace(f'"{spus[0]}"', f'"{copy}"'))
     if args.main_lean:
         if args.psram_sync: parser.error('--main-lean is for the asynchronous adapter; the sync adapter already has it')
@@ -528,12 +626,67 @@ def main():
         pinned = f'"{root}/references/PSX_MiSTer/rtl/joypad_pad.vhd"'
         if qsf_text.count(pinned) != 1: parser.error('joypad_pad.vhd not in project')
         qsf_path.write_text(qsf_text.replace(pinned, f'"{root}/rtl/pocket/joypad_pad_digital.vhd"'))
+    if args.ntsc_fixed_vblank and not args.pal288:
+        # The fixed window applies to NTSC only: PAL keeps its display range
+        # (the 240-line scaler slots have no 288-line PAL window). With
+        # --pal288 the 288-line slots exist, so PAL gets MiSTer's fixed
+        # 288-line window too and always fills its slot.
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        gpus = re.findall(r'"([^"]*/gpu\.vhd)"', q)
+        if len(gpus) != 1: parser.error('--ntsc-fixed-vblank: expected one gpu.vhd in the project')
+        gpu_text = Path(gpus[0]).read_text()
+        anchor = '   videoout_settings.fixedVBlank             <= fixedVBlank;'
+        if gpu_text.count(anchor) != 1: parser.error('--ntsc-fixed-vblank: fixedVBlank setting not found in gpu.vhd')
+        copy = out/'ntsc-fixed-vblank'/'gpu.vhd'; copy.parent.mkdir(exist_ok=True)
+        copy.write_text(gpu_text.replace(anchor, '   videoout_settings.fixedVBlank             <= fixedVBlank and not GPUSTAT_PalVideoMode;  -- PSXEarly --ntsc-fixed-vblank'))
+        qsf_path.write_text(q.replace(f'"{gpus[0]}"', f'"{copy}"'))
+    if args.dualshock or args.cd_slow_pause or args.ntsc_fixed_vblank:
+        # Edits to the PSX wrapper go into one copy in the output directory.
+        qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
+        wrappers = re.findall(r'"([^"]*/psx_mister_psx_top_resource\.vhd)"', qsf_text)
+        if len(wrappers) != 1: parser.error('PSX wrapper edits: expected one PSX wrapper in the project')
+        wrapper = Path(wrappers[0]).read_text()
+        if args.ntsc_fixed_vblank:
+            if wrapper.count("fixedVBlank => '0',") != 1: parser.error('--ntsc-fixed-vblank: fixedVBlank tie-off not found')
+            wrapper = wrapper.replace("fixedVBlank => '0',", "fixedVBlank => '1',  -- PSXEarly --ntsc-fixed-vblank (NTSC only, gpu.vhd)")
+        if args.cd_slow_pause:
+            if wrapper.count("pauseOnCDSlow => '0',") != 1: parser.error('--cd-slow-pause: pauseOnCDSlow tie-off not found')
+            wrapper = wrapper.replace("pauseOnCDSlow => '0',", "pauseOnCDSlow => '1',  -- PSXEarly --cd-slow-pause (MiSTer default)")
+        copy = out/'psx_mister_psx_top_resource.vhd'
+        if Path(wrappers[0]).resolve() == copy.resolve(): parser.error('PSX wrapper already in the output directory')
+        copy.write_text(wrapper)
+        qsf_path.write_text(qsf_text.replace(f'"{wrappers[0]}"', f'"{copy}"'))
+    if args.dualshock:
+        if args.digital_pad: parser.error('--dualshock replaces --digital-pad')
+        from prepare_pocket_dualshock_pad import dualshock_wrapper_text, DUALSHOCK_TOP, DUALSHOCK_SDC
+        copy = out/'psx_mister_psx_top_resource.vhd'
+        try: copy.write_text(dualshock_wrapper_text(copy.read_text()))
+        except ValueError as error: parser.error('--dualshock: ' + str(error))
+        root = Path(__file__).resolve().parents[1]
+        qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
+        # rtl/pocket/joypad_pad_dualshock.vhd: MiSTer's pad cut to one
+        # DualShock port (lockstep-equal under the Pocket tie-offs, make
+        # test-joypad-dualshock-lean), about 500 ALUTs smaller in map.
+        pinned = f'"{root}/references/PSX_MiSTer/rtl/joypad_pad.vhd"'
+        if qsf_text.count(pinned) != 1: parser.error('--dualshock: joypad_pad.vhd not in project')
+        qsf_text = qsf_text.replace(pinned, f'"{root}/rtl/pocket/joypad_pad_dualshock.vhd"')
+        qsf_path.write_text(qsf_text + f'set_global_assignment -name SYSTEMVERILOG_FILE "{root}/rtl/pocket/psx_pocket_analog.sv" -library work\n')
+        for old, new in DUALSHOCK_TOP:
+            if text.count(old) != 1: parser.error('--dualshock: core_top anchor not found: ' + old.strip()[:60])
+            text = text.replace(old, new)
+        sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + DUALSHOCK_SDC)
     if args.pad_combos:
         qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
         pads = re.findall(r'"([^"]*/psx_pocket_pad\.sv)"', qsf_text)
         if len(pads) != 1: parser.error('--pad-combos: expected one psx_pocket_pad.sv in the project (release host trim base)')
         combo = Path(__file__).resolve().parents[1]/'rtl/pocket/psx_pocket_pad_combo.sv'
         qsf_path.write_text(qsf_text.replace(f'"{pads[0]}"', f'"{combo}"'))
+        inst = '.apf_keys(cont1_key[15:0]),.buttons(pocket_pad_buttons));'
+        decl = '    wire [15:0] pocket_pad_buttons;\n'
+        if text.count(inst) != 1 or text.count(decl) != 1: parser.error('--pad-combos: pad instance not found')
+        text = text.replace(inst, '.apf_keys(cont1_key[15:0]),.combo_enable(pad_combo_enable),\n        .buttons(pocket_pad_buttons),.combos(pad_combos),.docked(pad_combo_docked));')
+        text = text.replace(decl, decl + "    wire [5:0] pad_combo_enable, pad_combos;   // L, R, Y, A, X, B\n    wire [3:0] pad_combo_docked;\n"
+                            "    assign pad_combo_enable=6'b001111;   // Select+L/R/Y/A = L2/R2/L3/R3\n")
     if args.stub_mdec:
         qsf_text = (out/'apf_top.qsf').read_text()
         tops = [Path(m) for m in re.findall(r'"([^"]*/psx_top\.vhd)"', qsf_text)]
@@ -561,6 +714,17 @@ def main():
         if not full.exists() or cd_ffvii_text(full.read_text()) != Path(trimmed[0]).read_text():
             parser.error('--cd-full: cd-arithmetic copy does not match the trim')
         qsf_path.write_text(q.replace(f'"{trimmed[0]}"', f'"{full}"'))
+    if args.cd_sector_pack:
+        import json as json_mod
+        manifest = json_mod.loads((out/'manifest.json').read_text()) if (out/'manifest.json').exists() else {}
+        if not manifest.get('reset_only'): parser.error('--cd-sector-pack needs a reset-only (no savestate) run')
+        from prepare_cd_sector_pack import sector_pack_text
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        tops = re.findall(r'"([^"]*/cd_top\.vhd)"', q)
+        if len(tops) != 1: parser.error('--cd-sector-pack: expected one cd_top.vhd in the project')
+        copy = out/'cd-sector-pack'/'cd_top.vhd'; copy.parent.mkdir(exist_ok=True)
+        copy.write_text(sector_pack_text(Path(tops[0]).read_text()))
+        qsf_path.write_text(q.replace(f'"{tops[0]}"', f'"{copy}"'))
     if args.cd_stream:
         if args.boot_trace: parser.error('--cd-stream uses the data-table port; drop --boot-trace')
         def once(old, new):
@@ -751,7 +915,7 @@ def main():
 # stay at their reset value. cd_top's HPS request/LBA/region/reset outputs
 # and pausing reach the APF bridge only through the diagnostic service
 # readback mux (0x12000xxx), which host tools poll and the core never reads.
-set_false_path -from [get_registers {*core_top:ic|pause}] -to [get_registers {*|psx_top:component_core|pausing *|psx_top:component_core|pausing~DUPLICATE* *|psx_top:component_core|pausingSS *|psx_top:component_core|pausingSS~DUPLICATE* *|psx_top:component_core|ce *|psx_top:component_core|ce~DUPLICATE*}]
+set_false_path -from [get_registers {*core_top:ic|pause}] -to [get_registers {*|psx_top:component_core|pausing *|psx_top:component_core|pausing~DUPLICATE* *|psx_top:component_core|pausingSS *|psx_top:component_core|pausingSS~DUPLICATE* *|psx_top:component_core|ce *|psx_top:component_core|ce~DUPLICATE* *|psx_top:component_core|cpuPaused *|psx_top:component_core|cpuPaused~DUPLICATE*}]
 set_false_path -from [get_registers {*core_top:ic|isPal}] -to [get_registers {*|gpu:igpu|GPUSTAT_PalVideoMode *|gpu:igpu|GPUSTAT_PalVideoMode~DUPLICATE*}]
 # The bridge read word: io_bridge_peripheral latches pmp_addr with the last
 # address byte and loads spis_word_tx from the read mux four clk_74a edges
@@ -1015,7 +1179,7 @@ CHIP_CLOCK_PINS""" + text[end:]
     if args.scaler_slots:
         found = re.findall(r'psx_apf_video #\(\.STEADY_INTERLACE\((\d)\)\)', text)
         if len(found) != 1: parser.error('--scaler-slots needs one psx_apf_video instance')
-        extra = (', .INTERLACE_FEATURE(1)' if args.interlace_feature else '') + (', .SLOT480(1)' if args.slots480 else '') + (', .FIELD_INVERT(1)' if args.field_invert else '')
+        extra = (', .INTERLACE_FEATURE(1)' if args.interlace_feature else '') + (', .SLOT480(1)' if args.slots480 else '') + (', .FIELD_INVERT(1)' if args.field_invert else '') + (', .PAD_LINES(1)' if args.pad_lines else '') + (', .VIDEO_PROBE(1)' if args.video_probe else '') + (', .VS_AT_VBLANK(1)' if args.vs_at_vblank else '') + (', .PAL288(1)' if args.pal288 else '') + (', .CENTER_LINES(1)' if args.center_lines else '') + (', .VIDEO_TEST(1)' if args.video_test_setting else '')
         text = re.sub(r'psx_apf_video #\(\.STEADY_INTERLACE\((\d)\)\)', r'psx_apf_video #(.STEADY_INTERLACE(\1), .SLOT_SELECT(1)' + extra + ')', text)
     elif args.interlace_feature or args.slots480: parser.error('--interlace-feature/--slots480 need --scaler-slots')
     if args.multi_track:
@@ -1028,6 +1192,37 @@ CHIP_CLOCK_PINS""" + text[end:]
         text = text.replace(inst, f"    psx_cd_stream #(.DEFAULT_SLOT(16'd101), .MAX_TRACKS({args.multi_track}), .TRACK_STRIDE(16'd1)) disc_stream (", 1)
         if text.count(".disc_slot_id(16'h0)") != 1: parser.error('--multi-track: disc slot selection not found')
         text = text.replace(".disc_slot_id(16'h0)", ".disc_slot_id(16'd101)", 1)
+    if args.shoulder_setting:
+        # Menu lists pick what the Pocket's L and R press (L1/L2/L3 and
+        # R1/R2/R3) and what Select+L/R and Select+Y/A press (none, L1/R1,
+        # L2/R2, L3/R3). A docked pad's own L2/R2/L3/R3 pass through. Quasi-static levels, synchronized into
+        # clk1x. APF list values can arrive in any byte of the write (as with
+        # the Disc list), so the value is taken from whichever byte holds it.
+        if not args.pad_combos: parser.error('--shoulder-setting needs --pad-combos')
+        bits = {'L1': 8, 'R1': 9, 'L2': 10, 'R2': 11, 'L3': 12, 'R3': 13}
+        pad = {k: f'    wire joypad1_Key{k}=pocket_pad_buttons[{b}];\n' for k, b in bits.items()}
+        for line in pad.values():
+            if text.count(line) != 1: parser.error('--shoulder-setting: pad wire not found (release host trim base): ' + line.strip())
+        first = min(text.index(line) for line in pad.values())
+        decl = ['    // Shoulder settings (interact.json): rows 0/1 = L/R Button (0-2 = L1/L2/L3,',
+                '    // R1/R2/R3), rows 2/3 = Select + L/R, Y/A (0 none, 1-3 = L1/R1, L2/R2, L3/R3).']
+        rows = [(name, address, 0) for name, address, _ in SHOULDER_ROWS] + [(c[0], c[1], c[3]) for c in SHOULDER_COMBOS]
+        for n, (name, address, value) in enumerate(rows):
+            decl.append(f"    reg [1:0] shoulder_set{n}=2'd{value};   // {name}")
+            decl.append(f"    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h{address:08x}) shoulder_set{n}<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];")
+            decl.append(f"    (* async_reg=\"true\" *) reg [1:0] shoulder_meta{n}=2'd{value}, shoulder_sel{n}=2'd{value};")
+            decl.append(f"    always @(posedge clk1x) begin shoulder_meta{n}<=shoulder_set{n}; shoulder_sel{n}<=shoulder_meta{n}; end")
+        text = text[:first] + '\n'.join(decl) + '\n' + text[first:]
+        for n, (name, address, targets) in enumerate(SHOULDER_ROWS):
+            src = f'pocket_pad_buttons[{bits[targets[0]]}]'
+            for value, key in enumerate(targets):
+                # Each key's own source is only a docked controller's bit
+                # (none for L1/R1); pocket_pad_buttons[10-13] also carry the
+                # Select combos, which the combo rows route instead.
+                own = ['', f'pad_combo_docked[{n}] | ', f'pad_combo_docked[{2+n}] | '][value]
+                combos = ''.join(f" | (shoulder_sel{len(SHOULDER_ROWS)+c}==2'd{value+1} & pad_combos[{row[4]+n}])"
+                                 for c, row in enumerate(SHOULDER_COMBOS))
+                text = text.replace(pad[key], f"    wire joypad1_Key{key}={own}(shoulder_sel{n}==2'd{value} & {src}){combos};\n")
     if args.logo_skip_setting:
         # Single-word loaders (no --psram-main batching): give the loader a
         # halfword count of 2 so psx_bios_patch can sit in front of its CDC.
@@ -1121,6 +1316,16 @@ CHIP_CLOCK_PINS""" + text[end:]
             text = text[:at] + (SWAP_MENU if args.field_swap_setting else "    wire apf_swap=1'b0;\n") + text[at:]
             text = text.replace('.weave(apf_weave),', '.weave(apf_weave), .field_swap(apf_swap),', 1)
             if text.count('.field_swap(apf_swap)') != 1: parser.error('field swap connection failed')
+        if args.video_test_setting:
+            # Diagnostic "Video test" list (bridge 0x5000004C, value from any byte).
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg [1:0] video_test_set=2'd0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h5000004C) video_test_set<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
+    (* async_reg="true" *) reg [1:0] video_test_meta=2'd0, video_test_sync=2'd0;
+    always @(posedge video_rgb_clock) begin video_test_meta<=video_test_set; video_test_sync<=video_test_meta; end
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .video_test(video_test_sync),', 1)
+            if text.count('.video_test(video_test_sync)') != 1: parser.error('video test connection failed')
     elif args.weave_setting: parser.error('--weave-setting: no psx_apf_video instance')
     # Older Native copies used the original single-word module interface.
     # They now compile against the packet-aware module in this checkout.
@@ -1132,6 +1337,48 @@ CHIP_CLOCK_PINS""" + text[end:]
             text = text.replace(old_native,new_native,1)
         elif text.count(new_native)!=1:
             parser.error('Unsupported Native loader wiring; reconcile the packet interface before compiling')
+    if args.libcrypt:
+        if not (args.cd_stream and args.multi_track): parser.error('--libcrypt needs --cd-stream --multi-track')
+        found = re.findall(r"psx_cd_stream #\(\.DEFAULT_SLOT\(16'd101\), \.MAX_TRACKS\(\d+\), \.TRACK_STRIDE\(16'd1\)\)", text)
+        if len(found) != 1: parser.error('--libcrypt: multi-track psx_cd_stream parameters not found')
+        text = text.replace(found[0], found[0][:-1] + ", .LIBCRYPT_SLOT(16'd99))")
+    if args.trigger_buttons:
+        # Docked pads with analog triggers report them in cont1_trig; whether
+        # the dock also sets the L2/R2 key bits is not documented. OR a
+        # trigger past 0x40 into those bits (types 2 and 3, docked pads).
+        # The key word already crosses as independent levels (pad_input).
+        old = '.apf_keys(cont1_key[15:0]),'
+        if text.count(old) != 1: parser.error('--trigger-buttons: pad key input not found')
+        text = text.replace(old, '.apf_keys(pad_keys),')
+        anchor = '    psx_pocket_pad pad_input ('
+        if text.count(anchor) != 1: parser.error('--trigger-buttons: pad instance not found')
+        text = text.replace(anchor, '''    // --trigger-buttons: analog triggers of a docked pad also press L2/R2.
+    wire pad_docked=cont1_key[31:28]==4'h2 || cont1_key[31:28]==4'h3;
+    wire [15:0] pad_keys=cont1_key[15:0] | {4'b0, pad_docked && cont1_trig[15:8]>8'h40, pad_docked && cont1_trig[7:0]>8'h40, 10'b0};
+''' + anchor)
+    if args.boot_waits_disc:
+        if not args.cd_stream: parser.error('--boot-waits-disc needs --cd-stream')
+        from prepare_pocket_disc_swap import boot_wait_text, BOOT_WAIT_SDC
+        try: text = boot_wait_text(text)
+        except ValueError as error: parser.error('--boot-waits-disc: ' + str(error))
+        sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + BOOT_WAIT_SDC)
+    if args.disc_menu and not args.disc_swap: parser.error('--disc-menu needs --disc-swap')
+    if args.disc_swap:
+        if not args.cd_stream: parser.error('--disc-swap needs --cd-stream')
+        from prepare_pocket_disc_swap import disc_swap_text
+        try: text = disc_swap_text(text)
+        except ValueError as error: parser.error('--disc-swap: ' + str(error))
+        if args.disc_menu:
+            if not args.multi_track or not 2 <= args.disc_menu <= 4: parser.error('--disc-menu needs --multi-track and 2-4 discs')
+            from prepare_pocket_disc_swap import disc_menu_text, MENU_SDC
+            try: text = disc_menu_text(text, args.disc_menu)
+            except ValueError as error: parser.error('--disc-menu: ' + str(error))
+            sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + MENU_SDC)
+        root = Path(__file__).resolve().parents[1]
+        qsf_path = out/'apf_top.qsf'
+        qsf_path.write_text(qsf_path.read_text() + ''.join(
+            f'set_global_assignment -name SYSTEMVERILOG_FILE "{root}/rtl/pocket/{name}" -library work\n'
+            for name in ('psx_disc_swap.sv', 'psx_disc_menu.sv' if args.disc_menu else 'psx_disc_select.sv')))
     if args.sotn_memory and re.search(r'^\s*(?:sdr_ctrl|psram)\b(?:\s*#\s*\(|\s+\w+\s*\()', text, re.M):
         parser.error('--sotn-memory: core_top still instantiates a MIRLO64 memory controller')
     core.write_text(text)
@@ -1179,18 +1426,23 @@ CHIP_CLOCK_PINS""" + text[end:]
         core.write_text(text)
     # Synchronizer inputs and held-payload crossings of the Pocket glue.
     sdc = out/'pocket.sdc'; extra = []
+    if args.shoulder_setting:
+        extra.append('# The shoulder menu settings cross into clk1x through two flops.\n'
+                     'set_false_path -to [get_registers {*|shoulder_meta*}]\n')
     if 'psx_apf_video #(' in text:
         extra.append('# The 480i menu settings cross into the video clock through two-flop synchronizers.\n'
-                     'set_false_path -to [get_registers {*|weave_sync[0] *|swap_sync[0]}]\n')
+                     'set_false_path -to [get_registers {*|weave_sync[0] *|swap_sync[0] *|video_test_meta[*]}]\n')
     if args.cd_stream:
         # psx_cd_stream holds every multi-bit value that crosses from before its
         # toggle until the far side answers; the toggles cross through two flops.
+        # The far side captures a payload two synchronizer stages after its
+        # toggle, so it is stable around capture: hold gets one period of slack.
         held = ('*|disc_stream|m_valid *|disc_stream|m_end[*] *|disc_stream|m_minutes[*] *|disc_stream|m_seconds[*] '
                 '*|disc_stream|m_ntracks[*] *|disc_stream|m_slot[*] *|disc_stream|resp_buf* *|disc_stream|resp_kind[*] '
-                '*|disc_stream|req_lba[*] *|disc_stream|sel_slot[*]')
+                '*|disc_stream|req_lba[*] *|disc_stream|sel_slot[*] *|disc_stream|m_present[*]')
         extra.append('# psx_cd_stream held payloads (one 74.25 MHz period) and toggle synchronizers.\n'
                      f'set_max_delay 13 -from [get_registers {{{held}}}]\n'
-                     f'set_min_delay 0 -from [get_registers {{{held}}}]\n'
+                     f'set_min_delay -13 -from [get_registers {{{held}}}]\n'
                      'set_false_path -to [get_registers {*|disc_stream|h_req_s[0] *|disc_stream|h_done_s[0] *|disc_stream|h_sel_s[0] '
                      '*|disc_stream|h_mdone_s[0] *|disc_stream|c_resp_s[0] *|disc_stream|c_mount_s[0] *|disc_stream|c_selack_s[0] '
                      '*|disc_stream|c_pending_s[0]}]\n')
@@ -1217,6 +1469,8 @@ CHIP_CLOCK_PINS""" + text[end:]
     if args.fit_effort_max:
         qsf.write_text(qsf.read_text() + 'set_global_assignment -name FITTER_EFFORT "STANDARD FIT"\n'
                        'set_global_assignment -name ROUTER_TIMING_OPTIMIZATION_LEVEL MAXIMUM\n')
+    if args.pack_high:
+        qsf.write_text(qsf.read_text() + 'set_global_assignment -name ALM_REGISTER_PACKING_EFFORT HIGH\n')
     print(out)
 
 

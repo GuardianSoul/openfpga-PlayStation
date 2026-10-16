@@ -3,9 +3,10 @@
 module tb_psx_pocket_pad_combo;
     localparam A=4,X=6,Y=7,L1=8,R1=9,L2=10,R2=11,L3=12,R3=13,SELECT=14,START=15;
     localparam HOLD=1<<6,TAP=1<<4;
-    reg clk=0,reset_n=0;reg [15:0] keys=0;wire [15:0] buttons;
+    localparam B=5;
+    reg clk=0,reset_n=0;reg [15:0] keys=0;reg [5:0] enable=6'b001111;wire [15:0] buttons;wire [5:0] combos;wire [3:0] docked;
     integer errors=0;
-    psx_pocket_pad #(.HOLD_BITS(6),.TAP_BITS(4)) dut(.clk1x(clk),.reset_n(reset_n),.apf_keys(keys),.buttons(buttons));
+    psx_pocket_pad #(.HOLD_BITS(6),.TAP_BITS(4)) dut(.clk1x(clk),.reset_n(reset_n),.apf_keys(keys),.combo_enable(enable),.buttons(buttons),.combos(combos),.docked(docked));
     always #5 clk=!clk;
     task step(input integer n); repeat(n) @(posedge clk); #1; endtask
     task expect_buttons(input [15:0] want,input [8*40-1:0] what);
@@ -42,6 +43,20 @@ module tb_psx_pocket_pad_combo;
         // Tap pulse restarts cleanly into a new combo.
         press(1<<SELECT);press(0);press(1<<SELECT|1<<L1);expect_buttons(1<<L2,"combo during tap");
         press(0);
+        // X/B combos are off by default; enabled, they appear on combos[] only.
+        press(1<<SELECT|1<<X);expect_buttons(1<<X,"select+X while off");
+        press(0);step(TAP*2);
+        enable=6'b111111;
+        press(1<<SELECT|1<<B);expect_buttons(0,"select+B hidden");
+        if(combos!==6'b100000) begin errors=errors+1;$display("FAIL combos %b",combos);end
+        press(0);step(TAP*2);
+        // Docked L2 shows on docked[] and buttons, not on combos[].
+        press(1<<L2);expect_buttons(1<<L2,"docked L2");
+        if(docked!==4'b0001||combos!==0) begin errors=errors+1;$display("FAIL docked %b combos %b",docked,combos);end
+        // Every combo off: Select passes straight through.
+        enable=0;press(1<<SELECT);expect_buttons(1<<SELECT,"select direct");
+        press(1<<SELECT|1<<L1);expect_buttons(1<<SELECT|1<<L1,"no combos");
+        press(0);expect_buttons(0,"released");
         if(errors) $display("FAILED: %0d errors",errors); else $display("PASS psx_pocket_pad_combo");
         $finish;
     end

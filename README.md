@@ -16,7 +16,7 @@ built on the MiSTer PSX core.
 
 ## Install
 
-1. Download the latest `PlayStation-<version>.zip` from
+1. Download the latest `GuardianSoul.PlayStation_<version>_<date>.zip` from
    [Releases](../../releases).
 2. Unzip it and copy its contents to the root of your Pocket's SD card. It
    adds `Cores/GuardianSoul.PlayStation`, `Platforms/playstation.json` and
@@ -37,7 +37,9 @@ To update, copy the new zip over the old files the same way.
 The core plays redump-style disc images: a `.cue` file with its `.bin`
 files (one per track, MODE2/2352), up to 19 `.bin` files per disc. Games
 with CD audio tracks are supported. A disc merged into one `.bin` with a
-multi-track `.cue` is not, and neither is `.chd` (see below).
+multi-track `.cue` needs splitting first (the [SD card helper](#changing-discs)
+does it), and `.chd` images need extracting first (see
+[Other ways to make game files](#other-ways-to-make-game-files)).
 
 Put each disc in its own folder under `Assets/playstation/common/`, with
 the file names unchanged:
@@ -66,34 +68,50 @@ disc's files. Let an SD card tool make them for you:
 
 Do this again after adding games. Then, in the core, pick the game's
 `.json` file. Discs the core can't play yet are skipped with a message.
+These files are all you need: every game, including each disc of a
+multi-disc game, starts from them.
 
-The game files these tools make were checked with the packaging library
-Pocket Sync uses. If a disc is missing after running them, use the script
-below.
+### Changing discs
 
-**Without those tools:** install [Python 3](https://www.python.org/downloads/),
-download [make_pocket_instances.py](scripts/make_pocket_instances.py) and,
-with the SD card in your computer, run
+To swap discs from the menu, a multi-disc game needs one game file that
+holds all of its discs. pupdate and Pocket Sync can't make that yet, so
+use the **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
+page: open it in Chrome or Edge on a computer, pick the SD card, and press
+*Make game files*. Nothing to install, and nothing is uploaded. It also
+splits merged `.bin` images into one file per track.
+
+When the game asks for the next disc, open the Pocket menu, choose **Core
+Settings → Disc** and pick the disc. The core opens and closes the lid for
+you, and remembers the disc you picked for next time.
+
+All discs of a game then share one memory card,
+`Saves/playstation/common/<game>.sav` (the game's name without
+"(Disc n)"), so a save made on disc 1 is there on disc 2. The helper
+starts it as a copy of your most recently used disc's card.
+
+Without the helper, each disc keeps its own game file, as in 0.5.1: to
+change discs, quit and start the next disc's game file.
+
+### Updating from 0.5.1
+
+Nothing to change: your game files and saves keep working. Run the SD card
+helper only if you want to swap discs from the menu in multi-disc games.
+
+### Other ways to make game files
+
+[make_pocket_instances.py](scripts/make_pocket_instances.py) does the same
+as the SD card helper, from [Python 3](https://www.python.org/downloads/).
+With the SD card in your computer, run
 
 ```
 python3 make_pocket_instances.py <SD card> --core PlayStation
 ```
 
 where `<SD card>` is the card's drive or mount point (for example `E:\`
-or `/Volumes/POCKET`). It writes the same files to
-`Assets/playstation/GuardianSoul.PlayStation/` and lists any disc it skipped.
-
-**CHD images:** convert them back to `.cue` and `.bin` first with
-`chdman extractcd -i game.chd -o game.cue -ob game.bin -sb` from
-[MAME](https://www.mamedev.org/) (`-sb` writes one `.bin` per track).
-
-### Changing discs
-
-For multi-disc games, wait until the game asks for the next disc. Then open
-the Pocket menu, load the next disc's `.json` file and return to the game.
-The core opens the disc lid, changes the disc and closes the lid again, as
-if you had swapped discs on a real console. Disc changes have been checked
-in simulation but not yet played through on a Pocket.
+or `/Volumes/POCKET`). Add `--convert` to also extract `.chd` images with
+`chdman` from [MAME](https://www.mamedev.org/) (install it first) and split
+merged `.bin` files, each into a folder next to the original. The originals
+stay. The SD card helper can't read `.chd` images.
 
 ## Controls
 
@@ -107,23 +125,30 @@ in simulation but not yet played through on a Pocket.
 | L / R | L1 / R1 |
 | Select / Start | Select / Start |
 
-The core emulates a digital pad. Hold Select and press L, R, Y or A for L2, R2, L3 or R3. Tap Select on its own for Select. Analog sticks are not mapped yet.
+The core emulates a digital pad. Hold Select and press L, R, Y or A for L2, R2, L3 or R3 (changeable in [Settings](#settings)). Tap Select on its own for Select. Analog sticks are not mapped yet.
 
 ## Settings
 
 Under **Core Settings** in the Pocket menu:
 
 - **Skip BIOS logo:** starts the game without the PlayStation intro.
-- **480i weave:** how high-resolution (interlaced) screens are shown. On
-  (the default), both fields are woven into full frames; off shows each
-  field on its own. Try it if a menu or FMV looks shaky.
+- **Disc:** the disc in the drive, for multi-disc games (see
+  [Changing discs](#changing-discs)).
+- **L Button / R Button:** what the Pocket's L and R send: L1, L2 or L3
+  (R1, R2 or R3). The default is L1 and R1.
+- **SELECT + L/R** and **SELECT + Y/A:** what those combinations send:
+  nothing, L1/R1, L2/R2 or L3/R3. The defaults are L2/R2 and L3/R3.
+
+High-resolution (interlaced, 480i) screens are woven into full frames
+automatically; there is no setting for it.
 
 ## Memory cards
 
 Memory card 1 works and is saved to the SD card:
 
 - Each game gets its own memory card:
-  `Saves/playstation/GuardianSoul.PlayStation/<game>.sav` on the SD card.
+  `Saves/playstation/GuardianSoul.PlayStation/<game>.sav` on the SD card
+  (multi-disc games share one, see [Changing discs](#changing-discs)).
   It is created the first time you start the game, and updating the core
   keeps it.
 - The first time, the game may say the card is unformatted. Format it from
@@ -193,7 +218,7 @@ before it goes into a build.
 ## Known issues
 
 - Some games may run slower than on a real console.
-- Multi-disc games have not been tested beyond their first disc yet.
+- A thin diagonal line can split the white Sony screen while it fades.
 
 ## Building from source
 
@@ -228,9 +253,9 @@ by hardware tests. Even so, review it with that origin in mind.
   (Laxer3a).
 - [pocket_sotn](https://github.com/akoaysigod/pocket_sotn) by akoaysigod:
   the memory layout this core uses (main RAM on SDRAM, video RAM across
-  both PSRAM chips), the PSRAM video RAM and memory card code, the Pocket
-  SDRAM timing fixes, and the approach to fitting the MiSTer core on the
-  Pocket.
+  both PSRAM chips), the PSRAM video RAM and memory card code, the memory
+  write FIFO and CPU write path, the Pocket SDRAM timing fixes, and the
+  approach to fitting the MiSTer core on the Pocket.
 - Adam Gastineau (agg23) and [MIRLO64](https://github.com/tortugaveloz/MIRLO64)
   by tortuga: Pocket platform glue and audio output.
 

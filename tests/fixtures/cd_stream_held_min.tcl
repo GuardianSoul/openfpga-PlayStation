@@ -1,0 +1,1 @@
+set_min_delay -13 -from [get_registers {*|disc_stream|m_valid *|disc_stream|m_end[*] *|disc_stream|m_minutes[*] *|disc_stream|m_seconds[*] *|disc_stream|m_ntracks[*] *|disc_stream|m_slot[*] *|disc_stream|resp_buf* *|disc_stream|resp_kind[*] *|disc_stream|req_lba[*] *|disc_stream|sel_slot[*]}]

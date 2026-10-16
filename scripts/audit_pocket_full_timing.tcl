@@ -20,6 +20,7 @@ if {[llength $quartus(args)]==2} {
 set output [file normalize [lindex $quartus(args) 0]]
 file mkdir $output
 project_open apf_top
+try {
 create_timing_netlist
 read_sdc
 update_timing_netlist
@@ -104,7 +105,12 @@ if {$native_corners} {
     puts $coverage "corner\tscope\tkind\tpaths"
     proc native_paths {name args} {
         global table coverage corner output
-        foreach kind {setup hold} {
+        # Reset checks must participate in the machine-readable whole-core
+        # gate too; text-only reports can conceal a recovery/removal failure
+        # from an aggregator that checks only the setup/hold table.
+        set kinds {setup hold}
+        if {$name eq "global"} {set kinds {setup hold recovery removal}}
+        foreach kind $kinds {
             set paths [get_timing_paths -$kind {*}$args -npaths 100]
             puts $coverage [join [list $corner $name $kind [get_collection_size $paths]] "\t"]
             report_timing -$kind {*}$args -npaths 100 -detail full_path \
@@ -150,5 +156,7 @@ if {$native_corners} {
     close $table;close $coverage
     if {$corner!=4} {error "Expected four Native operating conditions"}
 }
-delete_timing_netlist
-project_close -dont_export_assignments
+} finally {
+    catch {delete_timing_netlist}
+    project_close -dont_export_assignments
+}

@@ -82,7 +82,7 @@ class NativeSDRAMIO(unittest.TestCase):
 
     def test_unknown_mode_or_parameter_override_rejects_before_writes(self):
         for value in ('4','runtime_cas','3), .UNKNOWN(1',
-                      '3), .SPU_FIRST(0','3), .SPU_FIRST(1'):
+                      '3), .SPU_FIRST(2','3), .SPU_FIRST(runtime_priority'):
             with self.subTest(value=value),tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp);ctrl=self.parameterized_fixture(root);wrapper=root/'psx_native_memory.sv'
                 wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
@@ -95,6 +95,32 @@ class NativeSDRAMIO(unittest.TestCase):
                                                    "CAS_LATENCY == 2 ? 13'h0231 : 13'h0221"))
             with self.assertRaises(ValueError):prepare_project(root,digest(ctrl))
             self.assertFalse((root/'native-sdram-io').exists())
+
+    def test_priority_override_preserves_capture_constraints_and_sources(self):
+        captures=[]
+        for priority in (None,0,1):
+            with self.subTest(priority=priority),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_native_memory.sv'
+                extra='' if priority is None else f', .SPU_FIRST({priority})'
+                wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
+                                   f'.SINGLE_CHIP(1), .CAS_LATENCY(3){extra}) controller'))
+                before={p:digest(p) for p in (ctrl,wrapper)}
+                r=prepare_project(root,digest(ctrl),implementation=True,input_delay_taps=24)
+                self.assertEqual(r['spu_first'],priority or 0)
+                self.assertEqual(r['spu_first_wrapper_override'],priority)
+                self.assertTrue(all(digest(p)==h for p,h in before.items()))
+                self.assertFalse(r['read_hold_relaxation']);self.assertFalse(r['timing_verified'])
+                captures.append((root/'native-sdram-io/previous-beat.sdc').read_text())
+        self.assertEqual(captures,[captures[0]]*3)
+
+    def test_unknown_priority_defaults_reject_before_writes(self):
+        for value in ('2','runtime_priority'):
+            with self.subTest(value=value),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);ctrl=self.project(root)
+                ctrl.write_text(ctrl.read_text().replace('parameter integer SPU_FIRST = 0',
+                                                        'parameter integer SPU_FIRST = '+value))
+                with self.assertRaises(ValueError):prepare_project(root,digest(ctrl),analysis_only=True)
+                self.assertFalse((root/'native-sdram-io').exists())
 
     def test_reviewed_io_recipe_preserves_hold_and_targets_only_dq_enable(self):
         with tempfile.TemporaryDirectory() as tmp:

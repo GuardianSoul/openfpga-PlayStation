@@ -15,6 +15,26 @@ from generate_pocket_audio_coeffs import generate
 from tool_paths import ROOT
 
 
+def refresh_audio_scope(text):
+    """Update only a recognized copied Gray resolver, preserving all limits.
+
+    Early projects inherit the inline procedure from their captured base;
+    rebuilding that top alone does not regenerate the audio SDC procedure.
+    Unknown bodies must receive a new review instead of a regex overwrite.
+    """
+    pattern = r'proc pocket_audio_gray_bus \{prefix pointer\} \{\n.*?\n\}\n'
+    old = re.findall(pattern, text, re.S)
+    current = re.findall(pattern, (ROOT/'scripts/pocket_audio_scope.tcl').read_text(), re.S)
+    if len(old)!=1 or len(current)!=1:
+        raise ValueError('Expected exactly one audio Gray scope procedure')
+    if old[0] == current[0]:
+        return text
+    import hashlib
+    if hashlib.sha256(old[0].encode()).hexdigest() != 'c3b7db51ca4626bfa82093bdc3c2158d6f0a6072b033d4f7b2e96cba3f95df29':
+        raise ValueError('Unreviewed copied audio Gray scope procedure')
+    return text.replace(old[0], current[0], 1)
+
+
 def replace_once(text,old,new):
     if text.count(old)!=1: raise ValueError('Audio adaptation anchor changed: '+old[:100])
     return text.replace(old,new)

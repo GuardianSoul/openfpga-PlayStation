@@ -1,0 +1,179 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlayStation SD Card Helper</title>
+<meta name="description" content="Make multi-disc game files for the PlayStation core on Analogue Pocket, straight from your browser.">
+<style>
+  :root {
+    --bg: #f4f4f2; --panel: #ffffff; --text: #1d1d1f; --muted: #5f6064; --line: #d9d9d6;
+    --accent: #3d4f8f; --accent-text: #ffffff; --ok: #2f7a3e; --warn: #9a5b00; --code: #ececea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
+      --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --code: #2a2a2f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
+    --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --code: #2a2a2f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--muted); margin-bottom: 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .step { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; border-radius: 50%;
+          background: var(--accent); color: var(--accent-text); font-size: 0.85rem; font-weight: 600; margin-right: 8px; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer;
+           background: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); max-width: 100%; }
+  label { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; }
+  label input { margin-top: 5px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; overflow-wrap: anywhere; }
+  .muted { color: var(--muted); font-size: 0.92rem; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  ul { margin: 0 0 12px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  #log { margin: 12px 0 0; padding: 12px; background: var(--code); border-radius: 8px; max-height: 360px; overflow: auto;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  a { color: var(--accent); }
+  .hidden { display: none; }
+  footer { margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PlayStation SD card helper</h1>
+  <p class="lead">Optional. Single-disc games already work with the game files that pupdate or Pocket Sync make.
+    This page adds what those tools can't do yet: one game file per multi-disc game, so you can swap discs in
+    <b>Core Settings → Disc</b>, and one memory card that all of a game's discs share.</p>
+
+  <div id="unsupported" class="panel hidden">
+    <p class="warn">This browser can't write to an SD card.</p>
+    <p>Open this page in Chrome or Edge on a computer (Windows, macOS, Linux or ChromeOS). Phones, Firefox and Safari
+      don't support it. You can also use <code>make_pocket_instances.py</code> from the README instead.</p>
+  </div>
+
+  <section class="panel" id="pick">
+    <h2><span class="step">1</span>Choose your SD card</h2>
+    <p class="muted">Put the Pocket's SD card in your computer and pick the card itself (the folder that holds
+      <code>Assets</code> and <code>Cores</code>). Your browser asks once to allow changes to it. Nothing is uploaded;
+      everything runs on your computer.</p>
+    <button id="choose">Choose SD card</button>
+    <p id="card" class="muted hidden"></p>
+  </section>
+
+  <section class="panel" id="options">
+    <h2><span class="step">2</span>Make the game files</h2>
+    <p id="core-row" class="hidden">Core: <select id="core"></select></p>
+    <label><input type="checkbox" id="convert" checked>
+      <span>Split merged <code>.bin</code> images into one file per track. The split copy goes in a folder next to
+        the original and needs the same free space. The original stays.</span></label>
+    <button id="run" disabled>Make game files</button>
+    <div id="result" class="hidden">
+      <p id="summary"></p>
+      <div id="log"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>What it changes on the card</h2>
+    <ul>
+      <li>Writes one game file per game to <code>Assets/playstation/&lt;core&gt;/</code>. A multi-disc game
+        ("Game (Disc 1)", "Game (Disc 2)", …) becomes one file named after the game.</li>
+      <li>Removes the old one-file-per-disc game files of each game it combined.</li>
+      <li>Starts the game's shared memory card, <code>Saves/playstation/common/&lt;game&gt;.sav</code>, as a copy
+        of your most recently used disc's card. An existing shared card is never overwritten. Your other saves
+        stay where they are.</li>
+      <li>Lists every disc it skipped and why. CHD images need converting on a computer first (see the README).</li>
+    </ul>
+    <p class="muted">Run it again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
+      one-file-per-disc game files; they still work, but disc swapping needs the combined file.</p>
+  </section>
+
+  <footer class="muted">Part of the PlayStation core for Analogue Pocket. Source and README:
+    <a href="https://github.com/GuardianSoul/openfpga-PlayStation">GuardianSoul/openfpga-PlayStation</a>.</footer>
+</main>
+<script src="instances.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  let card = null;
+
+  if (!window.showDirectoryPicker) {
+    $('unsupported').classList.remove('hidden');
+    $('choose').disabled = true;
+  }
+
+  $('choose').addEventListener('click', async () => {
+    let picked;
+    try { picked = await window.showDirectoryPicker({ id: 'pocket-sd', mode: 'readwrite' }); } catch (e) { return; }
+    const cores = await PocketInstances.findCores(picked);
+    const note = $('card');
+    note.classList.remove('hidden');
+    $('result').classList.add('hidden');
+    if (!cores.length) {
+      card = null;
+      $('run').disabled = true;
+      $('core-row').classList.add('hidden');
+      note.innerHTML = '<span class="warn">No PlayStation core found in ' + escape(picked.name) +
+        '/Cores.</span> Pick the SD card itself, and install the core first.';
+      return;
+    }
+    card = picked;
+    note.innerHTML = '<span class="ok">Using ' + escape(picked.name) + '.</span>';
+    const select = $('core');
+    select.innerHTML = '';
+    for (const core of cores) {
+      const option = document.createElement('option');
+      option.value = core.id; option.textContent = core.id; option.dataset.platform = core.platform;
+      select.append(option);
+    }
+    const preferred = cores.find((c) => c.id === 'GuardianSoul.PlayStation');
+    if (preferred) select.value = preferred.id;
+    $('core-row').classList.toggle('hidden', cores.length < 2);
+    $('run').disabled = false;
+  });
+
+  $('run').addEventListener('click', async () => {
+    if (!card) return;
+    const option = $('core').selectedOptions[0];
+    const log = $('log'), summary = $('summary');
+    log.textContent = ''; summary.textContent = 'Working…'; summary.className = '';
+    $('result').classList.remove('hidden');
+    $('run').disabled = $('choose').disabled = true;
+    try {
+      if ((await card.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('the browser was not allowed to change the card');
+      const result = await PocketInstances.makeInstances(card, {
+        core: option.value, platform: option.dataset.platform, convert: $('convert').checked,
+      }, (line) => { log.textContent += line + '\n'; log.scrollTop = log.scrollHeight; });
+      summary.className = 'ok';
+      summary.textContent = `Done: ${result.written} game file${result.written === 1 ? '' : 's'} written` +
+        (result.skipped ? `, ${result.skipped} skipped (see below)` : '') +
+        '. Eject the card safely before taking it out.';
+    } catch (error) {
+      summary.className = 'warn';
+      summary.textContent = 'Stopped: ' + error.message;
+    } finally {
+      $('run').disabled = $('choose').disabled = false;
+    }
+  });
+
+  function escape(text) {
+    const span = document.createElement('span'); span.textContent = text; return span.innerHTML;
+  }
+})();
+</script>
+</body>
+</html>
