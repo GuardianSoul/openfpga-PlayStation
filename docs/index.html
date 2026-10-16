@@ -90,15 +90,16 @@
   <section class="panel">
     <h2>What it changes on the card</h2>
     <ul>
-      <li>Writes one game file per game to <code>Assets/playstation/&lt;core&gt;/</code>. A multi-disc game
-        ("Game (Disc 1)", "Game (Disc 2)", …) becomes one file named after the game.</li>
-      <li>Removes the old one-file-per-disc game files of each game it combined.</li>
-      <li>Starts the game's shared memory card, <code>Saves/playstation/common/&lt;game&gt;.sav</code>, as a copy
-        of your most recently used disc's card. An existing shared card is never overwritten. Your other saves
-        stay where they are.</li>
-      <li>Splits a game stored as one big <code>.bin</code> file into one file per track, in a folder next to it,
-        and then deletes the big file and its <code>.cue</code> (with the box ticked).</li>
-      <li>Lists every disc it skipped and why. CHD images need converting on a computer first (see the README).</li>
+      <li>Makes one game file per game in <code>Assets/playstation/&lt;core&gt;/</code>. A game with several
+        discs ("Game (Disc 1)", "Game (Disc 2)", …) gets one file, named after the game.</li>
+      <li>Deletes the separate per-disc game files of those games, because the new file replaces them.</li>
+      <li>Gives each multi-disc game one memory card for all its discs,
+        <code>Saves/playstation/common/&lt;game&gt;.sav</code>. It starts as a copy of the card from the disc you
+        played last. If that card already exists, it is left alone. Your other saves are not touched.</li>
+      <li>With the box ticked: splits games that keep all their tracks in one <code>.bin</code> into a folder next
+        to the game, then deletes the original <code>.bin</code> and <code>.cue</code>.</li>
+      <li>Shows which games it skipped and why. CHD images have to be converted on a computer first (see the
+        README).</li>
     </ul>
     <p class="muted">Run it again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
       one-file-per-disc game files; they still work, but disc swapping needs the combined file.</p>
