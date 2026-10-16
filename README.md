@@ -3,9 +3,9 @@
 An FPGA core that runs original PlayStation games on the Analogue Pocket,
 built on the MiSTer PSX core.
 
-> **Status: early.** Final Fantasy VII is the reference game and plays from
-> start to gameplay with sound and FMVs. Other games may work, may glitch or
-> may not boot. See [Compatibility](#compatibility).
+> **Status: early.** Most games tried so far play with sound, FMVs and CD
+> music. Some may still glitch or not boot. See
+> [Compatibility](#compatibility).
 
 ## What you need
 
@@ -163,8 +163,8 @@ Memory card 1 works and is saved to the SD card:
 
 ## Compatibility
 
-Final Fantasy VII is the reference game. The full list, with what was tested
-and how far, is in [COMPATIBILITY.md](COMPATIBILITY.md). Reports are
+Most games tried so far work. The games tested in detail, and how far, are
+listed in [COMPATIBILITY.md](COMPATIBILITY.md). Reports are
 welcome: open an issue with the game, region, what happened and how far you
 got.
 
@@ -220,6 +220,9 @@ before it goes into a build.
 
 - Some games may run slower than on a real console.
 - A thin diagonal line can split the white Sony screen while it fades.
+- Some European discs with LibCrypt copy protection (for example Spyro: Year
+  of the Dragon) can freeze or misbehave. Use the USA version for now.
+- A stray line can show under some screens.
 
 ## Building from source
 
