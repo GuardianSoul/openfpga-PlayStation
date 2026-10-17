@@ -34,6 +34,7 @@
 module psx_cue_mount #(
     parameter [31:0] STRUCT_BRIDGE=32'h2C000000,   // 8 KiB aligned: path struct here, read window at +0x1000
     parameter LIBCRYPT=0,                          // the firmware reads a cue's .sbi into the table's LibCrypt mask
+    parameter DEBUG=0,                             // keep the firmware's probe words (dbg_words) for a readout
     // Firmware byte lanes, whole file names (Quartus ignores a $readmemh
     // name built by concatenation).
     // (each with its own keyword: Quartus sizes a bare follower by its
@@ -47,9 +48,9 @@ module psx_cue_mount #(
     input wire [1:0] disc_setting,               // the core menu's Disc (number - 1; 0 without --disc-menu)
     output reg s_allcomplete=0,                  // the stream's: after a launch pick is mounted
     // APF bridge
-    input wire bridge_wr,
+    input wire bridge_wr, bridge_rd,
     input wire [31:0] bridge_addr, bridge_data,
-    output wire [31:0] struct_rd_data,           // STRUCT_BRIDGE reads, two clocks after the address
+    output wire [31:0] struct_rd_data,           // STRUCT_BRIDGE reads: the word of the previous bridge_rd
     // APF slot updates in; the stream's copy out
     input wire slot_update,
     input wire [15:0] slot_update_id,
@@ -82,7 +83,10 @@ module psx_cue_mount #(
     input wire [2:0] d_error,
     output wire [31:0] param_struct, resp_struct,
     output reg cue_mounted=0,                     // a cue is the mounted disc
-    output reg mount_failed=0                     // the last cue did not mount
+    output reg mount_failed=0,                    // the last cue did not mount
+    // DEBUG: word 0 {s_allcomplete, cue_mounted, mount_failed, boot_pending,
+    // fw_idle, W_DBG+7 (open forms tried 26:16, LibCrypt mask 15:0)}, words 1-7 the firmware's probe words (cue_mount.c W_DBG)
+    output wire [255:0] dbg_words
 );
     // The firmware's slot numbers (cue_mount.c).
     localparam [15:0] DISC_SLOT=16'd101, TABLE_SLOT=16'd102, FILE_SLOT=16'd103;
@@ -105,7 +109,8 @@ module psx_cue_mount #(
     wire [31:0] adr=db_cyc ? db_adr : ib_adr;
     wire io=db_cyc && adr[31];
     wire inj_req=io && adr[30] && db_we;
-    wire io_wr=io && !adr[30] && db_we;
+    wire io_wr=io && !adr[30] && !adr[5] && db_we;
+    wire dbg_wr=io && !adr[30] && adr[5] && db_we;
     wire upd_wr=io_wr && adr[4:2]==3'd4;
     // An access completes in one clock (RAM and register reads registered);
     // a table write waits for a clock APF isn't writing, a slot update write
@@ -120,8 +125,16 @@ module psx_cue_mount #(
     wire a_we=db_cyc && db_we && !adr[31] && go;
     wire apf_win=bridge_addr[31:13]==STRUCT_BRIDGE[31:13] && bridge_addr[11:9]==3'd0;
     wire [11:0] apf_word={4'b1000,bridge_addr[12],bridge_addr[8:2]};
-    reg [11:0] b_rd_addr=0;
-    always @(posedge clk) b_rd_addr<=apf_word;
+    // APF samples a read's data before it pulses bridge_rd, so a read
+    // returns the word at the previous read's address (as core_bridge_cmd's
+    // registers and the memory card slot do); APF reads one word ahead.
+    // Following the live address handed APF the struct a word late, and
+    // every openfile came back 4 (outside /Assets) on hardware.
+    reg [11:0] b_rd_addr=0; reg rd_1=0;
+    always @(posedge clk) begin
+        rd_1<=bridge_rd;
+        if(bridge_rd && !rd_1) b_rd_addr<=apf_word;
+    end
     wire [11:0] b_addr=bridge_wr ? apf_word : b_rd_addr;
     wire [31:0] a_q, b_q;
     // One true dual-port RAM per byte lane (byte stores from the CPU).
@@ -237,6 +250,21 @@ module psx_cue_mount #(
             if(!allcomplete) s_allcomplete<=0;
         end
     end
+
+    // Probe words: firmware stores to W_DBG+n (0x80000020+4n).
+    generate if(DEBUG) begin : probe
+        reg [31:0] dbg[0:6];
+        reg [26:0] dbg_mask=0;
+        integer k;
+        initial for(k=0;k<7;k=k+1) dbg[k]=0;
+        always @(posedge clk) if(dbg_wr && go) begin
+            if(adr[4:2]==3'd7) dbg_mask<=db_dat[26:0]; else dbg[adr[4:2]]<=db_dat;
+        end
+        assign dbg_words={dbg[6],dbg[5],dbg[4],dbg[3],dbg[2],dbg[1],dbg[0],
+                          s_allcomplete,cue_mounted,mount_failed,boot_pending,fw_idle,dbg_mask};
+    end else begin : no_probe
+        assign dbg_words=256'd0;
+    end endgenerate
 endmodule
 
 // One byte lane of psx_cue_mount's RAM: 4,096 x 8, two read/write ports,

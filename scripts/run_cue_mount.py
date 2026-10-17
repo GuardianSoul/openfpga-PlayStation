@@ -85,9 +85,23 @@ CASES = [
     # two seconds in): the disc starts at INDEX 01.
     ('lead', 'Lead', 'Lead.cue', 'FILE "Lead.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n'
      'FILE "Lead2.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n', {'Lead.bin': 160, 'Lead2.bin': 170}, 'ok'),
-    # One inside a file can't be placed.
+    # One inside a file (ImgBurn-style merged cues: track 2's gap is not in
+    # the .bin): silence inserted before that track's INDEX 01.
     ('pregap-mid', 'Gap', 'Gap.cue', 'FILE "Gap.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
-     '  TRACK 02 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:02\n', {'Gap.bin': 5}, 'fail'),
+     '  TRACK 02 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:02\n', {'Gap.bin': 5}, 'ok'),
+    # The tester's layout (Rayman, Tomb Raider), scaled down: one merged
+    # .bin, PREGAP on track 2, INDEX 00/01 on the later tracks, from a
+    # Pocket Sync game JSON.
+    ('json-imgburn', 'Ray', 'Ray.cue', 'FILE "Ray.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     '  TRACK 02 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:40\n'
+     + ''.join(f'  TRACK {t:02} AUDIO\n    INDEX 00 00:{t:02}:10\n    INDEX 01 00:{t:02}:60\n' for t in range(3, 9)),
+     {'Ray.bin': 700}, 'ok', 'json-cue'),
+    ('pick-imgburn', 'Ray', 'Ray.cue', 'FILE "Ray.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     '  TRACK 02 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:40\n  TRACK 03 AUDIO\n    PREGAP 00:01:00\n    INDEX 01 00:03:00\n',
+     {'Ray.bin': 300}, 'ok'),
+    # A PREGAP with an INDEX 00 in the same track can't be placed.
+    ('pregap-index0', 'Gap', 'Gap.cue', 'FILE "Gap.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     '  TRACK 02 AUDIO\n    INDEX 00 00:00:02\n    PREGAP 00:02:00\n    INDEX 01 00:00:03\n', {'Gap.bin': 5}, 'fail'),
     ('cooked', 'Cooked', 'Cooked.cue', 'FILE "Cooked.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n', {'Cooked.bin': 3}, 'fail'),
     # A one-file cue renamed with its .bin (the cue still names the old
     # file): "<cue name>.bin" is opened instead.
@@ -116,6 +130,16 @@ CASES = [
      {D1 + '.bin': 40, D2 + ' (Track 1).bin': 30, D2 + ' (Track 2).bin': 170}, 'ok', 'launch', (DISC1, DISC2)),
     ('json-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-lc',
      (('Lc.sbi', sbi_bytes()),)),
+    # A game JSON whose slots have no path (APF on hardware): the cue's
+    # .sbi comes from the JSON's slot 99.
+    ('json-sbi99', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-sbi99-lc',
+     (('Lc.sbi', sbi_bytes()),)),
+    ('launch-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'launch-lc',
+     (('Lc.sbi', sbi_bytes()),)),
+    ('pick-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', '-lc',
+     (('Lc.sbi', sbi_bytes()),)),
+    # The Pocket refused the open of a path as getfile wrote it (4): the
+    # firmware tries the bytes swapped in each word, then a second struct.
     ('libcrypt-off', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', '',
      (('Lc.sbi', sbi_bytes()),)),
 ]
@@ -127,29 +151,36 @@ def words_hex(data):
 
 
 def gap_plan(cue):
-    """one_file_plan() extended as the firmware is: a PREGAP before a file's
-    first track is zero sectors before the file, and a first file holding
-    track 1's pregap (INDEX 01 past its start) starts the disc at INDEX 01.
-    (image bytes, sources, tracks)."""
-    files = []   # [name, gap, [[index00 or None, index01]]]
+    """one_file_plan() extended as the firmware is: a PREGAP is zero
+    sectors on the disc that are not in the files, before its track's INDEX 01
+    (before the file when it is the file's first track), and a first file
+    holding track 1's pregap (INDEX 01 past its start) starts the disc at
+    INDEX 01. (image bytes, sources, tracks)."""
+    files = []   # [name, [[index00 or None, index01, pregap]]]
     msf = lambda t: (lambda m, s, f: (m*60 + s)*75 + f)(*map(int, t.split(':')))
     for line in cue.read_text().splitlines():
         w = line.split()
-        if w[0] == 'FILE': files.append([line.split('"')[1], 0, []])
-        elif w[0] == 'TRACK': files[-1][2].append([None, None])
-        elif w[0] == 'PREGAP': files[-1][1] = msf(w[1])
-        elif w[0] == 'INDEX': files[-1][2][-1][int(w[1])] = msf(w[2])
-    lead = files[0][2][0][1]
+        if w[0] == 'FILE': files.append([line.split('"')[1], []])
+        elif w[0] == 'TRACK': files[-1][1].append([None, None, 0])
+        elif w[0] == 'PREGAP': files[-1][1][-1][2] = msf(w[1])
+        elif w[0] == 'INDEX': files[-1][1][-1][int(w[1])] = msf(w[2])
+    lead = files[0][1][0][1]
     image, sources, tracks = b'', [], []
-    for k, (name, gap, ts) in enumerate(files):
+    for k, (name, ts) in enumerate(files):
         data = (cue.parent/name).read_bytes()[(lead if k == 0 else 0)*SECTOR:]
-        base = len(image)//SECTOR + gap
-        image += bytes(gap*SECTOR) + data
-        sources.append((cue.parent/name, gap + len(data)//SECTOR))
-        for i0, i1 in ts:
+        at, start = 0, len(image)//SECTOR   # file sectors emitted; the disc sector it began at
+        for i0, i1, gap in ts:
             if k == 0: i0, i1 = max((i0 if i0 is not None else i1) - lead, 0), i1 - lead
             else: i0 = i1 if i0 is None else i0
-            tracks.append((base + i0 - (gap if i0 == 0 else 0), base + i1))
+            if gap:   # the file's data up to INDEX 01, then the silence
+                image += data[at*SECTOR:i1*SECTOR]; at = i1
+                here = len(image)//SECTOR; image += bytes(gap*SECTOR)
+                tracks.append((here, here + gap))
+            else:
+                here = len(image)//SECTOR
+                tracks.append((here + i0 - at, here + i1 - at))
+        image += data[at*SECTOR:]
+        sources.append((cue.parent/name, len(image)//SECTOR - start))
     return image, sources, tracks
 
 
@@ -199,12 +230,16 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     disc1 = next(f for f, _ in other if f.endswith('.cue')) if cue_name.endswith('.m3u') else cue_name
     disc2 = next((f for f, _ in other if '(Disc 2)' in f and f.endswith('.cue')), None)
     lc = mode.endswith('-lc'); mode = mode.removesuffix('-lc')
+    form = mode[-1] if '-of' in mode else ''   # '-ofN': the host takes only open form N
+    mode = mode.split('-of')[0]
     if cue_text is not None: put(cue_name, cue_text.encode('utf-8'))
     picked = len(files) - 1 if cue_text is not None else 0 if files else -1
     extra = []
     if mode.startswith('json'):
         extra.append(f'+cue100={picked}')
-        if mode in ('json-cue', 'json-052') and (len(sizes) == 1 or mode == 'json-052'):
+        if mode == 'json-sbi99':
+            extra += ['+nogetfile', f'+slot99={next(i for i, (p, _) in enumerate(files) if p.endswith(".sbi"))}']
+        if mode in ('json-cue', 'json-052', 'json-sbi99') and (len(sizes) == 1 or mode == 'json-052'):
             # pupdate/Pocket Sync (and 0.5.2's layout): the .bin files in 101, 102, ...
             for k, fn in enumerate(sizes):
                 extra.append(f'+slot{101 + k}={next(i for i, (p, _) in enumerate(files) if p.endswith("/" + fn))}')
@@ -222,7 +257,7 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     (case/'fs.hex').write_text(''.join(f'{b:02x}\n' for b in blob))
     (case/'meta.hex').write_text(''.join(f'{v:08x}\n' for v in meta))
     (case/'paths.hex').write_text(''.join(words_hex(p) for p in paths))
-    args = [f'+base={case}', f'+nfiles={len(files)}', f'+picked={picked}'] + (['+launch'] if mode else []) + extra
+    args = [f'+base={case}', f'+nfiles={len(files)}', f'+picked={picked}'] + (['+launch'] if mode else []) + extra + ([f'+openform={form}'] if form else [])
     if expect == 'ok':
         size, sectors = expected(case, disk, disc1, mask=libcrypt_mask(sbi) if lc else 0)
         args += [f'+size={size}', f'+sectors={sectors}']
@@ -238,7 +273,7 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     out = subprocess.run([vvp, str(work/('tb_lc.vvp' if lc else 'tb.vvp')), *args], capture_output=True, text=True, timeout=1800)
     text = out.stdout + out.stderr
     ok = 'PASS' in text and 'FAIL' not in text
-    print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(('mount', 'menu'))), flush=True)
+    print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("mount", "menu", "probe"))), flush=True)
     if not ok: print(text[-3000:])
     return ok
 

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import measure_pocket_seeds as study
+from pocket_project_copy import ROOT_JOB_EVIDENCE, project_copy_ignore
 
 
 class PocketSeedInputsTests(unittest.TestCase):
@@ -28,6 +29,35 @@ class PocketSeedInputsTests(unittest.TestCase):
             self.assertEqual((output/'resources/result.json').read_text(),(nested/'result.json').read_text())
             self.assertIn('true',(source/'result.json').read_text())
 
+    def test_all_known_job_verdicts_are_removed_but_input_resources_survive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir()
+            nested=source/'resources';nested.mkdir()
+            for name in ROOT_JOB_EVIDENCE:
+                (source/name).write_text('stale parent verdict\n')
+                (nested/name).write_text('nested input resource\n')
+            for name,text in [('manifest.json','{"input_profile":"keep"}\n'),
+                              ('top.sv','module top; endmodule\n'),('rom.hex','10\n20\n')]:
+                (source/name).write_text(text)
+            for folder in ['db','incremental_db','output_files','input-archive']:
+                p=source/folder;p.mkdir();(p/'stale.bin').write_bytes(b'old output')
+            for name in ['map.log','apf_top.fit.rpt','apf_top.sta.summary']:
+                (source/name).write_text('old compiler output\n')
+            output=root/'new-job';study.clone(source,output)
+            for name in ROOT_JOB_EVIDENCE:
+                self.assertFalse((output/name).exists(),name)
+                self.assertEqual((output/'resources'/name).read_bytes(),(nested/name).read_bytes())
+                self.assertTrue((source/name).exists(), 'parent must remain untouched')
+            for name in ['manifest.json','top.sv','rom.hex']:
+                self.assertEqual((output/name).read_bytes(),(source/name).read_bytes())
+            for name in ['db','incremental_db','output_files','input-archive',
+                         'map.log','apf_top.fit.rpt','apf_top.sta.summary']:
+                self.assertFalse((output/name).exists(),name)
+
+    def test_early_preparer_uses_the_same_copy_filter(self):
+        import prepare_pocket_early
+        self.assertIs(prepare_pocket_early.project_copy_ignore,project_copy_ignore)
+
     def fixture(self,root):
         captured=root/'captured';captured.mkdir()
         external=root/'external.sv';external.write_text('`include \"defs.vh\"\nmodule external; // ORIGINAL\nendmodule\n')
@@ -43,7 +73,7 @@ class PocketSeedInputsTests(unittest.TestCase):
             'set_global_assignment -name SEARCH_PATH \"'+str(includes)+'\"\n')
         scripts=root/'scripts';scripts.mkdir()
         for name in ('measure_spu_scalar_full_top.py','run_resource_fit.py','resource_report.py',
-                     'prepare_resource_targets.py','tool_paths.py'):
+                     'prepare_resource_targets.py','tool_paths.py','pocket_project_copy.py'):
             (scripts/name).write_text('# fixture tool identity\n')
         replacement=root/'replacement.sv';replacement.write_text(adapter.read_text()+'// replacement\n')
         args=['measure_pocket_seeds.py',str(captured),'--source','adapter.sv',
@@ -80,6 +110,7 @@ class PocketSeedInputsTests(unittest.TestCase):
             self.assertEqual(seen,['control-s1','candidate-s1','control-s3','candidate-s3'])
             report=json.loads(next((root/'build/resources/pocket-seeds/runs').glob('*/report.json')).read_text())
             self.assertTrue(report['passed']);self.assertTrue(report['source_identity_verified'])
+            self.assertIn(str(root/'scripts/pocket_project_copy.py'),report['protected_sha256'])
             self.assertNotEqual(study.digest(external),report['original_input_sha256'][str(external)])
 
     def test_wrong_expected_source_is_rejected_before_any_compiler(self):

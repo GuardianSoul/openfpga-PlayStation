@@ -18,8 +18,15 @@
 // synchronous fixed-latency mode with full refresh; write bursts never cross a
 // 128-halfword row; read bursts that cross one return X (the chip would need
 // WAIT); read OE# timing and bus contention; no asynchronous accesses (CE#
-// low without a clock edge or CRE); and the Pocket rule that the clock never
-// runs while any die is in asynchronous mode (writes turned into bursts).
+// low without a clock edge or CRE); and the Pocket rule that no clock edge
+// reaches a selected die in asynchronous mode (writes turned into bursts).
+// Register writes depend on the die's mode, as on the chip: an asynchronous
+// die takes the asynchronous form above (a clock edge then fails); a
+// synchronous die takes only the clocked form (CRE, CE#, ADV# and WE# low at
+// a rising edge, A[19:18] the register, DQ the value, written when CE#
+// rises) and ignores the asynchronous one (ignored_configs counts them).
+// START_BCR/START_RCR are the registers at time 0: power-on values, or what
+// another core left (synchronous, its own latency).
 // Asynchronous single reads/writes (address latched at ADV# rising; tAA,
 // tOE, tWP, tCW, tAW, tDW, tRC) are accepted only while the die is in its
 // asynchronous power-on mode.
@@ -31,7 +38,8 @@ module psx_cram_model #(
     parameter real T_SU = 3.0, T_HD = 2.0, T_CSP = 4.0, T_KP = 4.0, T_CLK_MIN = 15.0,
     parameter real T_LAT_MIN = 60.0, T_CEM = 4000.0, T_CPH = 5.0, T_POWER = 150000.0,
     parameter real T_VP = 5.0, T_CVS = 7.0, T_AVS = 5.0, T_AVH = 2.0,
-    parameter real T_WP = 45.0, T_CW = 70.0, T_AW = 70.0, T_DW = 20.0, T_AA = 70.0, T_RC = 70.0
+    parameter real T_WP = 45.0, T_CW = 70.0, T_AW = 70.0, T_DW = 20.0, T_AA = 70.0, T_RC = 70.0,
+    parameter [15:0] START_BCR = 16'h9D1F, START_RCR = 16'h0010
 )(
     input  wire        clk, host_oe,
     input  wire [21:16] a,
@@ -69,14 +77,14 @@ module psx_cram_model #(
 
     // ---- registers
     reg [15:0] bcr [0:1], rcr [0:1];
-    initial begin bcr[0] = 16'h9D1F; bcr[1] = 16'h9D1F; rcr[0] = 16'h0010; rcr[1] = 16'h0010; end
+    initial begin bcr[0] = START_BCR; bcr[1] = START_BCR; rcr[0] = START_RCR; rcr[1] = START_RCR; end
 
     // ---- bookkeeping
-    integer async_reads = 0, async_writes = 0;
+    integer async_reads = 0, async_writes = 0, sync_configs = 0, ignored_configs = 0;
     integer clk_edges = 0, config_writes = 0, commands = 0, reads = 0, writes = 0, row_stalls = 0, errors = 0;
     real    max_ce_low = 0.0;
     wire    ce_n = ce0_n && ce1_n;
-    reg     asy = 0, die = 0, cfg = 0, burst = 0, wr = 0, edge_seen = 0, latched = 0, committed = 0, stalled = 0;
+    reg     asy = 0, die = 0, cfg = 0, cfgs = 0, burst = 0, wr = 0, edge_seen = 0, latched = 0, committed = 0, stalled = 0;
     reg [21:0] addr = 0, start = 0;
     reg [15:0] cfg_val = 0;
     reg [1:0]  cfg_sel = 0;
@@ -96,11 +104,11 @@ module psx_cram_model #(
     always @* if (host_oe === 1'b1 && drive) fail("bus contention");
 
     // ---- input change tracking and hold checks (inputs sampled at a rising edge)
-    wire sync_sel = !ce_n && !cfg && !asy;
-    wire latch_sel = !ce_n && (cfg || asy);
+    wire sync_sel = !ce_n && (!cfg || cfgs) && !asy;      // inputs sampled at clock edges
+    wire latch_sel = !ce_n && ((cfg && !cfgs) || asy);    // asynchronous forms
     always @(a) begin
         if (sync_sel && $realtime - t_rise < T_HD) fail("address hold after clock");
-        if (!ce_n && cfg && latched && !committed) fail("config address changed");
+        if (!ce_n && cfg && !cfgs && latched && !committed) fail("config address changed");
         if (latch_sel && $realtime - t_adv_rise < T_AVH) fail("latched address hold");
         if (!ce_n && asy && latched) fail("async address changed");
         t_a = $realtime;
@@ -136,8 +144,20 @@ module psx_cram_model #(
         if ($realtime - t_ce_rise < T_CPH) fail("CE# high time");
         if ($realtime - t_cre < T_SU) fail("CRE setup to CE#");
         t_ce_fall = $realtime; die = ce0_n; cfg = cre; asy = !cre && bcr[ce0_n][15];
+        cfgs = cre && !bcr[ce0_n][15];   // a synchronous die: the clocked register write
         burst = 0; edge_seen = 0; latched = 0; committed = 0; stalled = 0; beats = 0;
     end
+
+    task automatic set_register;
+        begin
+            case (cfg_sel)
+            2'b10: bcr[die] = cfg_val;
+            2'b00: rcr[die] = cfg_val;
+            default: fail("unsupported config register");
+            endcase
+            config_writes = config_writes + 1; committed = 1;
+        end
+    endtask
 
     task automatic commit;
         begin
@@ -146,12 +166,7 @@ module psx_cram_model #(
             if ($realtime - t_adv_fall < T_AW) fail("config tAW");
             if ($realtime - t_dq < T_DW) fail("config data setup");
             if (dq !== cfg_val) fail("config data differs from address");
-            case (cfg_sel)
-            2'b10: bcr[die] = cfg_val;
-            2'b00: rcr[die] = cfg_val;
-            default: fail("unsupported config register");
-            endcase
-            config_writes = config_writes + 1; committed = 1;
+            set_register();
         end
     endtask
 
@@ -163,7 +178,7 @@ module psx_cram_model #(
         if (^{a, dq} === 1'bx) fail("config address undriven");
         latched = 1; cfg_val = dq; cfg_sel = a[19:18]; addr = {a, dq};
     end
-    always @(posedge we_n) if (!ce_n && cfg && latched && !committed) commit();
+    always @(posedge we_n) if (!ce_n && cfg && !cfgs && latched && !committed) commit();
 
     // ---- asynchronous single accesses (only while the die is in asynchronous mode)
     always @(posedge we_n) if (!ce_n && asy) begin : async_write
@@ -184,7 +199,13 @@ module psx_cram_model #(
     always @(posedge ce0_n or posedge ce1_n) if (ce0_n && ce1_n && t_ce_fall > 0) begin
         if ($realtime - t_ce_fall > max_ce_low) max_ce_low = $realtime - t_ce_fall;
         if ($realtime - t_ce_fall > T_CEM) fail("CE# low longer than tCEM");
-        if (cfg) begin
+        if (cfgs) begin
+            if (!edge_seen) ignored_configs = ignored_configs + 1;   // asynchronous form: ignored
+            else begin
+                if ($realtime - t_rise < T_HD) fail("CE# hold after clock");
+                set_register(); sync_configs = sync_configs + 1;
+            end
+        end else if (cfg) begin
             if (latched && !committed) commit();
             if (!committed) fail("config access without a write");
         end else if (asy) begin
@@ -227,14 +248,24 @@ module psx_cram_model #(
         realtime period;
         period = $realtime - t_rise;
         if ($realtime - t_fall < T_KP) fail("clock low time");
-        if (bcr[0][15] || bcr[1][15]) fail("clock running while a die is asynchronous");
+        if ((bcr[0][15] && !ce0_n) || (bcr[1][15] && !ce1_n)) fail("clock running while a die is asynchronous");
         clk_edges = clk_edges + 1;
         if (!ce_n) begin
-            if (cfg || cre) fail("clock during a configuration access");
+            if ((cfg && !cfgs) || cre != cfg) fail("clock during a configuration access");
             if (period < T_CLK_MIN) fail("clock faster than allowed");
             if ($realtime - t_a < T_SU || $realtime - t_adv < T_SU || $realtime - t_we < T_SU ||
                 $realtime - t_bm < T_SU || (host_oe && $realtime - t_dq < T_SU))
                 fail("input setup to clock");
+            if (cfgs) begin
+                // clocked register write: the value at the ADV# edge
+                if (!edge_seen) begin
+                    if (adv_n || we_n) fail("sync config without ADV#/WE# at its first edge");
+                    if ($realtime - t_ce_fall < T_CSP) fail("CE# setup to clock");
+                    if (^{a[19:18], dq} === 1'bx) fail("sync config value undriven");
+                    cfg_sel = a[19:18]; cfg_val = dq;
+                end else if (!adv_n) fail("ADV# low twice in a config write");
+                edge_seen = 1;
+            end else begin
             edge_seen = 1;
             if (!burst) begin
                 if (adv_n) fail("burst without ADV# at its first edge");
@@ -266,6 +297,7 @@ module psx_cram_model #(
                     drive_data <= #(T_ACLK) v;
                     beats = beats + 1; addr = addr + 1;
                 end
+            end
             end
         end
         t_prev_rise = t_rise; t_rise = $realtime;

@@ -155,6 +155,14 @@ class LibCryptSlot(unittest.TestCase):
             self.assertNotIn(99, [s['id'] for s in self.run_card(card, '--no-libcrypt')])
             (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared[:3]}}))
             self.assertNotIn(99, [s['id'] for s in self.run_card(card)])
+            # A cue-reader core (slot 0 takes .cue) reads a game JSON's .sbi
+            # from slot 99 too: the JSON's cue has no path on the Pocket.
+            reader = [{'id': 0, 'extensions': ['json', 'cue', 'bin', 'm3u']}, {'id': 100, 'extensions': ['cue', 'm3u']},
+                      {'id': 101}, {'id': 99}]
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': reader}}))
+            self.assertIn({'id': 99, 'filename': 'Ape.sbi'}, self.run_card(card))
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': reader[:3]}}))
+            self.assertNotIn(99, [s['id'] for s in self.run_card(card)])
 
 
 

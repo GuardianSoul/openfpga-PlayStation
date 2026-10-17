@@ -43,6 +43,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     localparam [9:0] OUT_W=10'd640;
     reg hs_d=0, vs_d=0, active_d=0;
     reg vs_wait=0;   // VS_ON_HS (as psx_apf_video): VS waits for the next HS start
+    reg [3:0] hs_pipe=0;   // VS_ON_HS: HS 4 clocks after VS (APF wants at least 3)
     wire vs_edge=VS_ON_HS!=0 ? hsync && !hs_d && (vsync && !vs_d || vs_wait) : vsync && !vs_d;
     wire active=!hblank && !vblank;
     wire hs_end=!hsync && hs_d;
@@ -84,7 +85,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     always @(posedge clk) begin
         hs_d<=hsync; vs_d<=vsync; active_d<=active;
         if (VS_ON_HS!=0) vs_wait<=!vs_edge && (vs_wait || vsync && !vs_d);
-        hs<=hsync && !hs_d;
+        hs_pipe<={hs_pipe[2:0], hsync && !hs_d};
+        hs<=VS_ON_HS!=0 ? hs_pipe[3] : hsync && !hs_d;
         vs<=vs_edge;
 
         // write

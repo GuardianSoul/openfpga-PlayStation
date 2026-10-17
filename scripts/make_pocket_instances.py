@@ -23,6 +23,9 @@ Per-disc files this script wrote before are removed.
 LibCrypt (cores packaged with --libcrypt, which declare slot 99): a PAL disc's
 redump .sbi file next to its cue (same name, or the only .sbi in the folder)
 goes into slot 99, and the core reads its protected-sector list from it.
+Cue-reader cores that declare slot 99 get <cue name>.sbi there too: the
+core reads a .sbi beside a cue opened by its path, but a game JSON's cue
+has no path on the Pocket.
 
 One-file cores (packaged with --one-file-disc, which declare a .trk slot 102):
 each disc is one .bin with all its tracks in slot 100*n+1 and a 1,600-byte
@@ -34,6 +37,24 @@ have any pregap stored in the image; a PREGAP outside it, or a data track
 after track 1, is not supported. With --convert, .chd files are extracted as
 one merged .bin instead of split. A disc's .sbi goes into the table (its
 LibCrypt mask in word 3) instead of a slot.
+
+Cue-reader cores (packaged with --cue-mount; slot 0 takes .cue files) read
+the cue themselves: each game file names the cue (slot 100) and, as Pocket
+Sync and pupdate write them, its files in slots 101 and up (up to 19; the
+core boots disc 1 from them), so nothing is joined and no table is written.
+A multi-disc game gets one game file with disc 1; the core finds the other
+discs by their "(Disc n)" names. When the discs' paths differ by more than
+that number (Final Fantasy IX's "(Disc 3) (v1.1)" and "(USA) (Disc 4)
+(Rev 1)"), the script writes a .m3u playlist of the discs (up to four, as
+the core reads them) next to them: a core whose slot 100 takes .m3u gets
+one game file naming it; otherwise each disc keeps its own game file
+(sharing one card) and the playlist can be picked in the core's file list
+to swap discs. A disc's LibCrypt .sbi must have the cue's name.
+
+A .bin with no cue (no cue in its folder names it, and there is no
+"<name>.cue") gets "<name>.cue" with one MODE2/2352 data track, so it gets a
+game file too; a game with CD music needs its real cue. A "(Track n)" file
+without its cue is reported instead.
 
 Multi-disc games (names with "(Disc N)") share one memory card: the Pocket
 names a save after the game file, so each disc would otherwise get its own
@@ -47,6 +68,8 @@ not exist yet it starts as a copy of the core's newest per-disc card.
   python3 scripts/make_pocket_instances.py /path/to/sd-card --core PSXEarlyTracks
   python3 scripts/make_pocket_instances.py /path/to/sd-card --convert
 """
+# Ported to release/docs/instances.js (SD card helper page) and
+# tools/pocket-plugin (Pocket Sync / pupdate plugin): keep the three in step.
 import argparse
 import json
 import os
@@ -57,12 +80,15 @@ import subprocess
 import tempfile
 
 SECTOR = 2352
+RESERVE = 256 << 20   # space every write keeps free on the SD card
 PREGAP = 150
 LIBCRYPT_SLOT = 99
 CARD_SLOT = 16
 HELP_ENTRY = '! How to add games (see README).json'   # package_release.py's placeholder
 DISC = re.compile(r' \(Disc \d+\)')
 DISC_N = re.compile(r'\s*\(Disc (\d+)\)', re.I)
+# Files a cue-reader core reads from the game file's slots 101+ (disc 1).
+CUE_FILE_SLOTS = 19
 # Other tags in parentheses (region, release, languages) can differ between
 # a game's discs (e.g. FFIX: "(Disc 1) (v1.1)" .. "(USA) (Disc 4)
 # (Rev 1)"), so grouping uses the title without them.
@@ -116,6 +142,52 @@ def parse_cue(path):
             key = int(m.group(2)) if m.group(2) else 'pregap'
             files[-1][1][-1][2][key] = (mm*60+ss)*75+ff
     return files
+
+
+TRACK_FILE = re.compile(r'\(Track \d+\)', re.I)
+
+
+def lone_bin_cue(text_name):
+    """The cue written for a .bin that came without one: one data track."""
+    return f'FILE "{text_name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+
+
+def lone_bins(common):
+    """.bin files under common that no cue in their folder names and that
+    have no <name>.cue: (bin, reason or None). A reason means it is skipped:
+    a "(Track n)" file is part of a disc whose cue is missing."""
+    found = []
+    for b in sorted(p for p in common.rglob('*') if p.suffix.lower() == '.bin' and p.is_file() and not p.name.startswith('._')):
+        folder = b.parent
+        if b.name.endswith(' (one file).bin') or b.with_suffix('.cue').is_file(): continue
+        named, broken = set(), False
+        for cue in folder.iterdir():
+            if cue.suffix.lower() != '.cue' or cue.name.startswith('._') or not cue.is_file(): continue
+            try: named |= {os.path.normpath(folder/f.replace('\\', '/')) for f, _ in parse_cue(cue)}
+            except ValueError: broken = True
+        if broken or os.path.normpath(b) in named: continue
+        if TRACK_FILE.search(b.stem): reason = 'a track file whose .cue is missing'
+        elif b.stat().st_size % SECTOR: reason = 'not whole 2352-byte sectors'
+        else: reason = None
+        found.append((b, reason))
+    return found
+
+
+def write_lone_cues(common, log=print):
+    """Give each lone .bin a one-track <name>.cue so it gets a game file.
+    Returns (written, skipped). Like every write here, it keeps RESERVE free."""
+    written = skipped = 0
+    for b, reason in lone_bins(common):
+        shown = b.relative_to(common).as_posix()
+        if reason:
+            log(f'skip {shown}: {reason}'); skipped += 1; continue
+        text = lone_bin_cue(b.name).encode()
+        if shutil.disk_usage(common).free < len(text) + RESERVE:
+            log(f'skip {shown}: not enough free space for its .cue'); skipped += 1; continue
+        b.with_suffix('.cue').write_bytes(text)
+        log(f'wrote {b.with_suffix(".cue").relative_to(common).as_posix()} (one data track; a game with CD music needs its own .cue)')
+        written += 1
+    return written, skipped
 
 
 def raw_track(kind):
@@ -298,6 +370,27 @@ def convert(common, chdman, one_file=False):
     return done, failed
 
 
+def cue_check(files, folder):
+    """Reason a cue-reader core cannot open this cue's files, or None."""
+    if not files: return 'no FILE entries'
+    for name, _ in files:
+        path = folder/name.replace('\\', '/')
+        if not path.is_file(): return f'{name}: file missing'
+        if path.stat().st_size % SECTOR: return f'{name}: not whole 2352-byte sectors'
+    return None
+
+
+def sibling_paths(cue1, others):
+    """Whether every disc's cue is disc 1's path with "(Disc 1)" renumbered,
+    as the core's cue reader finds them."""
+    return all(re.sub(r'\(Disc 1\)', f'(Disc {n})', str(cue1)) == str(cue) for n, cue in others.items())
+
+
+def playlist_text(m3u, cues):
+    """A .m3u playlist of cues, relative to the playlist's folder."""
+    return ''.join(os.path.relpath(cue, m3u.parent).replace(os.sep, '/') + '\n' for cue in cues)
+
+
 def check(files, folder):
     """Reason the core cannot play this layout, or None."""
     if not files: return 'no FILE entries'
@@ -326,6 +419,8 @@ def main():
                         help="one memory card per multi-disc game (default: when the core's data.json declares slot 16)")
     parser.add_argument('--one-file', action=argparse.BooleanOptionalAction, default=None,
                         help="one .bin plus a .trk table per disc (default: when the core's data.json declares a .trk slot 102)")
+    parser.add_argument('--cue-reader', action=argparse.BooleanOptionalAction, default=None,
+                        help="game files name the cue and disc 1's files (default: when the core's launch slot 0 takes .cue files)")
     parser.add_argument('--max-tracks', type=int, help="track slots the core declares (default: read from the core's data.json on the card, else 8)")
     args = parser.parse_args()
     data = args.card/'Cores'/f'GuardianSoul.{args.core}'/'data.json'
@@ -333,6 +428,12 @@ def main():
     except (OSError, KeyError, ValueError): declared = None
     if args.one_file is None:
         args.one_file = declared is not None and any(s.get('id') == 102 and 'trk' in s.get('extensions', []) for s in declared)
+    if args.cue_reader is None:
+        args.cue_reader = declared is not None and any(s.get('id') == 0 and 'cue' in s.get('extensions', []) for s in declared)
+    if args.cue_reader: args.one_file = False
+    # Cue-reader cores read .m3u playlists (up to four discs); slot 100 taking
+    # them means a game file can name one.
+    playlist_slot = declared is not None and any(s.get('id') == 100 and 'm3u' in s.get('extensions', []) for s in declared)
     if args.max_tracks is None:
         args.max_tracks = 8 if declared is None else sum(1 for s in declared if isinstance(s.get('id'), int) and 101 <= s['id'] <= 199)
     if args.shared_cards is None:
@@ -342,25 +443,55 @@ def main():
     common = args.card/'Assets'/args.platform/'common'
     out = args.card/'Assets'/args.platform/f'GuardianSoul.{args.core}'
     if args.convert:
-        done, failed = convert(common, args.chdman, args.one_file)
+        done, failed = convert(common, args.chdman, args.one_file or args.cue_reader)
         print(f'{done} images converted, {failed} failed')
     disc_tracks = {n: sum(1 for s in (declared or []) if isinstance(s.get('id'), int) and 100*n+1 <= s['id'] <= 100*n+99)
                    for n in range(2, 10)}
     discs_declared = 1 + sum(1 for n in range(2, 10) if disc_tracks[n])
     written = skipped = 0
+    skipped += write_lone_cues(common)[1]
     discs = {}
-    games = {}   # --disc-menu cores: game name -> {disc number: (cue, files)}
+    games = {}   # --disc-menu cores: game name -> {disc number: (cue, files, tracks)}
+
+    def single(cue, files, tracks_n, shared_card=None):
+        """Write cue's own game file (shared_card: its game's shared card name, if set)."""
+        folder = cue.parent
+        data_path = folder.relative_to(common).as_posix()
+        slots = [{'id': 100, 'filename': cue.name}] + [{'id': 101+k, 'filename': name} for k, (name, _) in enumerate(files)]
+        if args.cue_reader: sbi = cue.with_suffix('.sbi') if cue.with_suffix('.sbi').is_file() else None
+        else: sbi = find_sbi(cue) if args.libcrypt or args.one_file else None
+        # Cue-reader cores read a cue's .sbi by its path, which a game JSON's
+        # cue doesn't have on the Pocket: they take it from slot 99 instead.
+        if sbi and (args.cue_reader and args.libcrypt or not (args.one_file or args.cue_reader)):
+            slots.append({'id': LIBCRYPT_SLOT, 'filename': sbi.name})
+        prefix = data_path + '/' if data_path != '.' else ''
+        shared = (shared_card or shared_card_name(cue.stem)) if args.shared_cards else None
+        if shared:
+            for s in slots: s['filename'] = prefix + s['filename']
+            slots.append({'id': CARD_SLOT, 'filename': shared})
+            discs.setdefault(shared, []).append(cue.stem)
+            prefix = ''
+        instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
+        out.mkdir(parents=True, exist_ok=True)
+        (out/(cue.stem + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
+        count = tracks_n if args.one_file or args.cue_reader else len(files)
+        kind = ', one file' if args.one_file else ', cue' if args.cue_reader else ''
+        print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{kind}{", LibCrypt " + sbi.name if sbi else ""})')
+
     for cue in visible(common, '*.cue'):
         folder = cue.parent
         try: files = parse_cue(cue)
         except ValueError as error: files, reason = None, str(error)
-        else: reason = None if args.one_file else check(files, folder)
-        if args.one_file and folder.name == cue.stem and (folder.parent/cue.name).is_file(): continue  # split copy of a merged cue
+        else: reason = cue_check(files, folder) if args.cue_reader else None if args.one_file else check(files, folder)
+        if (args.one_file or args.cue_reader) and folder.name == cue.stem and (folder.parent/cue.name).is_file(): continue  # split copy of a merged cue
         if reason is None and args.one_file:
             made = write_one_file(cue, files, find_sbi(cue))
             if isinstance(made, str): reason = made
             else: files = [(made[0].relative_to(folder).as_posix(), None), (made[1].relative_to(folder).as_posix(), None)]; tracks_n = made[2]
-        if reason is None and not args.one_file and len(files) > args.max_tracks: reason = f'{len(files)} track files (core takes {args.max_tracks})'
+        if reason is None and args.cue_reader:   # disc 1 boots from its slots, the rest by path
+            tracks_n = sum(len(tracks) for _, tracks in files)
+            if len(files) > min(CUE_FILE_SLOTS, args.max_tracks): files = []   # only slots the core declares
+        if reason is None and not (args.one_file or args.cue_reader) and len(files) > args.max_tracks: reason = f'{len(files)} track files (core takes {args.max_tracks})'
         if reason and (folder/cue.stem/(cue.stem + '.cue')).is_file(): continue  # converted copy is listed
         if reason:
             print(f'skip {cue.relative_to(common)}: {reason}'); skipped += 1; continue
@@ -370,41 +501,59 @@ def main():
             game = RELEASE.sub('', name).strip()
             # Two releases of the same disc: keep the one whose release tags
             # match disc 1's (decided below), else the first.
-            games.setdefault(game, {}).setdefault(int(disc.group(1)), []).append((cue, files, RELEASE.findall(name)))
+            games.setdefault(game, {}).setdefault(int(disc.group(1)), []).append((cue, files, RELEASE.findall(name), tracks_n if args.one_file or args.cue_reader else None))
             continue
-        data_path = folder.relative_to(common).as_posix()
-        slots = [{'id': 100, 'filename': cue.name}] + [{'id': 101+k, 'filename': name} for k, (name, _) in enumerate(files)]
-        sbi = find_sbi(cue) if args.libcrypt or args.one_file else None
-        if sbi and not args.one_file: slots.append({'id': LIBCRYPT_SLOT, 'filename': sbi.name})
-        prefix = data_path + '/' if data_path != '.' else ''
-        shared = shared_card_name(cue.stem) if args.shared_cards else None
-        if shared:
-            for s in slots: s['filename'] = prefix + s['filename']
-            slots.append({'id': CARD_SLOT, 'filename': shared})
-            discs.setdefault(shared, []).append(cue.stem)
-            prefix = ''
-        instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
-        out.mkdir(parents=True, exist_ok=True)
-        (out/(cue.stem + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
-        count = tracks_n if args.one_file else len(files)
-        print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{", one file" if args.one_file else ""}{", LibCrypt " + sbi.name if sbi else ""})'); written += 1
+        single(cue, files, tracks_n if args.one_file or args.cue_reader else None); written += 1
     for game, found in sorted(games.items()):
-        first_tags = found.get(1, [(None, None, [])])[0][2]
-        parts = {n: next(((c, f) for c, f, t in cands if t == first_tags), cands[0][:2]) for n, cands in found.items()}
+        first_tags = found.get(1, [(None, None, [], None)])[0][2]
+        parts = {n: next(((c, f, k) for c, f, t, k in cands if t == first_tags), (cands[0][0], cands[0][1], cands[0][3])) for n, cands in found.items()}
         numbers = sorted(parts)
         if numbers != list(range(1, len(numbers)+1)) or len(numbers) > discs_declared:
             print(f'skip {game}: discs {numbers} (core takes discs 1-{discs_declared})'); skipped += 1; continue
-        too_long = [] if args.one_file else [n for n in numbers[1:] if len(parts[n][1]) > disc_tracks[n]]
+        too_long = [] if args.one_file or args.cue_reader else [n for n in numbers[1:] if len(parts[n][1]) > disc_tracks[n]]
         if too_long:
             print(f'skip {game}: disc {too_long[0]} has more track files than the core declares'); skipped += 1; continue
+        if args.cue_reader and not sibling_paths(parts[1][0], {n: parts[n][0] for n in numbers[1:]}):
+            # The core can't find the other discs by name: a playlist lists them.
+            name = DISC_N.sub('', parts[1][0].stem).strip()
+            root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
+            m3u = root/(name + '.m3u')
+            if len(numbers) <= 4:
+                m3u.write_text(playlist_text(m3u, [parts[n][0] for n in numbers]))
+            if len(numbers) <= 4 and playlist_slot:
+                data_path = root.relative_to(common).as_posix()
+                cue1 = parts[1][0]
+                slots = [{'id': 100, 'filename': m3u.name}] + [
+                    {'id': 101+k, 'filename': (cue1.parent/f).relative_to(root).as_posix()} for k, (f, _) in enumerate(parts[1][1])]
+                prefix = data_path + '/' if data_path != '.' else ''
+                shared = shared_card_name(parts[1][0].stem) if args.shared_cards else None
+                if shared:
+                    for s in slots: s['filename'] = prefix + s['filename']
+                    slots.append({'id': CARD_SLOT, 'filename': shared})
+                    discs.setdefault(shared, []).extend(parts[n][0].stem for n in numbers)
+                    prefix = ''
+                instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
+                out.mkdir(parents=True, exist_ok=True)
+                (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
+                for n in numbers: (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
+                print(f'wrote {name}.json ({len(numbers)} discs, playlist {m3u.relative_to(common).as_posix()})'); written += 1
+                continue
+            if len(numbers) <= 4:
+                print(f'{game}: the discs\' names differ by more than their number: wrote the playlist '
+                      f'{m3u.relative_to(common).as_posix()} (pick it in the core\'s file list to swap discs); each disc also gets its own game file')
+            else:
+                print(f'{game}: the discs\' names differ by more than their number, so each disc gets its own game file')
+            for n in numbers: single(*parts[n], shared_card=shared_card_name(parts[1][0].stem)); written += 1
+            continue
         root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
         rel = lambda cue, name: (cue.parent/name).relative_to(root).as_posix()
         cue1 = parts[1][0]
         slots = [{'id': 100, 'filename': rel(cue1, cue1.name)}]
-        for n in numbers:
-            cue, files = parts[n]
+        for n in numbers[:1] if args.cue_reader else numbers:   # the cue reader finds the other discs by path
+            cue, files, _ = parts[n]
             slots += [{'id': 100*n+1+k, 'filename': rel(cue, name)} for k, (name, _) in enumerate(files)]
-        sbi = find_sbi(cue1) if args.libcrypt else None
+        if args.cue_reader: sbi = cue1.with_suffix('.sbi') if args.libcrypt and cue1.with_suffix('.sbi').is_file() else None
+        else: sbi = find_sbi(cue1) if args.libcrypt else None
         if sbi: slots.append({'id': LIBCRYPT_SLOT, 'filename': rel(cue1, sbi.name)})
         data_path = root.relative_to(common).as_posix()
         prefix = data_path + '/' if data_path != '.' else ''
@@ -422,7 +571,7 @@ def main():
         (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
         for n in numbers:   # per-disc files from earlier runs
             (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
-        print(f'wrote {name}.json ({len(numbers)} discs)'); written += 1
+        print(f'wrote {name}.json ({len(numbers)} disc{"s" if len(numbers) > 1 else ""})'); written += 1
     if written:   # the release's "how to add games" placeholder
         (out/HELP_ENTRY).unlink(missing_ok=True)
     for name, stems in sorted(discs.items()):

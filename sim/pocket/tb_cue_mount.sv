@@ -26,7 +26,7 @@ module tb_cue_mount;
     reg [8*256-1:0] dir;
 
     // ---------------- APF bridge ----------------
-    reg bridge_wr=0; reg [31:0] bridge_addr=0, bridge_data=0;
+    reg bridge_wr=0, bridge_rd=0; reg [31:0] bridge_addr=0, bridge_data=0;
     reg slot_update=0; reg [15:0] slot_update_id=0; reg [31:0] slot_update_size=0;
     wire s_slot_update; wire [15:0] s_slot_update_id; wire [31:0] s_slot_update_size;
     wire s_bridge_wr; wire [31:0] s_bridge_addr, s_bridge_data, struct_rd_data;
@@ -36,9 +36,10 @@ module tb_cue_mount;
     wire d_read, d_getfile, d_openfile; wire [15:0] d_id; wire [31:0] d_offset, d_bridge, d_length;
     reg d_done=1; reg [2:0] d_error=0;
     wire cue_mounted, mount_failed;
+    wire [255:0] dbg_words;   // probe readout (DEBUG)
     wire [31:0] param_struct, resp_struct;
 
-    psx_cue_mount #(.LIBCRYPT(LC),.FIRMWARE0({FW,"0.hex"}),.FIRMWARE1({FW,"1.hex"}),.FIRMWARE2({FW,"2.hex"}),.FIRMWARE3({FW,"3.hex"})) dut(.clk(clk),.reset(reset),.in_menu(in_menu),.allcomplete(allcomplete),.disc_setting(disc_setting),.table_grant(table_grant),.s_allcomplete(s_allcomplete),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),.bridge_data(bridge_data),
+    psx_cue_mount #(.LIBCRYPT(LC),.DEBUG(1),.FIRMWARE0({FW,"0.hex"}),.FIRMWARE1({FW,"1.hex"}),.FIRMWARE2({FW,"2.hex"}),.FIRMWARE3({FW,"3.hex"})) dut(.clk(clk),.reset(reset),.in_menu(in_menu),.allcomplete(allcomplete),.disc_setting(disc_setting),.table_grant(table_grant),.s_allcomplete(s_allcomplete),.bridge_wr(bridge_wr),.bridge_rd(bridge_rd),.bridge_addr(bridge_addr),.bridge_data(bridge_data),
         .struct_rd_data(struct_rd_data),.slot_update(slot_update),.slot_update_id(slot_update_id),.slot_update_size(slot_update_size),
         .s_slot_update(s_slot_update),.s_slot_update_id(s_slot_update_id),.s_slot_update_size(s_slot_update_size),
         .s_bridge_wr(s_bridge_wr),.s_bridge_addr(s_bridge_addr),.s_bridge_data(s_bridge_data),
@@ -46,7 +47,7 @@ module tb_cue_mount;
         .u_read(u_read),.u_ready(u_ready),.u_id(u_id),.u_offset(u_offset),.u_bridge(u_bridge),.u_length(u_length),
         .u_done(u_done),.u_error(u_error),.d_read(d_read),.d_getfile(d_getfile),.d_openfile(d_openfile),.d_id(d_id),
         .d_offset(d_offset),.d_bridge(d_bridge),.d_length(d_length),.d_done(d_done),.d_error(d_error),
-        .param_struct(param_struct),.resp_struct(resp_struct),.cue_mounted(cue_mounted),.mount_failed(mount_failed));
+        .param_struct(param_struct),.resp_struct(resp_struct),.cue_mounted(cue_mounted),.mount_failed(mount_failed),.dbg_words(dbg_words));
 
     integer errors=0, commands=0, opens=0;
     task fail(input [8*80-1:0] what); begin $display("FAIL: %0s", what); errors=errors+1; end endtask
@@ -55,12 +56,17 @@ module tb_cue_mount;
         begin @(negedge clk); bridge_wr=1;bridge_addr=a;bridge_data=d; @(negedge clk); bridge_wr=0; end
     endtask
     task bread(input [31:0] a, output [31:0] d);
-        begin @(negedge clk); bridge_addr=a; repeat(3) @(negedge clk); d=struct_rd_data; end
+        // APF's bridge (io_bridge_peripheral): address, data sampled 4
+        // clocks later, then bridge_rd; the data is the previous read's word.
+        begin
+            @(negedge clk); bridge_addr=a; repeat(4) @(negedge clk); bridge_rd=1; @(negedge clk); bridge_rd=0;
+            bridge_addr=a+4; repeat(4) @(negedge clk); d=struct_rd_data; bridge_rd=1; @(negedge clk); bridge_rd=0;
+        end
     endtask
 
     // ---------------- host model ----------------
     reg prev_rd=0, prev_gf=0, prev_of=0;
-    integer i, j, f, start, size, k, match, kind;
+    integer i, j, f, start, size, k, match, kind, oform, mform, sw;
     reg [31:0] w, pw;
     initial forever begin
         @(posedge clk); #1;
@@ -84,24 +90,32 @@ module tb_cue_mount;
                 end
             end else if(kind==1) begin
                 f=slot_of[d_id];
-                if(f==255) d_error=3;
-                else for(i=0;i<64;i=i+1) bwrite(STRUCT+4*i,fs_path[64*f+i]);
+                if(f==255 || $test$plusargs("nogetfile")) d_error=3;   // nogetfile: APF gives a game JSON's slots no path
+                else for(i=0;i<64;i=i+1) bwrite(resp_struct+4*i,fs_path[64*f+i]);
             end else begin
+                // openform=N: this host takes a path only in the firmware's
+                // open form N (0 as getfile wrote it, 1 bytes swapped in each
+                // word, 2 from the second struct) and answers any other with
+                // 4, as the Pocket answered form 0.
+                if(!$value$plusargs("openform=%d",oform)) oform=0;
                 opens=opens+1;
-                match=255;
-                for(f=0;f<nfiles;f=f+1) begin
+                match=255; mform=-1;
+                for(sw=0;sw<2;sw=sw+1) for(f=0;f<nfiles;f=f+1) begin
                     k=1;
                     for(i=0;i<64 && k==1;i=i+1) begin
-                        bread(STRUCT+4*i,pw); w=fs_path[64*f+i];
+                        bread(param_struct+4*i,pw); w=fs_path[64*f+i];
+                        if(sw) pw={pw[7:0],pw[15:8],pw[23:16],pw[31:24]};
                         for(j=0;j<4;j=j+1) if(k==1) begin
                             if(pw[8*j+:8]!=w[8*j+:8]) k=0;
                             else if(w[8*j+:8]==0) k=2;
                         end
                     end
-                    if(k==2 && match==255) match=f;
+                    if(k==2 && match==255) begin match=f; mform=param_struct!=STRUCT ? (sw ? 5 : 2) : sw; end
                 end
-                bread(STRUCT+256,pw); if(pw!=0) fail("openfile flags not 0");
-                if(match==255) d_error=1; else slot_of[d_id]=match;
+                bread(param_struct+256,pw); if(pw!=0) fail("openfile flags not 0");
+                if(match==255) d_error=oform ? 4 : 1;
+                else if(mform!=oform) d_error=4;
+                else slot_of[d_id]=match;
             end
             if($test$plusargs("trace")) $display("%0t   done err %0d",$time,d_error);
             @(negedge clk); d_done=1;
@@ -194,6 +208,7 @@ module tb_cue_mount;
             if(picked>=0) slot_of[0]=picked;
             if($value$plusargs("cue100=%d",mi)) slot_of[100]=mi;   // a game JSON's slots
             if($value$plusargs("trk102=%d",mi)) slot_of[102]=mi;
+            if($value$plusargs("slot99=%d",mi)) slot_of[99]=mi;    // the game JSON's .sbi
             // Its .bin files in 101, 102, ... (pupdate, Pocket Sync, 0.5.2)
             for(sk=101;sk<120;sk=sk+1) begin $sformat(pname,"slot%0d=%%d",sk); if($value$plusargs(pname,mi)) slot_of[sk]=mi; end
             @(negedge clk); allcomplete=1;
@@ -217,6 +232,7 @@ module tb_cue_mount;
             if(!got_update) begin fail("no slot update for the stream"); $finish; end
         end
         $display("mount: size %0d after %0d commands (%0d opens), cue_mounted %0d failed %0d",got_size,commands,opens,cue_mounted,mount_failed);
+        $display("probe: %h forms %h mask %h fail line %0d forms err %h, last cmd %h, last failed %h, path \"%s\" .. \"%s\"",dbg_words[31:27],dbg_words[26:16],dbg_words[15:0],dbg_words[43:32],dbg_words[61:44],dbg_words[95:64],dbg_words[127:96],{dbg_words[159:128],dbg_words[191:160]},{dbg_words[223:192],dbg_words[255:224]});
         if(expect_json) begin
             if(cue_mounted || dut.view_disc || mount_failed) fail("game JSON was not left to APF");
         end else if(expect_fail) begin

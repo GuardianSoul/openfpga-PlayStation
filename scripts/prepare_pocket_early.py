@@ -12,6 +12,7 @@ import argparse
 import re
 from pathlib import Path
 import shutil
+from pocket_project_copy import project_copy_ignore
 
 OLD = '''    assign video_skip=!video_ce;
     assign video_rgb={video_r,video_g,video_b};
@@ -246,6 +247,7 @@ def main():
     parser.add_argument('--slot6-368', action='store_true', help='With --pal288: scaler slot 6 is 368x480 instead of 512x480, so 368-wide 480i (Tekken 3) fills its slot; 512-wide 480i goes padded into 640x480 (psx_apf_video SLOT6_368; package --slot6-368)')
     parser.add_argument('--crop-lines', action='store_true', help='With --scaler-slots (not --wide-lines): a field taller than its slot is cut evenly at top and bottom instead of only at the bottom (psx_apf_video CROP_LINES; PAL pictures sat low)')
     parser.add_argument('--blank-top', nargs='?', const=1, type=int, choices=(1, 2, 3), help='With --scaler-slots (not --wide-lines): the first N (default 1) active lines of each field go out black; part of that top row sometimes held wrong pixels (white specks, flickering blue run; psx_apf_video BLANK_TOP)')
+    parser.add_argument('--mid-slot-384', action='store_true', help='With --scaler-slots (not --wide-lines): the 368-wide scaler slots are 384 wide, so a 368-mode picture with a wide display range (Ape Escape PAL, 384x240) fills its slot instead of going padded into 512 (psx_apf_video MID_W; package --mid-slot-384)')
     parser.add_argument('--vs-on-hs', action='store_true', help='With --scaler-slots: VS goes out with the next HS start, so both 480i fields reach the APF scaler with the same VS timing (psx_apf_video / psx_apf_video_wide VS_ON_HS; the GPU puts one field\'s vsync mid-line)')
     parser.add_argument('--lead-line', action='store_true', help='With --scaler-slots: one black line after each VS (psx_apf_video LEAD_LINE, Video test D fixed; psx_apf_video_wide LEAD_LINE with --wide-lines): the APF scaler drops the first line of a frame, which cost the top line and left a stale bottom row (stray row, 2026-10-16)')
     parser.add_argument('--video-test-setting', action='store_true', help='Diagnostic builds only, with --scaler-slots: Settings list "Video test" (bridge 0x5000004C) switching the APF frame start (VS at vblank or PSX vsync, with or without a black lead line; psx_apf_video VIDEO_TEST; package --video-test-setting)')
@@ -286,6 +288,7 @@ def main():
     parser.add_argument('--gte-shadow-m10k', action='store_true', help='GTE CFC2/MFC2 readback shadows in falling-edge clk2x block RAM instead of MLABs (scripts/prepare_gte_shadow_m10k.py; needs gte-control-ram)')
     parser.add_argument('--gpu-read-late', action='store_true', help='GPU VRAM read setup (remain/next/wrap) one clk2x after the request (scripts/prepare_gpu_read_late.py; request timing unchanged; fixes the worst clk2x path)')
     parser.add_argument('--gpu-dy-ram', action='store_true', help='With --gpu-area-reg: gpu_poly y gradients in a falling-edge block RAM instead of 160 flip-flops (scripts/prepare_gpu_dy_ram.py)')
+    parser.add_argument('--gpu-sort-reread', action='store_true', help='With --gpu-area-reg: gpu_poly sorts the vertex RAM addresses and re-reads the vertices in order instead of permuting them in place (scripts/prepare_gpu_sort_reread.py; +4 gpu clocks per triangle, same pixels)')
     parser.add_argument('--gpu-area-reg', action='store_true', help="gpu_poly's drawing-area test of xPos from registers (scripts/prepare_gpu_area_reg.py; cycle-identical, fixes the worst gpu_poly setup path)")
     parser.add_argument('--spu-static-readback', action='store_true', help='SPU static control registers read back from block RAM (scripts/prepare_spu_static_readback.py; needs spu-guest-m10k)')
     parser.add_argument('--main-lean', action='store_true', help='SDRAM-layout main adapter reads its read_data directly instead of two 128-bit copies (scripts/prepare_main_lean.py; b01d26d for the async adapter)')
@@ -311,7 +314,7 @@ def main():
     parser.add_argument('--pad-combos', action='store_true', help='Select-held combos for L2/R2/L3/R3 on the handheld (rtl/pocket/psx_pocket_pad_combo.sv replaces psx_pocket_pad.sv)')
     parser.add_argument('--libcrypt', action='store_true', help='With --cd-stream --multi-track: psx_cd_stream reads the disc\'s .sbi from data slot 99 and passes its LibCrypt mask to cd_top (package --libcrypt)')
     parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='With --disc-swap --multi-track: one game file lists every disc (disc n in slots n01, n02, ...); a core menu "Swap Discs" list (bridge 0x50000044) switches between DISCS discs (2-4), so all discs share one memory card (package --disc-menu)')
-    parser.add_argument('--boot-waits-disc', action='store_true', help='With --cd-stream: hold the CPU in reset until the first disc mount reaches cd_top (or 1.8 s after Reset Exit), so a slow first launch cannot boot the BIOS menu')
+    parser.add_argument('--boot-waits-disc', action='store_true', help='With --cd-stream: hold the CPU in reset until the first disc mount reaches cd_top (or 14.5 s after Reset Exit), so a slow first launch cannot boot the BIOS menu')
     parser.add_argument('--disc-swap', action='store_true', help='With --cd-stream: wire psx_disc_swap/psx_disc_select so loading another disc at run time opens the lid, remounts and closes it (without it a reloaded disc slot serves 0xAA fill forever)')
     parser.add_argument('--cd-slow-pause', action='store_true', help='MiSTer\'s default "Pause when CD slow": cd_top pauses the guest while a sector fetch from the SD card runs late (pauseOnCDSlow=1 in the PSX wrapper)')
     parser.add_argument('--trigger-buttons', action='store_true', help='A docked analog controller\'s triggers past 25%% also press L2/R2 (cont1_trig), for pads whose L2/R2 are analog triggers')
@@ -321,6 +324,7 @@ def main():
     parser.add_argument('--digital-pad', action='store_true', help='Digital-pad-only controller port (rtl/pocket/joypad_pad_digital.vhd, lockstep-equal to MiSTer for the Pocket tie-offs)')
     parser.add_argument('--vram-credit-timing', action='store_true', help="Codex's 4ea39ea VRAM BUSY timing repair (scripts/prepare_vram_credit_timing.py)")
     parser.add_argument('--cd-full', action='store_true', help='Restore the CD commands the FFVII-minimum trim dropped (Play, Forward, Backward, GetTN, GetTD, GetQ, VideoCD): CD audio, TOC queries')
+    parser.add_argument('--cue-debug', action='store_true', help='With --cue-mount --debug-overlay: the overlay shows the cue reader\'s probe words instead (psx_cue_mount DEBUG, cue_mount.c W_DBG)')
     parser.add_argument('--cue-libcrypt', action='store_true', help='With --cue-mount: the reader also reads the .sbi next to a cue (same name) into the track table\'s LibCrypt mask')
     parser.add_argument('--cue-mount', action='store_true', help='With --one-file-disc: a .cue (and its track files) or a .bin picked with "Load disc" (slot 101) plays without a game file; rtl/pocket/psx_cue_mount.sv reads the cue with APF getfile/openfile and presents the tracks as one-file disc (package --cue-mount)')
     parser.add_argument('--one-file-disc', action='store_true', help='With --multi-track: each disc is one .bin of all its tracks (slot 101, disc n in n01) plus a 1,600-byte track table file in the next slot (with the LibCrypt mask, so no --libcrypt), so any track count fits; replaces the per-track file table (MAX_TRACKS 1, TABLE_OFFSET 1; package --one-file-disc, make_pocket_instances.py merges the tracks)')
@@ -341,7 +345,7 @@ def main():
         parser.error('--vram-cdc-constraints cannot use --async-hold-cut: Quartus Lite suppresses Gray skew checks')
     run = args.run.resolve(); out = args.output.resolve()
     if out.exists(): parser.error(f'{out} exists')
-    shutil.copytree(run, out, ignore=shutil.ignore_patterns('db', 'incremental_db', 'output_files'))
+    shutil.copytree(run, out, ignore=project_copy_ignore(run))
     for name in ('apf_top.qsf', 'core_top.sv'):
         path = out/name; path.write_text(path.read_text().replace(str(run), str(out)))
     # A run prepared in another checkout (or worktree) names that checkout's
@@ -548,6 +552,7 @@ def main():
         qsf_path.write_text(qsf_text.replace(f'"{pinned}"', f'"{copy}"'))
         if text.count('psx_apf_video #(.STEADY_INTERLACE(1))') == 1:
             text = text.replace('psx_apf_video #(.STEADY_INTERLACE(1))', 'psx_apf_video #(.STEADY_INTERLACE(0))')
+    if args.gpu_sort_reread and not args.gpu_area_reg: parser.error('--gpu-sort-reread needs --gpu-area-reg')
     if args.sio_fixed:
         root = Path(__file__).resolve().parents[1]
         qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
@@ -564,6 +569,9 @@ def main():
         if args.gpu_dy_ram:
             from prepare_gpu_dy_ram import dy_ram_text
             poly_text = dy_ram_text(poly_text)
+        if args.gpu_sort_reread:
+            from prepare_gpu_sort_reread import sort_reread_text
+            poly_text = sort_reread_text(poly_text)
         copy.write_text(poly_text)
         qsf_path.write_text(q.replace(f'"{polys[0]}"', f'"{copy}"'))
     if args.memctrl_lean:
@@ -1333,11 +1341,13 @@ CHIP_CLOCK_PINS""" + text[end:]
     if args.scaler_slots:
         found = re.findall(r'psx_apf_video #\(\.STEADY_INTERLACE\((\d)\)\)', text)
         if len(found) != 1: parser.error('--scaler-slots needs one psx_apf_video instance')
-        extra = (', .INTERLACE_FEATURE(1)' if args.interlace_feature else '') + (', .SLOT480(1)' if args.slots480 else '') + (', .FIELD_INVERT(1)' if args.field_invert else '') + (', .PAD_LINES(1)' if args.pad_lines else '') + (', .VIDEO_PROBE(1)' if args.video_probe else '') + (', .VS_AT_VBLANK(1)' if args.vs_at_vblank else '') + (', .PAL288(1)' if args.pal288 else '') + (', .CENTER_LINES(1)' if args.center_lines else '') + (', .VIDEO_TEST(1)' if args.video_test_setting else '') + (', .LEAD_LINE(1)' if args.lead_line else '') + (', .SLOT6_368(1)' if args.slot6_368 else '') + (', .VS_ON_HS(1)' if args.vs_on_hs else '') + (', .CROP_LINES(1)' if args.crop_lines else '') + (f', .BLANK_TOP({args.blank_top})' if args.blank_top else '')
+        extra = (', .INTERLACE_FEATURE(1)' if args.interlace_feature else '') + (', .SLOT480(1)' if args.slots480 else '') + (', .FIELD_INVERT(1)' if args.field_invert else '') + (', .PAD_LINES(1)' if args.pad_lines else '') + (', .VIDEO_PROBE(1)' if args.video_probe else '') + (', .VS_AT_VBLANK(1)' if args.vs_at_vblank else '') + (', .PAL288(1)' if args.pal288 else '') + (', .CENTER_LINES(1)' if args.center_lines else '') + (', .VIDEO_TEST(1)' if args.video_test_setting else '') + (', .LEAD_LINE(1)' if args.lead_line else '') + (', .SLOT6_368(1)' if args.slot6_368 else '') + (', .VS_ON_HS(1)' if args.vs_on_hs else '') + (', .CROP_LINES(1)' if args.crop_lines else '') + (f', .BLANK_TOP({args.blank_top})' if args.blank_top else '') + (', .MID_W(384)' if args.mid_slot_384 else '')
         text = re.sub(r'psx_apf_video #\(\.STEADY_INTERLACE\((\d)\)\)', r'psx_apf_video #(.STEADY_INTERLACE(\1), .SLOT_SELECT(1)' + extra + ')', text)
     elif args.interlace_feature or args.slots480: parser.error('--interlace-feature/--slots480 need --scaler-slots')
     if args.lead_line and (args.video_test_setting or args.vs_at_vblank or not args.scaler_slots):
         parser.error('--lead-line needs --scaler-slots, without --video-test-setting or --vs-at-vblank')
+    if args.mid_slot_384 and (args.wide_lines or not args.scaler_slots):
+        parser.error('--mid-slot-384 needs --scaler-slots, without --wide-lines')
     if args.blank_top and (args.wide_lines or not args.scaler_slots):
         parser.error('--blank-top needs --scaler-slots, without --wide-lines')
     if args.crop_lines and (args.wide_lines or not args.scaler_slots):
@@ -1576,6 +1586,7 @@ CHIP_CLOCK_PINS""" + text[end:]
         # port and psx_cd_stream (docs/pocket-cue-loading.md).
         if not args.one_file_disc: parser.error('--cue-mount needs --one-file-disc')
     if args.cue_libcrypt and not args.cue_mount: parser.error('--cue-libcrypt needs --cue-mount')
+    if args.cue_debug and not (args.cue_mount and args.debug_overlay): parser.error('--cue-debug needs --cue-mount --debug-overlay')
     if args.cue_mount:
         def cue_once(old, new):
             nonlocal text
@@ -1611,7 +1622,7 @@ CHIP_CLOCK_PINS""" + text[end:]
     wire [31:0] cue_s_bridge_addr, cue_s_bridge_data, cue_table_view, cue_struct_rd;
     psx_cue_mount #(.FIRMWARE0("CUE_FIRMWARE0"), .FIRMWARE1("CUE_FIRMWARE1"), .FIRMWARE2("CUE_FIRMWARE2"), .FIRMWARE3("CUE_FIRMWARE3")) cue_mount (.clk(clk_74a), .reset(cd_stream_reset), .in_menu(cue_in_menu),
         .allcomplete(dataslot_allcomplete), .s_allcomplete(cue_s_allcomplete), .disc_setting(CUE_DISC_SETTING),
-        .bridge_wr(bridge_wr), .bridge_addr(bridge_addr), .bridge_data(bridge_wr_data), .struct_rd_data(cue_struct_rd),
+        .bridge_wr(bridge_wr), .bridge_rd(bridge_rd), .bridge_addr(bridge_addr), .bridge_data(bridge_wr_data), .struct_rd_data(cue_struct_rd),
         .slot_update(cue_apf_dataslot_update), .slot_update_id(cue_apf_dataslot_update_id), .slot_update_size(cue_apf_dataslot_update_size),
         .s_slot_update(cd_slot_update), .s_slot_update_id(cd_slot_update_id), .s_slot_update_size(cd_slot_update_size),
         .s_bridge_wr(cue_s_bridge_wr), .s_bridge_addr(cue_s_bridge_addr), .s_bridge_data(cue_s_bridge_data),
@@ -1636,6 +1647,15 @@ CHIP_CLOCK_PINS""" + text[end:]
         # (its reg is declared with psx_disc_menu, before the stream).
         text = text.replace('CUE_DISC_SETTING', 'disc_setting' if args.disc_menu else "2'd0", 1)
         if args.cue_libcrypt: text = text.replace('psx_cue_mount #(.FIRMWARE0(', 'psx_cue_mount #(.LIBCRYPT(1), .FIRMWARE0(', 1)
+        if args.cue_debug:
+            # Overlay rows top to bottom: reader state bits with the LibCrypt
+            # mask in bits 15:0, then cue_mount.c's
+            # W_DBG words 0-6 (last fail() line, last command, last failed
+            # getfile/open, path head, path tail of that failure).
+            words = '        .words({dbg_async, dbg_vblanks, dbg_vram_beat, dbg_vram_cmd, {7\'b0,dbg_ram_addr}, dbg_ram_done, dbg_ram_req, dbg_status}),'
+            if text.count(words) != 1 or text.count('    psx_debug_overlay #(') != 1: parser.error('--cue-debug: overlay instance not found')
+            text = text.replace(words, '        .words(cue_dbg_words),', 1).replace('    psx_debug_overlay #(', '    wire [255:0] cue_dbg_words;\n    psx_debug_overlay #(', 1)
+            text = text.replace('psx_cue_mount #(', 'psx_cue_mount #(.DEBUG(1), ', 1).replace('.mount_failed(cue_mount_failed));', '.mount_failed(cue_mount_failed), .dbg_words(cue_dbg_words));', 1)
         for lane in range(4):
             shutil.copyfile(repo/f'rtl/pocket/psx_cue_fw{lane}.hex', out/f'psx_cue_fw{lane}.hex')
             text = text.replace(f'"CUE_FIRMWARE{lane}"', f'"psx_cue_fw{lane}.hex"', 1)
@@ -1715,7 +1735,7 @@ CHIP_CLOCK_PINS""" + text[end:]
         core.write_text(text)
     # Synchronizer inputs and held-payload crossings of the Pocket glue.
     sdc = out/'pocket.sdc'; extra = []
-    if args.shoulder_setting:
+    if args.shoulder_setting and not args.stick_settings:
         extra.append('# The shoulder menu settings cross into clk1x through two flops.\n'
                      'set_false_path -to [get_registers {*|shoulder_meta*}]\n')
     if 'psx_apf_video #(' in text:

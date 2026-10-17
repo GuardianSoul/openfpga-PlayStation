@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Runs the SD card page's logic (docs/instances.js) on a folder, through
 // a small stand-in for the browser's File System Access API.
-//   node tests/sd_card_page.cjs <card> --core GuardianSoul.PlayStation [--convert] [--remove-originals]
+//   node tests/sd_card_page.cjs <card> --core GuardianSoul.PlayStation [--convert] [--remove-originals] [--card-bytes N]
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -14,19 +14,44 @@ async function asFile(full) {
   return Object.assign(blob, { lastModified: fs.statSync(full).mtimeMs, name: path.basename(full) });
 }
 
+// --card-bytes N: the card holds N bytes in all, so writes past that fail as
+// a full card does in the browser.
+let cardBytes = Infinity, cardRoot = null;
+const used = (dir) => fs.readdirSync(dir, { withFileTypes: true }).reduce((n, e) => {
+  const full = path.join(dir, e.name);
+  return n + (e.isDirectory() ? used(full) : fs.statSync(full).size);
+}, 0);
+const quota = () => Object.assign(new Error('not enough space'), { name: 'QuotaExceededError' });
+
 class FileHandle {
   constructor(full) { this.full = full; this.kind = 'file'; }
   async getFile() { return asFile(this.full); }
   async createWritable() {
-    const parts = [];
+    // Like Chrome: writes go to a swap copy that replaces the file on close.
     const full = this.full;
+    let data = Buffer.alloc(0), at = 0;
+    const room = (size) => {
+      const other = cardRoot ? used(cardRoot) : 0;
+      if (other + size + data.length > cardBytes) throw quota();   // the swap copy and the file both count
+    };
+    const resize = (size) => {
+      if (size > data.length) { room(size - data.length); data = Buffer.concat([data, Buffer.alloc(size - data.length)]); }
+      else data = data.subarray(0, size);
+      at = Math.min(at, size);
+    };
     return {
-      async write(data) {
-        if (typeof data === 'string') parts.push(Buffer.from(data, 'utf8'));
-        else if (data instanceof Uint8Array) parts.push(Buffer.from(data));
-        else parts.push(Buffer.from(await data.arrayBuffer()));
+      async write(chunk) {
+        let bytes;
+        if (typeof chunk === 'string') bytes = Buffer.from(chunk, 'utf8');
+        else if (chunk instanceof Uint8Array) bytes = Buffer.from(chunk);
+        else bytes = Buffer.from(await chunk.arrayBuffer());
+        if (at + bytes.length > data.length) resize(at + bytes.length);
+        bytes.copy(data, at); at += bytes.length;
       },
-      async close() { fs.writeFileSync(full, Buffer.concat(parts)); },
+      async truncate(size) { resize(size); },
+      async seek(position) { at = position; },
+      async abort() { data = null; },
+      async close() { fs.writeFileSync(full, data); },
     };
   }
 }
@@ -64,6 +89,7 @@ async function main() {
   const args = process.argv.slice(2);
   const card = args[0];
   const option = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+  if (option('--card-bytes')) { cardBytes = Number(option('--card-bytes')); cardRoot = path.resolve(card); }
   const summary = await makeInstances(new DirectoryHandle(path.resolve(card)), {
     core: option('--core') || 'GuardianSoul.PlayStation',
     platform: option('--platform') || 'playstation',

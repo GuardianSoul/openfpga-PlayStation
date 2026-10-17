@@ -17,7 +17,7 @@ from prepare_video_request_sim import prepare
 from tool_paths import ROOT,find_tool
 
 
-def bench(source):
+def bench(source, pan_updates=False):
     header=source[source.index('module original__gpu_videoout\n'):].split(');',1)[0]
     ports=re.findall(r'\b(input|output)\s+(\[[^\]]+\]\s+)?(\\[^\s,]+|[A-Za-z_]\w*)',header)
     clean=lambda n:re.sub(r'\W','_',n.lstrip('\\'))
@@ -141,16 +141,39 @@ def bench(source):
     initial begin #600000000;$fatal(1,"Pipeline timeout");end
     endmodule
 '''
+    if pan_updates:
+        # Legal GP1 display-start writes independent of either engine.  The
+        # fetcher uses this live CPU-side offset after the request crosses;
+        # static modes alone cannot check that interaction with added latency.
+        marker = '    reg checking=0,previous_vsync=0;'
+        if text.count(marker) != 1:
+            raise ValueError('Missing display-pan stimulus anchor')
+        text = text.replace(marker, '''    integer pan_ticks=0,pan_writes=0;
+    always @(negedge clk1x) if(checking) begin
+        pan_ticks=pan_ticks+1;
+        if((pan_ticks%8)==0)begin
+            i_videoout_settings_vramRange_=i_videoout_settings_vramRange_^19'h10;
+            pan_writes=pan_writes+1;
+        end
+    end
+''' + marker)
+        marker = '$display("PASS REQUEST_PIPELINE'
+        if text.count(marker) != 1:
+            raise ValueError('Missing display-pan coverage anchor')
+        text = text.replace(marker, '''if(pan_writes<100)$fatal(1,"No dynamic GP1 coverage");
+        $display("GP1_PAN writes=%0d",pan_writes);
+        ''' + marker)
     return text
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--quick',action='store_true');parser.add_argument('--converted',type=Path)
+    parser.add_argument('--pan-updates',action='store_true',help='diagnose live GP1 display-start writes; the current opt-in FIFO fails this comparison')
     args=parser.parse_args();parent=ROOT/'build/sim/video-request-pipeline';parent.mkdir(parents=True,exist_ok=True)
     work=Path(tempfile.mkdtemp(prefix='checks-',dir=parent));print(work,flush=True)
     prepared=json.loads((args.converted/'sources.json').read_text()) if args.converted else prepare(work/'converted')
     old=Path(prepared['converted']['original']);new=Path(prepared['converted']['candidate'])
-    test=work/'tb.sv';test.write_text(bench(old.read_text()))
+    test=work/'tb.sv';test.write_text(bench(old.read_text(),pan_updates=args.pan_updates))
     sources=[old,new,test,*[Path(prepared['inputs'][str(ROOT/n)]['path']) for n in [
         'rtl/pocket/psx_video_request_cdc.sv','rtl/pocket/psx_video_config_cdc.sv',
         'references/Laxer3a_PSX/hdlGPU/rtl/dual_clock_fifo.sv','sim/reference/mister_memory_models.sv']]]
@@ -169,21 +192,25 @@ def main():
         output=(work/f'latency{latency}.log').read_text();passed=p.returncode==0 and 'PASS REQUEST_PIPELINE' in output
         runs.append(dict(latency=latency,passed=passed,exit_code=p.returncode,output=output));print(latency,passed,output[-700:],flush=True)
         if not passed:break
-    # Corrupt the actual candidate's active-red output, rather than a checker
-    # fixture: the pixel comparison must reject it even when requests agree.
-    source=new.read_text();start=source.index('module candidate__gpu_videoout\n');end=source.index('endmodule',start)
-    part=source[start:end]
-    part,n=re.subn(r'(assign \\videoout_out\[r\]\s*=\s*)([^;]+);',r"\1(\2 ^ 8'h01);",part)
-    if n!=1:raise ValueError('Missing actual scanout RGB corruption anchor')
-    bad=work/'bad-rgb.v';bad.write_text(source[:start]+part+source[end:])
-    selected=[bad if p==new else p for p in sources];fault_binary=build('fault',selected)
-    with (work/'fault-rgb.log').open('w') as log:
-        p=subprocess.run([str(fault_binary),'+QUICK'],stdout=log,stderr=subprocess.STDOUT,timeout=60)
-    fault_output=(work/'fault-rgb.log').read_text();fault_rejected=p.returncode!=0 and 'Active RGB changed' in fault_output
+    fault_rejected=None
+    fault_output='Not run: unmodified pipeline comparison failed.'
+    if len(runs)==2 and all(r['passed'] for r in runs):
+        # Corrupt the actual candidate's active-red output, rather than a checker
+        # fixture: the pixel comparison must reject it even when requests agree.
+        source=new.read_text();start=source.index('module candidate__gpu_videoout\n');end=source.index('endmodule',start)
+        part=source[start:end]
+        part,n=re.subn(r'(assign \\videoout_out\[r\]\s*=\s*)([^;]+);',r"\1(\2 ^ 8'h01);",part)
+        if n!=1:raise ValueError('Missing actual scanout RGB corruption anchor')
+        bad=work/'bad-rgb.v';bad.write_text(source[:start]+part+source[end:])
+        selected=[bad if p==new else p for p in sources];fault_binary=build('fault',selected)
+        with (work/'fault-rgb.log').open('w') as log:
+            p=subprocess.run([str(fault_binary),'+QUICK'],stdout=log,stderr=subprocess.STDOUT,timeout=60)
+        fault_output=(work/'fault-rgb.log').read_text();fault_rejected=p.returncode!=0 and 'Active RGB changed' in fault_output
     identity=all(digest(Path(p))==h for p,h in prepared['protected_sha256'].items())
     report=dict(passed=identity and len(runs)==2 and all(r['passed'] for r in runs) and fault_rejected,runs=runs,
                 actual_RGB_fault_rejected=fault_rejected,RGB_fault_output=fault_output,
                 source_identity_verified=identity,prepared=prepared,bench_sha256=digest(test),quick=args.quick,
+                pan_updates=args.pan_updates,
                 hardware_verified=False,fit_verified=False,timing_verified=False)
     (work/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     if not report['passed']:raise SystemExit(1)

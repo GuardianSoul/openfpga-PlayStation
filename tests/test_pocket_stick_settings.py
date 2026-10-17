@@ -18,12 +18,18 @@ TOP = """`timescale 1ns/1ps
 module top;
     reg clk_74a=0, clk1x=0, cpu_locked=0, bridge_wr=0;
     reg [31:0] bridge_addr=0, bridge_wr_data=0, cont1_key=0, cont1_joy=32'h80808080;
+    wire joypad1_KeyL3, joypad1_KeyR3;
+    wire [31:0] wrapper_sticks, pad_sticks_probe;
     always #6.734 clk_74a=!clk_74a;
     always #14.76 clk1x=!clk1x;
     wire joypad1_KeyUp=pocket_pad_buttons[0];
     wire joypad1_KeyDown=pocket_pad_buttons[1];
     wire joypad1_KeyLeft=pocket_pad_buttons[2];
     wire joypad1_KeyRight=pocket_pad_buttons[3];
+    wire joypad1_KeyTriangle=pocket_pad_buttons[6];
+    wire joypad1_KeyCircle=pocket_pad_buttons[4];
+    wire joypad1_KeyCross=pocket_pad_buttons[5];
+    wire joypad1_KeySquare=pocket_pad_buttons[7];
     wire [15:0] pocket_pad_buttons;
     wire [5:0] pad_combo_enable, pad_combos;   // L, R, Y, A, X, B
     wire [3:0] pad_combo_docked, pad_dpad_combos;
@@ -37,6 +43,14 @@ module top;
     psx_pocket_pad #(.HOLD_BITS(6),.TAP_BITS(4)) pad_input (.clk1x(clk1x),.reset_n(cpu_locked),
         .apf_keys(cont1_key[15:0]),.combo_enable(pad_combo_enable),.dpad_combo_enable(pad_dpad_combo_enable),
         .buttons(pocket_pad_buttons),.combos(pad_combos),.dpad_combos(pad_dpad_combos),.docked(pad_combo_docked));
+    reg [1:0] shoulder_set0=2'd0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h5000000c) shoulder_set0<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
+    (* async_reg="true" *) reg [1:0] shoulder_meta0=2'd0, shoulder_sel0=2'd0;
+    always @(posedge clk1x) begin shoulder_meta0<=shoulder_set0; shoulder_sel0<=shoulder_meta0; end
+    reg [1:0] shoulder_set1=2'd0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000010) shoulder_set1<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
+    (* async_reg="true" *) reg [1:0] shoulder_meta1=2'd0, shoulder_sel1=2'd0;
+    always @(posedge clk1x) begin shoulder_meta1<=shoulder_set1; shoulder_sel1<=shoulder_meta1; end
     reg [1:0] shoulder_set2=2'd2;   // SELECT + L/R
     always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000014) shoulder_set2<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
     (* async_reg="true" *) reg [1:0] shoulder_meta2=2'd2, shoulder_sel2=2'd2;
@@ -45,11 +59,9 @@ module top;
     always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000018) shoulder_set3<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
     (* async_reg="true" *) reg [1:0] shoulder_meta3=2'd3, shoulder_sel3=2'd3;
     always @(posedge clk1x) begin shoulder_meta3<=shoulder_set3; shoulder_sel3<=shoulder_meta3; end
-    wire joypad1_KeyL3=(shoulder_sel3==2'd3 & pad_combos[2]);
-    wire joypad1_KeyR3=(shoulder_sel3==2'd3 & pad_combos[3]);
-    wire [31:0] wrapper_sticks;
+    assign joypad1_KeyL3=(shoulder_sel3==2'd3 & pad_combos[2]);
+    assign joypad1_KeyR3=(shoulder_sel3==2'd3 & pad_combos[3]);
     assign wrapper_sticks=pad_sticks_probe;
-    wire [31:0] pad_sticks_probe;
     sink wrapper (.pad_sticks(pad_sticks),.out(pad_sticks_probe));
 BENCH
 endmodule
@@ -68,6 +80,9 @@ BENCH = """    integer errors=0;
     initial begin
         cont1_key[31:28]=4'h1;   // handheld: centred sticks
         repeat(4) @(posedge clk1x); cpu_locked=1; repeat(10) @(posedge clk1x);
+        write(32'h5000000c, 2); write(32'h50000010, 1); write(32'h50000014, 3);
+        if({shoulder_sel0,shoulder_sel1,shoulder_sel2}!==6'b100111) begin errors=errors+1; $display("FAIL shoulder settings packet"); end
+        write(32'h5000000c, 0); write(32'h50000010, 0); write(32'h50000014, 2);
         keys(1<<UP); check_out(4'b0001, 32'h80808080, "default D-pad");
         keys(0); keys(1<<SELECT|1<<DOWN); check_out(4'b0000, 32'h8080FF80, "Select+D-pad default left stick");
         keys(0); repeat(40) @(posedge clk1x);
@@ -88,6 +103,36 @@ BENCH = """    integer errors=0;
         keys(0); repeat(40) @(posedge clk1x);
         keys(1<<SELECT|1<<B); check_out(4'b0000, 32'h80808080, "Select+B with L3/R3 row");
         keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000018, 6);   // Select + A/B/X/Y = the face buttons
+        keys(1<<SELECT|1<<X); if(joypad1_KeyTriangle!==1) begin errors=errors+1; $display("FAIL Select+X not Triangle"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        keys(1<<SELECT|1<<A); if(joypad1_KeyCircle!==1 || joypad1_KeyR3!==0) begin errors=errors+1; $display("FAIL Select+A not Circle"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000018, 3);
+        write(32'h50000024, 2);   // A/B/X/Y = right stick
+        keys(1<<X|1<<A); check_out(4'b0000, 32'h00FF8080, "A/B/X/Y right stick: X up, A right");
+        if({joypad1_KeyTriangle,joypad1_KeyCircle,joypad1_KeyCross,joypad1_KeySquare}!==0) begin errors=errors+1; $display("FAIL face buttons pressed as stick"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000024, 32'h00010000);   // A/B/X/Y = left stick (value in byte 2)
+        keys(1<<B|1<<Y); check_out(4'b0000, 32'h8080FF00, "A/B/X/Y left stick: B down, Y left");
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000024, 0);
+        keys(1<<B); check_out(4'b0000, 32'h80808080, "A/B/X/Y as buttons");
+        if(joypad1_KeyCross!==1) begin errors=errors+1; $display("FAIL B no longer Cross"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000024, 2); dualshock_setting=0; repeat(40) @(posedge clk1x);
+        keys(1<<A); check_out(4'b0000, 32'h80808080, "digital pad: A/B/X/Y stay buttons");
+        if(joypad1_KeyCircle!==1) begin errors=errors+1; $display("FAIL digital pad lost Circle"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000024, 3);   // A/B/X/Y = D-Pad (also with DualShock off)
+        keys(1<<X|1<<A); check_out(4'b1001, 32'h80808080, "A/B/X/Y as D-Pad: X up, A right");
+        if({joypad1_KeyTriangle,joypad1_KeyCircle}!==0) begin errors=errors+1; $display("FAIL face pressed as D-Pad"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000024, 0); write(32'h5000001C, 3);   // D-Pad = Face Buttons
+        keys(1<<UP|1<<RIGHT); check_out(4'b0000, 32'h80808080, "D-Pad as Face Buttons");
+        if({joypad1_KeyTriangle,joypad1_KeyCircle,joypad1_KeyCross,joypad1_KeySquare}!==4'b1100) begin errors=errors+1; $display("FAIL D-Pad Up/Right not Triangle/Circle"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h5000001C, 0);
         dualshock_setting=0; write(32'h5000001C, 1); keys(1<<UP); check_out(4'b0001, 32'h80808080, "digital pad: stick mode falls back to D-pad");
         if(errors==0) $display("PASS stick settings");
         $finish;
@@ -101,12 +146,12 @@ class StickSettings(unittest.TestCase):
 
     def test_edits(self):
         text = self.edited()
-        self.assertIn("reg [2:0] shoulder_set3=3'd3;", text)
+        self.assertIn("reg [2:0] shoulder_set3=3'd5;", text)
         self.assertIn('    wire joypad1_KeyUp;\n', text)
         self.assertIn("assign pad_dpad_combo_enable=sel_dpad_sel!=2'd0;", text)
         self.assertNotIn("assign pad_combo_enable=6'b001111;", text)
         self.assertIn('.pad_sticks(pad_sticks_mapped),', text)
-        self.assertLess(text.index('shoulder_sel3<=shoulder_meta3; end'), text.index('psx_pocket_stick_map stick_map'))
+        self.assertLess(text.index('shoulder_set3<=bridge_wr_data'), text.index('psx_pocket_stick_map stick_map'))
         with self.assertRaises(ValueError): stick_settings_text(TOP.replace("reg [1:0] shoulder_set3=2'd3;", ''))
 
     def test_simulation(self):

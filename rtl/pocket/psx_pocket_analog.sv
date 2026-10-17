@@ -12,21 +12,25 @@
 // The word crosses as a held payload: in clk_74a the word is copied to hold
 // and announced by toggling req, again as soon as the last copy was taken; clk1x takes hold after req's two-flop
 // synchronizer, while hold cannot change until clk1x's ack returns. So no
-// sample can be torn by bit skew, with two 33-bit stages instead of the
-// earlier four (bit-synchronized meta, sync, last and output, 2026-10-17).
-module psx_pocket_analog (
+// sample can be torn by bit skew. PASS_CONFIG carries the 13 shoulder/stick-menu
+// bits in the same packet; other callers prune those constant/unused bits.
+module psx_pocket_analog #(parameter PASS_CONFIG=0, parameter integer CONFIG_W=13,
+    parameter [CONFIG_W-1:0] CONFIG_RESET=13'h134) (
     input wire clk1x,reset_n,              // reset_n: clk1x (cpu_locked)
     input wire clk_74a,
     input wire dualshock_setting,          // clk_74a level (bridge register)
     input wire [3:0] apf_type,             // cont1_key[31:28], clk_74a
     input wire [31:0] apf_joy,             // cont1_joy, clk_74a
+    input wire [CONFIG_W-1:0] config_in,            // optional stick-menu fields, clk_74a
     output reg dualshock=1'b0,
-    output reg [31:0] sticks=32'h80808080
+    output reg [31:0] sticks=32'h80808080,
+    output reg [CONFIG_W-1:0] config_out=CONFIG_RESET   // L/R, Select combos, D-pad modes
 );
     wire believe=apf_type==4'h3 || (apf_type==4'h2 && apf_joy!=32'h0 && apf_joy!=32'hFFFFFFFF);
-    wire [32:0] source={dualshock_setting, believe ? apf_joy : 32'h80808080};
+    wire [CONFIG_W+32:0] source={PASS_CONFIG ? config_in : CONFIG_RESET,
+                       dualshock_setting, believe ? apf_joy : 32'h80808080};
     // clk_74a side
-    reg [32:0] hold=33'h080808080;
+    reg [CONFIG_W+32:0] hold={CONFIG_RESET,33'h080808080};
     reg req=1'b0, busy=1'b0;
     reg ack=1'b0;                          // clk1x
     (* async_reg="true", preserve, dont_merge *) reg [1:0] ack_s=2'b00;
@@ -42,10 +46,12 @@ module psx_pocket_analog (
     (* async_reg="true", preserve, dont_merge *) reg [1:0] req_s=2'b00;
     always @(posedge clk1x or negedge reset_n) begin
         if(!reset_n) begin
-            req_s<=2'b00; ack<=1'b0; dualshock<=1'b0; sticks<=32'h80808080;
+            req_s<=2'b00; ack<=1'b0; dualshock<=1'b0; sticks<=32'h80808080; config_out<=CONFIG_RESET;
         end else begin
             req_s<={req_s[0],req};
-            if (req_s[1]!=ack) begin dualshock<=hold[32]; sticks<=hold[31:0]; ack<=req_s[1]; end
+            if (req_s[1]!=ack) begin
+                dualshock<=hold[32]; sticks<=hold[31:0]; config_out<=hold[CONFIG_W+32:33]; ack<=req_s[1];
+            end
         end
     end
 endmodule

@@ -8,7 +8,9 @@
 // write pairs, memcard.vhd 128-word block reads and single BE=FF writes,
 // arbitrary byte enables, die 1) runs against a golden memory, with the aux
 // port on its own part of card 1, resets and parks at random times. A
-// handoff phase checks the aux <-> DDR byte mapping both ways.
+// handoff phase checks the aux <-> DDR byte mapping both ways. FOREIGN=1
+// starts the chips as another core may leave them: synchronous, variable
+// latency, partial refresh (until power-off the chips keep any BCR/RCR).
 // Prints "VP_HIST {json}" / "VP_MEASURE {json}" and "VRAM_PSRAM PASS".
 `timescale 1ns/1ps
 `default_nettype none
@@ -24,6 +26,9 @@ module tb_psx_vram_psram;
     parameter integer AUX_MAX = 60;          // aux request -> done bound while the core runs (clk2x)               // aux traffic during the random phase
     parameter real CLK_DLY = 1.0, CTL_DLY = 1.0, DQ_DLY = 1.0, RET_DLY = 1.0;
     parameter real T_ACLK = 9.0, T_KOH = 2.0;
+    parameter integer FOREIGN = 0;
+    localparam [15:0] START_BCR = FOREIGN ? 16'h1D1F : 16'h9D1F;   // 1D1F: synchronous, variable latency code 3
+    localparam [15:0] START_RCR = FOREIGN ? 16'h0011 : 16'h0010;   // 0011: half-array refresh
     localparam real PERIOD = 14.763;          // clk2x 67.7376 MHz
 
     `include "psx_vram_psram_windows.svh"
@@ -78,9 +83,9 @@ module tb_psx_vram_psram;
     always @(bus0) c0_dq_in <= #(RET_DLY) bus0;
     always @(bus1) c1_dq_in <= #(RET_DLY) bus1;
 
-    psx_cram_model #(.CHIP(0), .T_ACLK(T_ACLK), .T_KOH(T_KOH)) chip0 (.clk(d0_clk), .host_oe(d0_oe), .a(d0_a), .dq(bus0),
+    psx_cram_model #(.CHIP(0), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip0 (.clk(d0_clk), .host_oe(d0_oe), .a(d0_a), .dq(bus0),
         .ce0_n(d0_ce0), .ce1_n(d0_ce1), .adv_n(d0_adv), .oe_n(d0_oen), .we_n(d0_wen), .ub_n(d0_ub), .lb_n(d0_lb), .cre(d0_cre));
-    psx_cram_model #(.CHIP(1), .T_ACLK(T_ACLK), .T_KOH(T_KOH)) chip1 (.clk(d1_clk), .host_oe(d1_oe), .a(d1_a), .dq(bus1),
+    psx_cram_model #(.CHIP(1), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip1 (.clk(d1_clk), .host_oe(d1_oe), .a(d1_a), .dq(bus1),
         .ce0_n(d1_ce0), .ce1_n(d1_ce1), .adv_n(d1_adv), .oe_n(d1_oen), .we_n(d1_wen), .ub_n(d1_ub), .lb_n(d1_lb), .cre(d1_cre));
 
     // ---- golden memory
@@ -596,6 +601,11 @@ module tb_psx_vram_psram;
         end
         if (chip0.errors || chip1.errors) fail("chip model errors");
         if (n_resets != RESETS || n_parks != PARKS) fail("not every reset/park ran; raise N_OPS");
+        // a synchronous start ignores the first (asynchronous) pass: RCR and BCR of both dies
+        if (FOREIGN && (chip0.ignored_configs < 4 || chip1.ignored_configs < 4)) fail("foreign start: asynchronous pass not ignored");
+        $display("config writes: chip0 %0d (%0d clocked, %0d ignored), chip1 %0d (%0d clocked, %0d ignored)",
+                 chip0.config_writes, chip0.sync_configs, chip0.ignored_configs,
+                 chip1.config_writes, chip1.sync_configs, chip1.ignored_configs);
         $display("VRAM_PSRAM PASS");
         $finish;
     end

@@ -416,6 +416,56 @@
   // Assets/<platform>/common. options: {core: 'GuardianSoul.PlayStation',
   // platform: 'playstation', convert: bool, removeOriginals: bool}. log(line)
   // gets the report.
+  // ---- .bin files without a cue --------------------------------------------
+
+  // The cue written for a .bin that came without one: one data track.
+  const loneBinCue = (binName) => `FILE "${binName}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n`;
+
+  // .bin files under common that no cue in their folder names and that have
+  // no <name>.cue: [[path, reason or null]]. A reason means it is skipped: a
+  // "(Track n)" file is part of a disc whose cue is missing.
+  async function loneBins(card, common) {
+    const found = [];
+    for (const rel of await walk(await dirAt(card, common), (n) => /\.bin$/i.test(n))) {
+      const bin = [...common, ...rel], folder = bin.slice(0, -1), name = bin[bin.length - 1];
+      if (name.endsWith(' (one file).bin') || await fileAt(card, [...folder, stem(name) + '.cue'])) continue;
+      const named = new Set();
+      let broken = false;
+      for (const [cueName, kind] of await list(await dirAt(card, folder))) {
+        if (kind !== 'file' || !/\.cue$/i.test(cueName) || cueName.startsWith('._')) continue;
+        try {
+          for (const [f] of await readCue(card, [...folder, cueName])) named.add(join(folder, f.replace(/\\/g, '/')).join('/'));
+        } catch (e) { broken = true; }
+      }
+      if (broken || named.has(bin.join('/'))) continue;
+      const file = await fileAt(card, bin);
+      const reason = /\(Track \d+\)/i.test(stem(name)) ? 'a track file whose .cue is missing'
+        : file.size % SECTOR ? 'not whole 2352-byte sectors' : null;
+      found.push([bin, reason]);
+    }
+    return found;
+  }
+
+  // Give each lone .bin a one-track <name>.cue so it gets a game file.
+  // Returns how many were skipped. The write keeps RESERVE free.
+  async function writeLoneCues(card, common, say) {
+    let skipped = 0;
+    for (const [bin, reason] of await loneBins(card, common)) {
+      const shown = bin.slice(common.length).join('/');
+      if (reason) { say(`skip ${shown}: ${reason}`); skipped++; continue; }
+      const name = bin[bin.length - 1];
+      const cue = [...bin.slice(0, -1), stem(name) + '.cue'];
+      try {
+        await writeChecked(card, cue, [new TextEncoder().encode(loneBinCue(name))]);
+        say(`wrote ${cue.slice(common.length).join('/')} (one data track; a game with CD music needs its own .cue)`);
+      } catch (e) {
+        say(`skip ${shown}: ${/not enough room/.test(e.message) ? 'not enough free space for its .cue' : e.message}`);
+        skipped++;
+      }
+    }
+    return skipped;
+  }
+
   async function makeInstances(card, options, log = () => {}) {
     const { core, platform = 'playstation' } = options;
     let declared = null;
@@ -442,6 +492,7 @@
       [summary.converted, summary.convertFailed] = await convert(card, common, say, Boolean(options.removeOriginals), oneFile || cueReader);
       say(`${summary.converted} images converted, ${summary.convertFailed} failed`);
     }
+    summary.skipped += await writeLoneCues(card, common, say);
     const discTracks = {};
     for (let n = 2; n < 10; n++) discTracks[n] = ids.filter((id) => id >= 100 * n + 1 && id <= 100 * n + 99).length;
     let discsDeclared = 1;
@@ -460,7 +511,8 @@
       let sbi = null;
       if (cueReader) sbi = await fileAt(card, [...folder, cueStem + '.sbi']) ? cueStem + '.sbi' : null;
       else if (libcrypt || oneFile) sbi = await findSbi(card, cue);
-      if (sbi && !oneFile && !cueReader) slots.push({ id: LIBCRYPT_SLOT, filename: sbi });
+      // Cue-reader cores take a game JSON's .sbi from slot 99 (its cue has no path on the Pocket).
+      if (sbi && (cueReader ? libcrypt : !oneFile)) slots.push({ id: LIBCRYPT_SLOT, filename: sbi });
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
       const shared = sharedCards ? sharedCard || sharedCardName(cueStem) : null;
       if (shared) {
@@ -579,7 +631,8 @@
         const [cue, files] = parts.get(n);
         files.forEach(([name], k) => slots.push({ id: 100 * n + 1 + k, filename: rel(cue, name) }));
       }
-      const sbi = libcrypt && !cueReader ? await findSbi(card, cue1) : null;
+      const sbi = !libcrypt ? null : cueReader ? (await fileAt(card, [...cue1.slice(0, -1), cue1Stem + '.sbi']) ? cue1Stem + '.sbi' : null)
+        : await findSbi(card, cue1);
       if (sbi) slots.push({ id: LIBCRYPT_SLOT, filename: rel(cue1, sbi) });
       const dataPath = posix(root.slice(common.length));
       let prefix = dataPath !== '.' ? dataPath + '/' : '';

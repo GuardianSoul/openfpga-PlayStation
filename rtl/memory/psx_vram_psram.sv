@@ -51,9 +51,17 @@
 // Reset (synchronous, active high): no new segment starts except accepted
 //   writes; a running read stops at the next word; no dout_ready/aux_done is
 //   produced; then the 150 us wait and the chips are configured again.
+// Configuration from either mode: a die in synchronous mode ignores an
+//   asynchronous register write (no clock edge), and another core may leave
+//   the chips synchronous with its own BCR (they keep it until power-off).
+//   So every configuration writes each register twice: in the form for an
+//   asynchronous die (clock stopped) and in the form for a synchronous one
+//   (CRE, CE#, ADV# and WE# sampled at a chip clock edge, the value on A/DQ).
+//   At start the asynchronous pass goes first (a power-on die is then
+//   synchronous), at park the synchronous one (our dies are synchronous).
 // Park (any clock domain, synchronised here; unconnected reads as 0): no new
-//   DDR request is accepted, accepted work finishes, the clock stops and both
-//   dies' BCRs get the power-on value 0x9D1F (asynchronous). While parked the
+//   DDR request is accepted, accepted work finishes, both dies' BCRs get the
+//   power-on value 0x9D1F (asynchronous) and the clock stops. While parked the
 //   aux port still works, with asynchronous single accesses (6-7 chip cycles,
 //   clock stopped), so APF can load the card while the core is held in reset
 //   and read it back at quit with the chips already in their power-on mode.
@@ -138,7 +146,8 @@ localparam logic [15:0] BCR_ASYNC = 16'h9D1F;         // power-on value
 localparam logic [15:0] RCR_ALL   = 16'h0010;         // power-on value: full array refresh
 
 localparam logic [2:0] ST_INIT = 3'd0, ST_CFG = 3'd1, ST_IDLE = 3'd2,
-                       ST_LAT = 3'd3, ST_DATA = 3'd4, ST_PARKED = 3'd5, ST_ASYNC = 3'd6;
+                       ST_LAT = 3'd3, ST_DATA = 3'd4, ST_PARKED = 3'd5, ST_ASYNC = 3'd6,
+                       ST_SCFG = 3'd7;
 
 // ---- pin registers (shared by both chips)
 reg  [5:0]  p_a = 6'd0;
@@ -171,6 +180,7 @@ reg         ph = 1'b0;            // 1: the coming edge is an F edge
 reg  [2:0]  st = ST_INIT;
 reg  [12:0] tmr = 13'd0;          // power-up wait / slot within a segment or config write
 reg  [1:0]  cop = 2'd0;           // config write: {die, BCR(1)/RCR(0)}
+reg         cpass = 1'b0;         // config pass: 0 asynchronous form (ST_CFG), 1 synchronous (ST_SCFG)
 reg         parking = 1'b0, clk_run = 1'b0;
 reg         rst_pend = 1'b1;
 (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *) reg park_m = 1'b0, park_s = 1'b0;   // park synchroniser (clk_74a reset_n)
@@ -242,6 +252,26 @@ task automatic launch;
     end
 endtask
 
+// after a configuration-register write (F edge): the next register, the
+// other pass, or done. Start: asynchronous pass, clock on, synchronous pass,
+// idle. Park (BCRs only): synchronous pass, clock off, asynchronous pass.
+task automatic cfg_next;
+    begin
+        tmr <= 13'd0;
+        cop <= cop + (parking ? 2'd2 : 2'd1);
+        if (rst_pend) begin st <= ST_INIT; clk_run <= 1'b0; end
+        else if (cop == 2'd3) begin
+            cop <= parking ? 2'd1 : 2'd0;
+            cpass <= !cpass;
+            if (cpass == parking) begin
+                // first pass done: the other form
+                st <= parking ? ST_CFG : ST_SCFG;
+                clk_run <= !parking;
+            end else st <= parking ? ST_PARKED : ST_IDLE;
+        end
+    end
+endtask
+
 always @(posedge clk) begin
     ph <= !ph;
     rst_pend <= rst_pend || reset;
@@ -284,7 +314,7 @@ always @(posedge clk) begin
             pins_idle();
             tmr <= reset ? 13'd0 : tmr + 13'd1;
             if (!reset && tmr == 13'(INIT_SLOTS)) begin
-                st <= ST_CFG; tmr <= 13'd0; cop <= 2'd0; parking <= 1'b0; rst_pend <= 1'b0;
+                st <= ST_CFG; tmr <= 13'd0; cop <= 2'd0; cpass <= 1'b0; parking <= 1'b0; rst_pend <= 1'b0;
             end
         end
 
@@ -303,15 +333,27 @@ always @(posedge clk) begin
             3'd2: begin p_adv_n <= 1'b1; p_we_n <= 1'b0; end
             3'd4: p_we_n <= 1'b1;
             3'd5: p_ce_n <= 2'b11;
-            3'd6: begin
-                p_cre <= 1'b0; p_oe <= 1'b0; tmr <= 13'd0;
-                cop <= cop + (parking ? 2'd2 : 2'd1);
-                if (rst_pend) st <= ST_INIT;
-                else if (cop == 2'd3) begin
-                    if (parking) st <= ST_PARKED;
-                    else begin st <= ST_IDLE; clk_run <= 1'b1; end
-                end
+            3'd6: begin p_cre <= 1'b0; p_oe <= 1'b0; cfg_next(); end
+            default: ;
+            endcase
+        end
+
+        // synchronous configuration-register write, clock running: slot 0 CRE
+        // high, 1 CE#/ADV#/WE# low with the value on A and DQ (sampled at the
+        // next chip edge), 2 ADV#/WE# high, 10 CE# high (nine chip cycles
+        // low, past any latency code), 11 CRE low
+        ST_SCFG: begin
+            tmr <= tmr + 13'd1;
+            case (tmr[3:0])
+            4'd0: p_cre <= 1'b1;
+            4'd1: begin
+                p_ce_n <= cop[1] ? 2'b01 : 2'b10; p_adv_n <= 1'b0; p_we_n <= 1'b0;
+                p_a <= (parking || cop[0]) ? 6'b001000 : 6'b000000;
+                p_dq0 <= cfg_val; p_dq1 <= cfg_val; p_oe <= 1'b1;
             end
+            4'd2: begin p_adv_n <= 1'b1; p_we_n <= 1'b1; end
+            4'd10: p_ce_n <= 2'b11;
+            4'd11: begin p_cre <= 1'b0; p_oe <= 1'b0; cfg_next(); end
             default: ;
             endcase
         end
@@ -319,7 +361,7 @@ always @(posedge clk) begin
         ST_PARKED: begin
             pins_idle();
             if (rst_pend) begin st <= ST_INIT; tmr <= 13'd0; end
-            else if (!park_s) begin st <= ST_CFG; tmr <= 13'd0; cop <= 2'd0; parking <= 1'b0; end
+            else if (!park_s) begin st <= ST_CFG; tmr <= 13'd0; cop <= 2'd0; cpass <= 1'b0; parking <= 1'b0; end
             else if (aux_req) begin
                 // asynchronous single access (power-on mode, clock stopped): halfword
                 // 0x40000 + aux_addr on die 0, cram0 = aux bits 15:0, cram1 = 31:16
@@ -358,7 +400,7 @@ always @(posedge clk) begin
             else if (aux_want && !rst_pend || act_busy || b_v || take_bus) launch();
             else if (rst_pend) begin st <= ST_INIT; tmr <= 13'd0; clk_run <= 1'b0; end
             else if (park_s) begin
-                st <= ST_CFG; tmr <= 13'd0; cop <= 2'd1; parking <= 1'b1; clk_run <= 1'b0;
+                st <= ST_SCFG; tmr <= 13'd0; cop <= 2'd1; cpass <= 1'b1; parking <= 1'b1;
             end
         end
 

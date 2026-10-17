@@ -47,7 +47,7 @@ MENU_SELECT = '''    psx_disc_select #(.DISC_SLOT(SLOT_VALUE)) disc_select (.clk
         .disc_select_strobe(swap_select_strobe), .disc_change_done(cd_disc_change_done));
 '''
 
-MENU = '''    // "Disc" menu setting (interact.json list, bridge 0x50000044, remembered
+MENU = '''    // "Swap Discs" menu setting (interact.json list, bridge 0x50000044, remembered
     // by the Pocket): psx_disc_menu swaps to that disc's slots in the same
     // game file (--disc-menu). The value is taken from whichever byte holds
     // it: checkbox values were seen outside bit 0 on hardware.
@@ -89,12 +89,15 @@ def disc_menu_text(text, discs):
 
 
 BOOT_WAIT = '''    // --boot-waits-disc: the CPU leaves reset only once the loader's first
-    // mount has reached cd_top (disc or no disc), or 1.8 s after Reset Exit
+    // mount has reached cd_top (disc or no disc), or 14.5 s after Reset Exit
     // without one. On a slow first launch APF can finish loading after Reset
     // Exit; a BIOS that checks the drive before the mount boots to its menu.
+    // The mount always reports (a cue that fails reports no disc), so the
+    // timeout is only a safety net: 1.8 s was shorter than a cold first
+    // launch's cue mount (Castlevania, 2026-10-17).
     (* async_reg="true", preserve, dont_merge *) reg [1:0] disc_settled_sync=2'b00;
     always @(posedge clk_74a) disc_settled_sync<={disc_settled_sync[0],cd_disc_settled};
-    reg [26:0] disc_wait=0; reg disc_wait_done=0;
+    reg [29:0] disc_wait=0; reg disc_wait_done=0;
     always @(posedge clk_74a)
         if (!power_reset_n) begin disc_wait<=0; disc_wait_done<=0; end
         else if (reset_n && !disc_wait_done) begin disc_wait<=disc_wait+1'b1; if (&disc_wait) disc_wait_done<=1'b1; end

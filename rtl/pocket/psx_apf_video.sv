@@ -65,7 +65,10 @@
 // VS_ON_HS: VS goes out with the next HS start. The GPU's vsync starts
 // with HS in progressive modes and in one 480i field, but half a line later
 // in the other (gpu_videoout_async, syncInterlace off), so the scaler saw
-// two VS timings. Only 480i showed artefacts: black pixels top left of the
+// two VS timings. HS goes out 4 clocks later than VS: APF wants HS at least
+// 3 clocks after VS, and VS and HS on the same clock (rc1 to 0.5.3) left a
+// leftover row above the picture at random (SotN PAL blue, white after a
+// hard reboot; probe4 close-ups, 2026-10-17). Only 480i showed artefacts: black pixels top left of the
 // white Sony screen, part of the lead line kept on Wipeout's PAL 480i EU
 // notice (probe3 photo), and 0.5.2's stray bottom row (2026-10-16).
 // CROP_LINES: a field taller than its slot (240 lines per field, 288 in
@@ -78,6 +81,11 @@
 // black. The first is the top row the scaler shows, and on some frames part of it held the wrong
 // pixels (white specks on the Sony screen, a flickering blue run in SotN
 // US/EU; probe4 showed that row is the core's own first line, 2026-10-17).
+// MID_W: width of the "368" slots (3, and 6/7 where they are 368 wide).
+// The PSX 368 mode is wider with a wide display range: Ape Escape (PAL)
+// sends 384x240 lines (probe photo, 2026-10-17), which went padded into the
+// 512 slot, and the trailing padding was cut at HS, leaving stale pixels on
+// the right. 384 holds both 368 and 384 lines.
 // VIDEO_PROBE (diagnostic builds only) marks what the core writes: the first
 // active line of a frame shows the previous frame's active line count as 10
 // blocks of 16 pixels (MSB first, white 1, blue 0) on green, the second line
@@ -90,7 +98,8 @@ module psx_apf_video #(parameter integer STEADY_INTERLACE=1, parameter integer S
     parameter integer PAD_LINES=0, parameter integer VIDEO_PROBE=0, parameter integer VS_AT_VBLANK=0,
     parameter integer PAL288=0,
     parameter integer CENTER_LINES=0, parameter integer VIDEO_TEST=0, parameter integer LEAD_LINE=0, parameter integer SLOT6_368=0,
-    parameter integer VS_ON_HS=0, parameter integer CROP_LINES=0, parameter integer BLANK_TOP=0) (
+    parameter integer VS_ON_HS=0, parameter integer CROP_LINES=0, parameter integer BLANK_TOP=0,
+    parameter integer MID_W=368) (
     input wire clk, ce,
     input wire hsync, vsync, hblank, vblank, interlace, blank, weave,
     input wire field_swap,            // run-time flip of the APF field bit (menu setting)
@@ -106,6 +115,7 @@ module psx_apf_video #(parameter integer STEADY_INTERLACE=1, parameter integer S
     wire vs_alt=VS_AT_VBLANK!=0 ? vsync && !vs_d : vblank && !vb_d;
     wire vs_raw=LEAD_LOGIC && vtest[1] ? vs_alt : vs_main;
     reg vs_wait=0;   // VS_ON_HS: a vsync seen mid-line, waiting for the next HS
+    reg [3:0] hs_pipe=0;   // VS_ON_HS: HS goes out 4 clocks after its edge, so after VS
     wire vs_edge=VS_ON_HS!=0 ? hsync && !hs_d && (vs_raw || vs_wait) : vs_raw;
     wire hold_now=vs_edge ? (STEADY_INTERLACE!=0 && interlace && !hold) : hold;
     // CROP_LINES: a field with more active lines than its slot is high
@@ -121,14 +131,14 @@ module psx_apf_video #(parameter integer STEADY_INTERLACE=1, parameter integer S
     reg [9:0] count=0;
     reg seen_now=0, seen_last=0, field_last=0;
     wire mode480i=INTERLACE_FEATURE!=0 && weave && (seen_now || seen_last);
-    wire [2:0] slot240=count<=256 ? 3'd2 : count<=320 ? 3'd1 : count<=368 ? 3'd3 : count<=512 ? 3'd4 : 3'd0;
+    wire [2:0] slot240=count<=256 ? 3'd2 : count<=320 ? 3'd1 : count<=MID_W ? 3'd3 : count<=512 ? 3'd4 : 3'd0;
     reg [9:0] pal_lines=0, pal_last=0;
     wire pal=PAL288!=0 && pal_last>242;   // NTSC is at most 240 lines; PAL games often use 256
-    wire [2:0] slot_now=SLOT480!=0 && mode480i ? (count<=368 && PAL288==0 ? 3'd7 : count<=(SLOT6_368!=0 ? 368 : 512) ? 3'd6 : 3'd5)
+    wire [2:0] slot_now=SLOT480!=0 && mode480i ? (count<=MID_W && PAL288==0 ? 3'd7 : count<=(SLOT6_368!=0 ? MID_W : 512) ? 3'd6 : 3'd5)
                       : pal && count<=320 ? 3'd7 : slot240;
     function automatic [9:0] slot_width(input [2:0] s);
-        case (s) 3'd1: slot_width=320; 3'd2: slot_width=256; 3'd3: slot_width=368; 3'd4: slot_width=512;
-                 3'd6: slot_width=SLOT6_368!=0 ? 368 : 512; 3'd7: slot_width=PAL288!=0 ? 320 : 368;
+        case (s) 3'd1: slot_width=320; 3'd2: slot_width=256; 3'd3: slot_width=MID_W; 3'd4: slot_width=512;
+                 3'd6: slot_width=SLOT6_368!=0 ? MID_W : 512; 3'd7: slot_width=PAL288!=0 ? 320 : MID_W;
                  default: slot_width=640; endcase
     endfunction
     reg padding=0, line_d=0;
@@ -170,7 +180,8 @@ module psx_apf_video #(parameter integer STEADY_INTERLACE=1, parameter integer S
         hs_d<=hsync; vs_d<=vsync; vb_d<=vblank;
         if (VS_ON_HS!=0) vs_wait<=!vs_edge && (vs_wait || vs_raw);
         if (vs_edge) hold<=hold_now;
-        hs<=hsync && !hs_d;
+        hs_pipe<={hs_pipe[2:0], hsync && !hs_d};
+        hs<=VS_ON_HS!=0 ? hs_pipe[3] : hsync && !hs_d;
         vs<=vs_edge;
         de<=in_line;
         skip<=in_line && ((active || lead_now ? !ce : !pad_clk) || hold_now);

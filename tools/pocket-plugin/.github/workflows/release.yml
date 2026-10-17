@@ -1,0 +1,20 @@
+# Builds plugin.wasm for a published release and attaches it with plugin.json,
+# the two files Pocket Sync and pupdate download.
+name: Release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-wasip1
+      - run: scripts/build.sh
+      - run: cp target/wasm32-wasip1/release/plugin.wasm plugin.wasm
+      - run: gh release upload "$TAG" plugin.wasm plugin.json --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}

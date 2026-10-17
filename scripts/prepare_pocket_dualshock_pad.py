@@ -36,8 +36,9 @@ def dualshock_wrapper_text(text):
 
 DUALSHOCK_TOP = (
     ('    psx_pocket_pad pad_input (',
-     '''    // "DualShock" menu checkbox (interact.json, bridge 0x50000040; on by
-    // default and until the Pocket writes the saved value). Off: digital pad.
+     '''    // "Enable DualShock" menu checkbox (interact.json, bridge 0x50000040; on
+    // by default and until the Pocket writes the saved value,
+    // 2026-10-17). Off: digital pad.
     reg dualshock_setting=1'b1;
     always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000040) dualshock_setting<=|bridge_wr_data;
     wire pad_dualshock; wire [31:0] pad_sticks;

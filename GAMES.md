@@ -18,9 +18,20 @@ missing or damaged BIOS shows a one-line message, such as
 The core plays disc images as a `.cue` file with its `.bin` files
 (MODE2/2352): one `.bin` per track (redump style) or one `.bin` for the
 whole disc (as ImgBurn makes them), with up to 99 tracks. Games with CD
-audio tracks are supported. A LibCrypt disc needs its redump `.sbi` next to
-the `.cue`, with the same name. `.chd` images need extracting first; the
-game files plugin does that for you.
+audio tracks are supported. `.chd` images need extracting first; the game
+files plugin does that for you.
+
+Some European discs have LibCrypt copy protection. Their key is stored in
+the original disc's subchannel data, which `.cue`/`.bin` images don't keep,
+so the game needs an `.sbi` file with it: download the one for your disc
+from redump.org. Put it next to the `.cue` with the same name, **before**
+making the game files: the game file names the `.sbi`, so a game file made
+without it has to be made again. Without the right `.sbi` the game can
+freeze or misbehave.
+
+A disc that came as one `.bin` without a `.cue` gets a `.cue` from the game
+files plugin, with one data track. Games with CD music need their real
+`.cue` for the music.
 
 Put each disc in its own folder under `Assets/playstation/common/`, with
 the file names unchanged:
@@ -54,11 +65,17 @@ makes them for every game on the card:
 
 Then, with the SD card in your computer, run *PlayStation game files* (in
 pupdate from *Pocket Extras → Plugins*, in Pocket Sync with the play button
-next to it on the *Plugins* page), and again whenever you add games. In the
-core, pick the game. The list starts with a *How to add games* entry until your first game
+next to it on the *Plugins* page), and again whenever you add games. In the core, pick the
+game. The list starts with a *How to add games* entry until your first game
 file is made; you can delete it from
 `Assets/playstation/GuardianSoul.PlayStation/`. Discs the core can't play
 yet are skipped with a message.
+
+pupdate also makes game files on its own whenever it updates your cores,
+and Pocket Sync's *Games → Instance JSON* button does the same, one per
+disc. Those work for single-disc games with up to four `.bin`
+files, but a multi-disc game gets one entry and one memory card per disc.
+Run the plugin afterwards: it replaces them with one entry per game.
 
 No pupdate or Pocket Sync? The
 **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
@@ -68,12 +85,15 @@ nothing is uploaded. It can't read `.chd` images.
 
 ## Without game files
 
-Game files are the way to play. Only when a disc has no game file yet,
-for example because you copied it to the card without running the plugin,
-the core can start it directly: in the game list press Back to reach the
-files in `Assets/playstation/common/` and pick the disc's `.cue`. That
-disc then gets its own memory card, and there is no disc swapping. If a
-disc doesn't start this way, make its game file.
+Game files are the way to play. Starting a disc directly is a fallback for
+a disc that has no game file yet: in the game list press Back to reach the
+files in `Assets/playstation/common/` and pick the disc's `.cue`. Always
+pick the `.cue` when there is one: without it the core doesn't know the
+disc's tracks, so CD music is missing and some games stop where it starts.
+Pick the `.bin` only for a disc that came without a `.cue`. A
+disc started this way gets its own memory card and has no disc swapping,
+so a multi-disc game's discs don't share saves. If a disc doesn't start
+this way, make its game file.
 
 ## Changing discs
 

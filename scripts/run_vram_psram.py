@@ -4,7 +4,8 @@
 """Pin-level checks of rtl/memory/psx_vram_psram.sv (Icarus Verilog).
 
 Runs the bench (sim/pocket/tb_psx_vram_psram.sv + psx_cram_model.sv) for
-several board-delay profiles and seeds, LATENCY 4, the latency/bandwidth
+several board-delay profiles and seeds, chips left synchronous by another
+core (FOREIGN), LATENCY 4, the latency/bandwidth
 measurement, then broken controller variants and broken boards that must be
 rejected. Writes build/sim/vram-psram/<run>/results.json (histograms in
 clk2x cycles) and prints a summary.
@@ -46,8 +47,14 @@ MUTATIONS = [
      'localparam int WR_FIRST   = LATENCY + 2 + WRITE_ADJ;', ['mismatch', 'crossed a row']),
     ('park-keeps-sync-bcr', 'parking ? BCR_ASYNC :', 'parking ? BCR_SYNC :',
      ['park did not restore', 'asynchronous access']),
-    ('park-clock-running', "cop <= 2'd1; parking <= 1'b1; clk_run <= 1'b0;", "cop <= 2'd1; parking <= 1'b1;",
+    ('park-clock-left-running', "clk_run <= !parking;", "clk_run <= 1'b1;",
      ['clock during a configuration access', 'clock running while a die is asynchronous']),
+    # the asynchronous form alone: ignored by a synchronous die (another core's, or ours at park)
+    ('park-async-form-only', "st <= ST_SCFG; tmr <= 13'd0; cop <= 2'd1; cpass <= 1'b1; parking <= 1'b1;",
+     "st <= ST_CFG; tmr <= 13'd0; cop <= 2'd1; cpass <= 1'b0; parking <= 1'b1; clk_run <= 1'b0;",
+     ['park did not restore', 'asynchronous access']),
+    ('start-async-form-only', "st <= parking ? ST_CFG : ST_SCFG;", "st <= parking ? ST_CFG : ST_IDLE;",
+     ['fixed-latency', 'partial refresh'], dict(FOREIGN=1)),
     ('reset-aborts-burst', "        default: st <= ST_INIT;\n        endcase\n",
      "        default: st <= ST_INIT;\n        endcase\n"
      "        if (rst_pend && (st == ST_LAT || st == ST_DATA)) begin pins_idle(); st <= ST_IDLE; act_busy <= 1'b0; end\n",
@@ -128,6 +135,8 @@ def main():
     seeds = [1] if a.quick else [1, 2, 3]
     for s in seeds:
         positive[f'random-seed{s}'] = dict(SEED=s, N_OPS=2500, RESETS=4, PARKS=3)
+        # chips left synchronous by another core (BCR 1D1F, RCR 0011)
+        positive[f'foreign-seed{s}'] = dict(SEED=s, N_OPS=1200, RESETS=2, PARKS=2, FOREIGN=1)
         # latency summary without resets or parks (reads waiting for re-init excluded)
         positive[f'quiet-seed{s}'] = dict(SEED=s, N_OPS=2500, RESETS=0, PARKS=0)
         positive[f'quiet-noaux-seed{s}'] = dict(SEED=s, N_OPS=2500, RESETS=0, PARKS=0, AUX=0)
@@ -143,7 +152,7 @@ def main():
     with cf.ThreadPoolExecutor(a.jobs) as pool:
         for name, params in positive.items():
             jobs[pool.submit(compile_and_run, work, name, params)] = ('pass', name, None)
-        for name, before, after, markers in MUTATIONS:
+        for name, before, after, markers, *extra in MUTATIONS:
             text = RTL.read_text()
             for b, c in (before if after is None else [(before, after)]):
                 if text.count(b) != 1:
@@ -152,7 +161,7 @@ def main():
             mutated = work / f'mutated-{name}.sv'
             mutated.write_text(text)
             jobs[pool.submit(compile_and_run, work, 'mutated-' + name,
-                             dict(SEED=5, N_OPS=900, RESETS=2, PARKS=1), mutated)] = ('reject', name, markers)
+                             dict(SEED=5, N_OPS=900, RESETS=2, PARKS=1, **(extra[0] if extra else {})), mutated)] = ('reject', name, markers)
         for name, params, markers in BOARD_FAULTS:
             jobs[pool.submit(compile_and_run, work, 'board-' + name,
                              dict(SEED=6, N_OPS=400, RESETS=0, PARKS=0, **params))] = ('reject', name, markers)

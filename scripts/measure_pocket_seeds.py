@@ -19,6 +19,7 @@ from measure_spu_scalar_full_top import FILE_ASSIGNMENT, inputs as assigned_inpu
 from prepare_resource_targets import digest
 from run_resource_fit import fit_target
 from tool_paths import ROOT, find_tool
+from pocket_project_copy import project_copy_ignore
 
 
 TEXT_SUFFIXES = {'.sv', '.v', '.vhd', '.hv', '.vh', '.svh', '.inl', '.qsf', '.qpf', '.sdc'}
@@ -88,18 +89,7 @@ def inputs(directory):
 
 
 def clone(source, destination):
-    ignored = shutil.ignore_patterns(
-        'db', 'incremental_db', 'output_files', 'input-archive', '*.rpt', '*.summary', '*.log')
-    def ignore(directory, names):
-        result = set(ignored(directory, names))
-        if Path(directory).resolve() == Path(source).resolve():
-            # A completed parent's success record must never look like this
-            # new job's result while its compiler is still running. Keep
-            # input manifests and nested JSON resources, but rebuild this
-            # job's own target/evidence from its freshly relocated inputs.
-            result.update({'result.json', 'timing-inputs.json'})
-        return result
-    shutil.copytree(source, destination, ignore=ignore)
+    shutil.copytree(source, destination, ignore=project_copy_ignore(source))
     for p in destination.rglob('*'):
         if p.is_file() and p.suffix in TEXT_SUFFIXES:
             text = p.read_text(); changed = text.replace(str(source), str(destination))
@@ -167,7 +157,7 @@ def main():
             archives[name] = dict(path=str(copy), sha256=sha)
     tools = [Path(__file__), *[ROOT/'scripts'/name for name in (
         'measure_spu_scalar_full_top.py', 'run_resource_fit.py', 'resource_report.py',
-        'prepare_resource_targets.py', 'tool_paths.py')]]
+        'prepare_resource_targets.py', 'tool_paths.py', 'pocket_project_copy.py')]]
     archive([s['path'] for s in original]+[replacement]+tools)
     # Freeze external RTL as well as the copied project. Another agent may
     # continue editing the shared checkout while all paired fits consume this

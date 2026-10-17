@@ -1,6 +1,6 @@
 .PHONY: test test-python test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache preflight resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte inspect-assets diagnose-bios
 
-test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-joypad-dualshock test-joypad-dualshock-lean test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-vram-psram test-memcard-slot test-memorymux-fifo-ram
+test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-joypad-dualshock test-joypad-dualshock-lean test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-gpu-sort-reread test-vram-psram test-memcard-slot test-memorymux-fifo-ram
 
 .PHONY: test-sdram-selector test-sdram-ctrl release
 .PHONY: test-native-sdram-spec check-native-sdram-spec
@@ -202,6 +202,10 @@ test-spu-adsr-lean:
 
 test-gpu-dy-ram:
 	cd scripts && python3 run_gpu_dy_ram.py
+
+.PHONY: test-gpu-sort-reread
+test-gpu-sort-reread:
+	cd scripts && python3 run_gpu_sort_reread.py
 
 test-gpu-area-reg:
 	python3 scripts/run_gpu_area_reg.py
@@ -646,3 +650,8 @@ test-stick-map:
 	python3 -m unittest tests.test_pocket_stick_settings
 	mkdir -p build/tb_stick_dpad && cd build/tb_stick_dpad && ghdl -a --std=08 -frelaxed ../../references/PSX_MiSTer/rtl/pJoypad.vhd ../../rtl/pocket/joypad_pad_dualshock.vhd ../../sim/pocket/tb_joypad_stick_dpad.vhd && ghdl -e --std=08 -frelaxed tb_joypad_stick_dpad && \
 		for g in true false; do ghdl -r --std=08 -frelaxed tb_joypad_stick_dpad -gSTICK_DPAD=$$g 2>&1 | grep -q "PASS stick dpad STICK_DPAD=$$g" || exit 1; done
+
+.PHONY: test-pocket-analog
+test: test-pocket-analog
+test-pocket-analog:
+	python3 scripts/run_pocket_analog_checks.py

@@ -82,6 +82,11 @@ enum { K_READ = 0, K_GETFILE = 1, K_OPEN = 2, K_USEU = 4 };   // K_USEU: into th
 #define NOINLINE __attribute__((noinline))   // code space: 8 KiB
 static u32 fname[MAXF] BIG;        // name offset in the cue | length << 16 | PREGAP sectors before it << 24
 static u32 fsec[MAXF + 1] BIG;     // first sector; fsec[nfiles] = total
+// Segments: a PREGAP in the middle of a file (ImgBurn-style merged cues:
+// TRACK 02 AUDIO / PREGAP 00:02:00, the gap not in the .bin) splits it, so
+// "files" are segments of the cue's FILEs: physical file << 24 | the
+// segment's first sector in it.
+static u32 fseg[MAXF];              // in .bss (HIGH): BIG is full
 static u32 tstart[MAXT] BIG;       // parse: sectors in the file | file << 24; then absolute
 static u32 ti1[MAXT] BIG;          // INDEX 01, as tstart (| audio << 31 while parsing)
 static u8 base[256] BIG;           // the picked cue's path, for its sibling discs
@@ -91,7 +96,7 @@ static u32 cur;                    // its disc number d from "(Disc d)", 0 for n
 static u32 lcmask;                 // the disc's LibCrypt mask (table word 3)
 static u32 lead;                   // sectors before track 1's INDEX 01 in the first file, not on the disc
 
-static u32 flags, nfiles, ntracks, total, open_file, dirlen, pick, cue_size, bin;
+static u32 flags, nfiles, ntracks, total, open_file, dirlen, pick, cue_size, bin, nphys;
 static u32 rd = FILE_SLOT;         // where file k is read: FILE_SLOT, or (DISC_SLOT) a game JSON's slot 101 + k
 static u32 json;                   // the cue came from a game JSON (its .bin is in DISC_SLOT)
 static u32 cbase, clen, cpos;      // read window: cue bytes [cbase, cbase+clen); next byte
@@ -110,6 +115,16 @@ static u32 sectors_to_bytes(u32 n) { return (n << 11) + (n << 8) + (n << 5) + (n
 
 static void setf(u32 f) { flags = f; IO[W_FLAGS] = f; }
 
+// Probe words (psx_cue_mount DEBUG=1 shows them; release ignores the
+// stores): W_DBG+0 the line of the last fail() and the last open's error (opn), +1 the
+// last command and +2 the last getfile or open that failed (kind | slot << 4
+// | error << 16 | command count << 20), +3 and +4 the first 8 path bytes
+// after the first getfile, +5 and +6 the last 8 path bytes of that failed
+// getfile or open (first byte in bits 31:24), +7 the LibCrypt mask.
+#define W_DBG 8
+static u32 ncmd, dbg_got;
+NOINLINE static u32 pack4(u32 i) { return (u32)PATH[i] << 24 | (u32)PATH[i + 1] << 16 | (u32)PATH[i + 2] << 8 | PATH[i + 3]; }
+
 // One APF target command; its error (0 = done).
 NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
     IO[W_IDLEN] = id | len << 16;
@@ -117,7 +132,25 @@ NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
     IO[W_CMD] = kind;
     u32 s;
     while ((s = IO[R_STATUS]) & ST_CMD) ;
-    return s & ST_ERR;
+    s &= ST_ERR;
+    u32 d = kind | id << 4 | s << 16 | ++ncmd << 20;
+    IO[W_DBG + 1] = d;
+    if (kind == K_GETFILE && !dbg_got) { dbg_got = 1; IO[W_DBG + 3] = pack4(0); IO[W_DBG + 4] = pack4(4); }
+    if (s && (kind == K_GETFILE || kind == K_OPEN)) {
+        u32 i = 0;
+        while (i < 255 && PATH[i]) i++;
+        IO[W_DBG + 2] = d;
+        if (i >= 8) { IO[W_DBG + 5] = pack4(i - 8); IO[W_DBG + 6] = pack4(i - 4); }
+    }
+    return s;
+}
+
+// Open the path struct's file into slot (its error; W_DBG+0 bits 14:12).
+static u32 oerr;
+NOINLINE static u32 opn(u32 slot) {
+    oerr = cmd(K_OPEN, slot, 0, 0);
+    IO[W_DBG] = oerr << 12;
+    return oerr;
 }
 
 // The largest n < 2^(k+1) whose word ending at n*unit reads (n >= 1, or 0).
@@ -161,12 +194,22 @@ static int finish(int has0, int has1, u32 i0, u32 i1, int audio, u32 pg) {
     u32 r = ntracks - 1, f = nfiles - 1;
     if (!has1) return 0;
     if (pg) {
-        // Only before a file's first track, at the file's first sector.
-        if (has0 || i1 || (r && tstart[r - 1] >> 24 == f)) return 0;
-        fname[f] |= pg << 24;
+        if (has0) return 0;
+        if (r && tstart[r - 1] >> 24 == f) {
+            // Inside a file that already has a track: a new segment of the
+            // same file from this track's INDEX 01, the gap before it.
+            if (nfiles == MAXF || i1 <= (fseg[f] & 0xffffff)) return 0;
+            fname[nfiles] = (fname[f] & 0xffffff) | pg << 24;
+            fseg[nfiles] = (fseg[f] & 0xff000000) | i1;
+            f = nfiles++;
+        } else if (i1) return 0;   // before a file's first track, at its first sector
+        else fname[f] |= pg << 24;
     }
-    tstart[r] = (has0 ? i0 : i1) | f << 24;
-    ti1[r] = i1 | (u32)audio << 31;
+    // Indexes count from the segment's start.
+    u32 b = fseg[f] & 0xffffff;
+    if ((has0 ? i0 : i1) < b) return 0;
+    tstart[r] = ((has0 ? i0 : i1) - b) | f << 24;
+    ti1[r] = (i1 - b) | (u32)audio << 31;
     return 1;
 }
 
@@ -186,7 +229,7 @@ static u32 frames(int *ok) {
 NOINLINE static int parse(void) {
     int ht = 0, has0 = 0, has1 = 0, audio = 0, ok;
     u32 i0 = 0, i1 = 0, pg = 0;
-    nfiles = ntracks = 0;
+    nfiles = ntracks = nphys = 0;
     cbase = clen = cpos = 0;
     c = getb();
     for (;;) {
@@ -212,6 +255,7 @@ NOINLINE static int parse(void) {
                 if (c == '"') { adv(); off = cpos - 1; while (!eol(c) && c != '"') { len++; adv(); } }
                 else { off = cpos - 1; while (!eol(c) && c != ' ' && c != '\t') { len++; adv(); } }
                 if (!len || len > 255) return 0;
+                fseg[nfiles] = nphys++ << 24;
                 fname[nfiles++] = off | len << 16;
             } else {
                 if (!nfiles || ntracks == MAXT) return 0;
@@ -259,15 +303,15 @@ NOINLINE static u32 open(u32 k) {
     if ((err = cmd(K_READ, pick, off & ~3u, (len + at + 3) & ~3u))) return err;
     for (u32 i = 0; i < len; i++) { u32 x = CHUNK[at + i]; PATH[dirlen + i] = x == '\\' ? '/' : x; }
     PATH[dirlen + len] = 0;
-    err = cmd(K_OPEN, FILE_SLOT, 0, 0);
+    err = opn(FILE_SLOT);
     // A one-file cue whose .bin was renamed along with it: "<cue name>.bin".
-    if (err && nfiles == 1 && fb) {
+    if (err && nphys == 1 && fb) {
         u32 i = 0;
         for (; i < 255 && base[i]; i++) PATH[i] = base[i];
         for (u32 m = 0; m < nmarks; m++) PATH[marks[m]] = fb;
         if (i > 4 && PATH[i - 4] == '.') {
             PATH[i - 3] = 'b'; PATH[i - 2] = 'i'; PATH[i - 1] = 'n'; PATH[i] = 0;
-            err = cmd(K_OPEN, FILE_SLOT, 0, 0);
+            err = opn(FILE_SLOT);
         }
     }
     IO[W_CLR] = CLR_MENU;
@@ -309,9 +353,13 @@ static u32 m3u_n, m3u_slot, m3u_ent[4];  // playlist entries: offset | length <<
 
 static int is_disc(u32 id) { return id == 101 || id == 201 || id == 301 || id == 401; }
 
-static void fail(int mode) {
+static u32 retry;   // a launch mount that fails is tried once more before the stream (and the BIOS) sees no disc
+
+#define fail(mode) fail_at(mode, __LINE__)
+NOINLINE static void fail_at(int mode, u32 line) {
+    IO[W_DBG] = line | oerr << 12;
     bin = 0;
-    setf((flags & ~(F_MOUNTED | F_VDISC | F_VTABLE)) | F_FAILED | (mode == M_LAUNCH ? F_ALLC : 0));
+    setf((flags & ~(F_MOUNTED | F_VDISC | F_VTABLE)) | F_FAILED | (mode == M_LAUNCH && !retry ? F_ALLC : 0));
     if (mode == M_PICK) IO[W_UPD] = 0;
 }
 
@@ -379,7 +427,7 @@ static u32 open_disc(u32 k) {
     for (u32 m = 0; m < nmarks; m++) PATH[marks[m]] = '0' + k;
     fb = '0' + k;
     PATHW[64] = 0; PATHW[65] = 0;
-    u32 err = cmd(K_OPEN, CUE2_SLOT, 0, 0);
+    u32 err = opn(CUE2_SLOT);
     IO[W_CLR] = CLR_MENU;
     open_file = NONE;
     return err;
@@ -392,15 +440,24 @@ static const u32 lc_msf[16] = {0x030805, 0x030956, 0x031310, 0x031429, 0x031524,
 
 // LibCrypt mask from the redump .sbi next to the cue (same name; path in
 // the path struct up to n). 4-byte header, 14-byte entries; 0 if none.
+// A game JSON's .sbi is read from its slot 99 when it has one
+// (make_pocket_instances.py and the plugin put it there), loaded by APF:
+// no open by path, which the Pocket refused (Ape Escape EU got no mask
+// from the list). Older game JSONs still look beside the cue.
+#define SBI_SLOT 99u
 NOINLINE static u32 sbi_mask(u32 n) {
-    if (n < 4 || PATH[n - 4] != '.') return 0;
-    PATH[n - 3] = 's'; PATH[n - 2] = 'b'; PATH[n - 1] = 'i';
-    u32 err = cmd(K_OPEN, FILE_SLOT, 0, 0), mask = 0;
-    IO[W_CLR] = CLR_MENU;
-    open_file = NONE;
-    if (err) return 0;
+    u32 slot = SBI_SLOT, mask = 0;
+    if (!json || cmd(K_READ, SBI_SLOT, 0, 4)) {
+        if (n < 4 || PATH[n - 4] != '.') return 0;
+        PATH[n - 3] = 's'; PATH[n - 2] = 'b'; PATH[n - 1] = 'i';
+        u32 err = opn(FILE_SLOT);
+        IO[W_CLR] = CLR_MENU;
+        open_file = NONE;
+        if (err) return 0;
+        slot = FILE_SLOT;
+    }
     u32 save_pick = pick, save_size = cue_size;
-    pick = FILE_SLOT; cue_size = probe(FILE_SLOT, 1, 11);
+    pick = slot; cue_size = probe(slot, 1, 11);
     clen = 0;
     for (cpos = 4; cpos + 3 <= cue_size; cpos += 11) {
         int a = getb(), b = getb(), c3 = getb();
@@ -441,8 +498,9 @@ static void cue(u32 slot, u32 size, int mode) {
         find_marks();
         fb = '0' + cur;
     }
+    PATHW[64] = 0; PATHW[65] = 0;   // openfile flags and size: open an existing file (the .sbi too)
     lcmask = IO[R_STATUS] & ST_LC ? sbi_mask(i) : 0;
-    PATHW[64] = 0; PATHW[65] = 0;   // openfile flags and size: open an existing file
+    IO[W_DBG + 7] = lcmask;
     if (!parse()) { fail(mode); return; }
     total = 0;
     // A game JSON whose slots 101, 102, ... hold the cue's files (pupdate,
@@ -451,13 +509,20 @@ static void cue(u32 slot, u32 size, int mode) {
     // resolve (re-opening by the cue's folder failed on hardware).
     rd = DISC_SLOT;
     for (u32 k = 0; k < nfiles; k++)
-        if (!json || k == 19 || cmd(K_READ, DISC_SLOT + k, 0, 4)) rd = FILE_SLOT;
+        if (!json || fseg[k] >> 24 >= 19 || cmd(K_READ, DISC_SLOT + (fseg[k] >> 24), 0, 4)) rd = FILE_SLOT;
     // A first file holding track 1's pregap (INDEX 01 past its start, as
     // some rippers write): the disc starts at INDEX 01.
     lead = ti1[0] & 0xfffff;
+    u32 psize = 0;
     for (u32 k = 0; k < nfiles; k++) {
-        if (rd == FILE_SLOT && open(k)) { fail(mode); return; }
-        u32 n = probe(rd == FILE_SLOT ? rd : rd + k, 2352, 18);
+        u32 b = fseg[k] & 0xffffff, n;
+        if (!b) {   // a file's first segment: its size
+            if (rd == FILE_SLOT && open(k)) { fail(mode); return; }
+            psize = probe(rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24), 2352, 18);
+        }
+        // up to the next segment of the same file, else its end
+        n = k + 1 < nfiles && fseg[k + 1] >> 24 == fseg[k] >> 24 ? fseg[k + 1] & 0xffffff : psize;
+        n = n > b ? n - b : 0;
         if (!k) n = n > lead ? n - lead : 0;
         total += fname[k] >> 24;   // PREGAP
         if (!n || total + n > 524138) { fail(mode); return; }   // 19-bit LBAs with the pregap
@@ -499,7 +564,7 @@ NOINLINE static u32 open_entry(u32 k) {
     for (u32 i = 0; i < len; i++) { u32 x = CHUNK[at + i]; PATH[d + i] = x == '\\' ? '/' : x; }
     PATH[d + len] = 0;
     PATHW[64] = 0; PATHW[65] = 0;
-    err = cmd(K_OPEN, CUE2_SLOT, 0, 0);
+    err = opn(CUE2_SLOT);
     IO[W_CLR] = CLR_MENU;
     open_file = NONE;
     return err;
@@ -571,7 +636,8 @@ static void serve(void) {
             for (u32 w = 0; w < len >> 2; w++) INJ[w] = 0;   // a PREGAP: silence
         } else {
             if (open_file != k) err = open(k);
-            if (!err) err = cmd(K_READ | K_USEU, rd == FILE_SLOT ? rd : rd + k, off - sectors_to_bytes(fsec[k] - (k ? 0 : lead)), len);
+            if (!err) err = cmd(K_READ | K_USEU, rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24),
+                                off - sectors_to_bytes(fsec[k] - (k ? 0 : lead) - (fseg[k] & 0xffffff)), len);
         }
     } else {
         err = cmd(K_READ | K_USEU, bin && is_disc(id) ? bin_slot : id, off, len);
@@ -595,7 +661,14 @@ void main(void) {
         setf(flags & ~(F_IDLE | F_ACCEPT));
         if (IO[R_STATUS] & ST_U) serve();
         u32 m = menu_now();
-        if (s & ST_BOOT) { IO[W_CLR] = ST_BOOT | CLR_MENU; mount(LAUNCH_SLOT); }
+        if (s & ST_BOOT) {
+            // A cold first launch (after a restart or card writes) can fail a
+            // read; the second try reads cached data.
+            IO[W_CLR] = ST_BOOT | CLR_MENU;
+            setf(flags & ~F_FAILED);
+            retry = 1; mount(LAUNCH_SLOT);
+            retry = 0; if (flags & F_FAILED) mount(LAUNCH_SLOT);
+        }
         else if (s & ST_UPD) { IO[W_CLR] = ST_UPD | CLR_MENU; mount(DISC_SLOT); }
         else menu_disc(m + 1);
         setf((flags & ~F_DISC) | m << 8 | F_IDLE | (flags & F_MOUNTED ? 0 : F_ACCEPT));
