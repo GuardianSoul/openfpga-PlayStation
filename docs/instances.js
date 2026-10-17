@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Game files for the PlayStation core on an Analogue Pocket SD card.
 //
-// A browser port of scripts/make_pocket_instances.py (keep the two in step;
-// tests/test_sd_card_page.py runs both on the same card and compares). It
+// A browser port of scripts/make_pocket_instances.py (keep the two, and
+// tools/pocket-plugin, in step; tests/test_sd_card_page.py runs both on the
+// same card and compares). It
 // works on File System Access API directory handles, so the page can write
 // straight to the SD card in Chrome or Edge. CHD images still need the
-// script, because they have to be decompressed with chdman.
+// script or the plugin, because they have to be decompressed.
 (function (exports) {
   'use strict';
 
@@ -16,6 +17,8 @@
   const DISC = / \(Disc \d+\)/;
   const DISC_N = /\s*\(Disc (\d+)\)/i;
   const DISC_N_ALL = /\s*\(Disc (\d+)\)/gi;
+  // Files a cue-reader core reads from the game file's slots 101+ (disc 1).
+  const CUE_FILE_SLOTS = 19;
   // Other tags in parentheses (region, release, languages) can differ between
   // a game's discs, so grouping uses the title without them.
   const RELEASE = /\s*\([^()]*\)/g;
@@ -52,6 +55,47 @@
     try {
       for (const part of Array.isArray(data) ? data : [data]) await out.write(part);
     } finally { await out.close(); }
+  }
+
+  // Space kept free on the card while a large file is written, as the plugin does.
+  const RESERVE = 256 << 20;
+  const mb = (bytes) => Math.ceil(bytes / (1 << 20));
+
+  // Write a large file (a split track, a joined image) and read it back. The
+  // file first claims its size plus RESERVE, so a card that is too full fails
+  // before anything is written; whatever fails, the half-written file goes.
+  async function writeChecked(root, segs, parts) {
+    const blobs = parts.map((p) => (p instanceof Blob ? p : new Blob([p])));
+    const size = blobs.reduce((n, b) => n + b.size, 0);
+    try {
+      const dir = await dirAt(root, segs.slice(0, -1), true);
+      const out = await (await dir.getFileHandle(segs[segs.length - 1], { create: true })).createWritable();
+      try {
+        await out.truncate(size + RESERVE);
+        await out.seek(0);
+        for (const blob of blobs) await out.write(blob);
+        await out.truncate(size);
+      } catch (error) { try { await out.abort(); } catch (e) { /* already closed */ } throw error; }
+      await out.close();
+      const written = await fileAt(root, segs);
+      if (!written || written.size !== size) throw new Error('the copy on the card has the wrong size');
+      let offset = 0;
+      for (const blob of blobs) {
+        for (let at = 0; at < blob.size; at += 8 << 20) {
+          const to = Math.min(at + (8 << 20), blob.size);
+          const [a, b] = await Promise.all([blob.slice(at, to), written.slice(offset + at, offset + to)]
+            .map(async (x) => new Uint8Array(await x.arrayBuffer())));
+          if (a.length !== b.length || a.some((v, i) => v !== b[i])) throw new Error('the copy on the card does not read back the same');
+        }
+        offset += blob.size;
+      }
+    } catch (error) {
+      await removeFile(root, segs);
+      if (error.name === 'QuotaExceededError' || /space|quota/i.test(error.message)) {
+        throw new Error(`not enough room on the SD card for ${segs[segs.length - 1]} (${mb(size)} MB, and ${mb(RESERVE)} MB kept free)`);
+      }
+      throw error;
+    }
   }
 
   async function removeFile(root, segs) {
@@ -112,6 +156,22 @@
 
   const rawTrack = (kind) => kind === 'AUDIO' || kind.endsWith('/2352') || kind.endsWith('/RAW');
 
+  // Reason a cue-reader core cannot open this cue's files, or null.
+  async function cueCheck(card, files, folder) {
+    if (!files.length) return 'no FILE entries';
+    for (const [name] of files) {
+      const file = await fileAt(card, join(folder, name.replace(/\\/g, '/')));
+      if (!file) return `${name}: file missing`;
+      if (file.size % SECTOR) return `${name}: not whole 2352-byte sectors`;
+    }
+    return null;
+  }
+
+  // Whether every disc's cue is disc 1's path with "(Disc 1)" renumbered, as
+  // the core's cue reader finds them.
+  const siblingPaths = (cue1, others) =>
+    [...others].every(([n, cue]) => cue1.join('/').replace(/\(Disc 1\)/g, `(Disc ${n})`) === cue.join('/'));
+
   // Reason the core cannot play this layout, or null.
   async function check(card, files, folder) {
     if (!files.length) return 'no FILE entries';
@@ -169,7 +229,7 @@
     for (const { number, kind, start, zeros, end } of plan) {
       const two = String(number).padStart(2, '0');
       const track = plan.length > 1 ? `${base} (Track ${two}).bin` : `${base}.bin`;
-      await writeFile(card, [...dest, track], [new Uint8Array(zeros * SECTOR), source.slice(start * SECTOR, end * SECTOR)]);
+      await writeChecked(card, [...dest, track], [new Uint8Array(zeros * SECTOR), source.slice(start * SECTOR, end * SECTOR)]);
       lines.push(`FILE "${track}" BINARY`, `  TRACK ${two} ${kind}`);
       lines.push(...(number !== plan[0].number ? ['    INDEX 00 00:00:00', '    INDEX 01 00:02:00'] : ['    INDEX 01 00:00:00']));
     }
@@ -256,7 +316,7 @@
       if (!(existing && existing.size === total * SECTOR)) {
         const parts = [];
         for (const [path] of plan.sources) parts.push(await fileAt(card, path));
-        await writeFile(card, image, parts);
+        try { await writeChecked(card, image, parts); } catch (error) { return error.message; }
       }
     }
     const table = [...image.slice(0, -1), stem(image[image.length - 1]) + '.trk'];
@@ -266,7 +326,8 @@
 
   // Split merged single-.bin cues under common into <name>/ folders next to
   // them. With removeOriginals the merged .bin and its cue are deleted once
-  // the split is written, so a small card needs room for one game at a time.
+  // every split track has been written and read back, so a small card needs
+  // room for one game at a time. A failed split leaves the original as it was.
   // CHD images are reported, not converted.
   // One-file cores play merged images as they are: nothing is split.
   async function convert(card, common, log, removeOriginals = false, oneFile = false) {
@@ -365,7 +426,12 @@
     const sharedCards = declared === null || ids.includes(CARD_SLOT);
     const libcrypt = declared !== null && ids.includes(LIBCRYPT_SLOT);
     // --one-file-disc cores: one .bin plus a .trk table per disc (slots 100n+1, 100n+2).
-    const oneFile = declared !== null && declared.some((s) => s && s.id === 102 && (s.extensions || []).includes('trk'));
+    // --cue-mount cores read the cue themselves (their launch slot takes .cue files).
+    const cueReader = declared !== null && declared.some((s) => s && s.id === 0 && (s.extensions || []).includes('cue'));
+    // Cue-reader cores read .m3u playlists (up to four discs); slot 100 taking
+    // them means a game file can name one.
+    const playlistSlot = declared !== null && declared.some((s) => s && s.id === 100 && (s.extensions || []).includes('m3u'));
+    const oneFile = !cueReader && declared !== null && declared.some((s) => s && s.id === 102 && (s.extensions || []).includes('trk'));
     const common = ['Assets', platform, 'common'];
     const out = ['Assets', platform, core];
     const commonDir = await dirAt(card, common);
@@ -373,7 +439,7 @@
     const summary = { written: 0, skipped: 0, converted: 0, convertFailed: 0, shared: 0, lines: [] };
     const say = (line) => { summary.lines.push(line); log(line); };
     if (options.convert) {
-      [summary.converted, summary.convertFailed] = await convert(card, common, say, Boolean(options.removeOriginals), oneFile);
+      [summary.converted, summary.convertFailed] = await convert(card, common, say, Boolean(options.removeOriginals), oneFile || cueReader);
       say(`${summary.converted} images converted, ${summary.convertFailed} failed`);
     }
     const discTracks = {};
@@ -386,18 +452,48 @@
       const instance = { instance: { magic: 'APF_VER_1', data_path: prefix, data_slots: slots } };
       await writeFile(card, [...out, name + '.json'], jsonDumps(instance) + '\n');
     };
+    // Write cue's own game file (sharedCard: its game's shared card name, if set).
+    const single = async (cue, files, trackCount, sharedCard = null) => {
+      const folder = cue.slice(0, -1), cueName = cue[cue.length - 1], cueStem = stem(cueName);
+      const dataPath = posix(folder.slice(common.length));
+      const slots = [{ id: 100, filename: cueName }, ...files.map(([n], k) => ({ id: 101 + k, filename: n }))];
+      let sbi = null;
+      if (cueReader) sbi = await fileAt(card, [...folder, cueStem + '.sbi']) ? cueStem + '.sbi' : null;
+      else if (libcrypt || oneFile) sbi = await findSbi(card, cue);
+      if (sbi && !oneFile && !cueReader) slots.push({ id: LIBCRYPT_SLOT, filename: sbi });
+      let prefix = dataPath !== '.' ? dataPath + '/' : '';
+      const shared = sharedCards ? sharedCard || sharedCardName(cueStem) : null;
+      if (shared) {
+        for (const s of slots) s.filename = prefix + s.filename;
+        slots.push({ id: CARD_SLOT, filename: shared });
+        if (!discs.has(shared)) discs.set(shared, []);
+        discs.get(shared).push(cueStem);
+        prefix = '';
+      }
+      await writeInstance(cueStem, slots, prefix);
+      const count = oneFile || cueReader ? trackCount : files.length;
+      const kind = oneFile ? ', one file' : cueReader ? ', cue' : '';
+      say(`wrote ${cueStem}.json (${count} track${count > 1 ? 's' : ''}${kind}${sbi ? ', LibCrypt ' + sbi : ''})`);
+    };
     for (const rel of await walk(commonDir, (n) => /\.cue$/i.test(n))) {
       const cue = [...common, ...rel];
       const folder = cue.slice(0, -1), cueName = cue[cue.length - 1], cueStem = stem(cueName);
       let files = null, reason = null, trackCount = 0;
-      try { files = await readCue(card, cue); reason = oneFile ? null : await check(card, files, folder); } catch (e) { reason = e.message; }
-      if (oneFile && folder[folder.length - 1] === cueStem && await fileAt(card, [...folder.slice(0, -1), cueName])) continue;   // split copy of a merged cue
+      try {
+        files = await readCue(card, cue);
+        reason = cueReader ? await cueCheck(card, files, folder) : oneFile ? null : await check(card, files, folder);
+      } catch (e) { reason = e.message; }
+      if ((oneFile || cueReader) && folder[folder.length - 1] === cueStem && await fileAt(card, [...folder.slice(0, -1), cueName])) continue;   // split copy of a merged cue
       if (!reason && oneFile) {
         const made = await writeOneFile(card, cue, files, await findSbi(card, cue).then((s) => s && [...folder, s]));
         if (typeof made === 'string') reason = made;
         else { files = made.slice(0, 2).map((p) => [p.slice(folder.length).join('/')]); trackCount = made[2]; }
       }
-      if (!reason && !oneFile && files.length > maxTracks) reason = `${files.length} track files (core takes ${maxTracks})`;
+      if (!reason && cueReader) {   // disc 1 boots from its slots, the rest by path
+        trackCount = files.reduce((n, [, tracks]) => n + tracks.length, 0);
+        if (files.length > Math.min(CUE_FILE_SLOTS, maxTracks)) files = [];   // only slots the core declares
+      }
+      if (!reason && !oneFile && !cueReader && files.length > maxTracks) reason = `${files.length} track files (core takes ${maxTracks})`;
       if (reason && await fileAt(card, [...folder, cueStem, cueStem + '.cue'])) continue;   // converted copy is listed
       if (reason) { say(`skip ${rel.join('/')}: ${reason}`); summary.skipped++; continue; }
       const disc = DISC_N.exec(cueStem);
@@ -407,25 +503,10 @@
         if (!games.has(game)) games.set(game, new Map());
         const found = games.get(game), number = parseInt(disc[1], 10);
         if (!found.has(number)) found.set(number, []);
-        found.get(number).push([cue, files, name.match(RELEASE) || []]);
+        found.get(number).push([cue, files, name.match(RELEASE) || [], trackCount]);
         continue;
       }
-      const dataPath = posix(folder.slice(common.length));
-      const slots = [{ id: 100, filename: cueName }, ...files.map(([n], k) => ({ id: 101 + k, filename: n }))];
-      const sbi = libcrypt || oneFile ? await findSbi(card, cue) : null;
-      if (sbi && !oneFile) slots.push({ id: LIBCRYPT_SLOT, filename: sbi });
-      let prefix = dataPath !== '.' ? dataPath + '/' : '';
-      const shared = sharedCards ? sharedCardName(cueStem) : null;
-      if (shared) {
-        for (const s of slots) s.filename = prefix + s.filename;
-        slots.push({ id: CARD_SLOT, filename: shared });
-        if (!discs.has(shared)) discs.set(shared, []);
-        discs.get(shared).push(cueStem);
-        prefix = '';
-      }
-      await writeInstance(cueStem, slots, prefix);
-      const count = oneFile ? trackCount : files.length;
-      say(`wrote ${cueStem}.json (${count} track${count > 1 ? 's' : ''}${oneFile ? ', one file' : ''}${sbi ? ', LibCrypt ' + sbi : ''})`);
+      await single(cue, files, trackCount);
       summary.written++;
     }
     for (const game of [...games.keys()].sort()) {
@@ -440,7 +521,49 @@
       if (numbers.some((n, i) => n !== i + 1) || numbers.length > discsDeclared) {
         say(`skip ${game}: discs [${numbers.join(', ')}] (core takes discs 1-${discsDeclared})`); summary.skipped++; continue;
       }
-      const tooLong = oneFile ? [] : numbers.slice(1).filter((n) => parts.get(n)[1].length > discTracks[n]);
+      if (cueReader && !siblingPaths(parts.get(1)[0], numbers.slice(1).map((n) => [n, parts.get(n)[0]]))) {
+        // The core can't find the other discs by name: a playlist lists them.
+        const stem1 = stem(parts.get(1)[0].slice(-1)[0]), name = stem1.replace(DISC_N_ALL, '').trim();
+        const folders = numbers.map((n) => parts.get(n)[0].slice(0, -1));
+        let depth = 0;
+        while (folders.every((f) => depth < f.length && f[depth] === folders[0][depth])) depth++;
+        const root = folders[0].slice(0, depth), m3u = [...root, name + '.m3u'];
+        const shown = m3u.slice(common.length).join('/');
+        const shared = sharedCardName(stem1);
+        if (numbers.length <= 4) {
+          await writeFile(card, m3u, numbers.map((n) => parts.get(n)[0].slice(root.length).join('/') + '\n').join(''));
+        }
+        if (numbers.length <= 4 && playlistSlot) {
+          const dataPath = posix(root.slice(common.length)), prefix = dataPath !== '.' ? dataPath + '/' : '';
+          const useShared = sharedCards && shared;
+          const [cue1, files1] = parts.get(1);
+          const slots = [{ id: 100, filename: name + '.m3u' },
+                         ...files1.map(([f], k) => ({ id: 101 + k, filename: join(cue1.slice(0, -1), f).slice(root.length).join('/') }))];
+          if (useShared) {
+            for (const s of slots) s.filename = prefix + s.filename;
+            slots.push({ id: CARD_SLOT, filename: shared });
+            if (!discs.has(shared)) discs.set(shared, []);
+            discs.get(shared).push(...numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
+          }
+          await writeInstance(name, slots, useShared ? '' : prefix);
+          for (const n of numbers) {
+            const s = stem(parts.get(n)[0].slice(-1)[0]);
+            if (s !== name) await removeFile(card, [...out, s + '.json']);
+          }
+          say(`wrote ${name}.json (${numbers.length} discs, playlist ${shown})`);
+          summary.written++;
+          continue;
+        }
+        if (numbers.length <= 4) {
+          say(`${game}: the discs' names differ by more than their number: wrote the playlist ${shown} ` +
+              "(pick it in the core's file list to swap discs); each disc also gets its own game file");
+        } else {
+          say(`${game}: the discs' names differ by more than their number, so each disc gets its own game file`);
+        }
+        for (const n of numbers) { const [cue, files, , count] = parts.get(n); await single(cue, files, count, shared); summary.written++; }
+        continue;
+      }
+      const tooLong = oneFile || cueReader ? [] : numbers.slice(1).filter((n) => parts.get(n)[1].length > discTracks[n]);
       if (tooLong.length) {
         say(`skip ${game}: disc ${tooLong[0]} has more track files than the core declares`); summary.skipped++; continue;
       }
@@ -452,11 +575,11 @@
       const rel = (cue, name) => join(cue.slice(0, -1), name).slice(root.length).join('/');
       const cue1 = parts.get(1)[0], cue1Name = cue1[cue1.length - 1], cue1Stem = stem(cue1Name);
       const slots = [{ id: 100, filename: rel(cue1, cue1Name) }];
-      for (const n of numbers) {
+      for (const n of cueReader ? numbers.slice(0, 1) : numbers) {   // the cue reader finds the other discs by path
         const [cue, files] = parts.get(n);
         files.forEach(([name], k) => slots.push({ id: 100 * n + 1 + k, filename: rel(cue, name) }));
       }
-      const sbi = libcrypt ? await findSbi(card, cue1) : null;
+      const sbi = libcrypt && !cueReader ? await findSbi(card, cue1) : null;
       if (sbi) slots.push({ id: LIBCRYPT_SLOT, filename: rel(cue1, sbi) });
       const dataPath = posix(root.slice(common.length));
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
@@ -475,7 +598,7 @@
         const s = stem(parts.get(n)[0].slice(-1)[0]);
         if (s + '.json' !== name + '.json') await removeFile(card, [...out, s + '.json']);
       }
-      say(`wrote ${name}.json (${numbers.length} discs)`);
+      say(`wrote ${name}.json (${numbers.length} disc${numbers.length > 1 ? 's' : ''})`);
       summary.written++;
     }
     // The release's "how to add games" placeholder (package_release.py).

@@ -38,6 +38,7 @@
   select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); max-width: 100%; }
   label { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; }
   label input { margin-top: 5px; }
+  .indent { margin-left: 28px; }
   code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; overflow-wrap: anywhere; }
   .muted { color: var(--muted); font-size: 0.92rem; }
   .ok { color: var(--ok); font-weight: 600; }
@@ -78,9 +79,15 @@
     <p id="core-row" class="hidden">Core: <select id="core"></select></p>
     <label><input type="checkbox" id="convert" checked>
       <span><b>Split games that keep all their tracks in one <code>.bin</code> file (cores before 0.5.3).</b>
-        Older cores need one <code>.bin</code> per track for CD music. The page writes the split copy to a new
-        folder next to the game and then deletes the original, so you only need free space for one game at a
-        time. From 0.5.3 the core plays one <code>.bin</code> as it is, so nothing is split.</span></label>
+        Older cores need one <code>.bin</code> per track for CD music, so the page writes a split copy to a new
+        folder next to the game. From 0.5.3 the core reads the <code>.cue</code> itself and nothing is split.</span></label>
+    <div id="originals" class="indent">
+      <label><input type="radio" name="originals" id="keep" checked>
+        <span><b>Keep the originals.</b> Needs free space for both copies.</span></label>
+      <label><input type="radio" name="originals" id="replace">
+        <span><b>Replace the originals.</b> Each original is deleted only after its split copy has been written
+          and read back, so you only need free space for one game at a time.</span></label>
+    </div>
     <button id="run" disabled>Make game files</button>
     <div id="result" class="hidden">
       <p id="summary"></p>
@@ -97,18 +104,18 @@
       <li>Gives each multi-disc game one memory card for all its discs,
         <code>Saves/playstation/common/&lt;game&gt;.sav</code>. It starts as a copy of the card from the disc you
         played last. If that card already exists, it is left alone. Your other saves are not touched.</li>
-      <li>From core 0.5.3: writes a small track table (<code>.trk</code>) next to each disc's <code>.bin</code>.
-        Games stored as one <code>.bin</code> per track also get a joined copy, <code>&lt;game&gt; (one
-        file).bin</code>, so they take twice the space. Keep the per-track files and the <code>.cue</code>: the
-        page reads them each time it runs.</li>
+      <li>From core 0.5.3: the game file names the disc's <code>.cue</code>, and the core finds the tracks, the
+        other discs and a LibCrypt <code>.sbi</code> next to it by itself. Nothing else is written.</li>
       <li>Older cores, with the box ticked: splits games that keep all their tracks in one <code>.bin</code> into
-        a folder next to the game, then deletes the original <code>.bin</code> and <code>.cue</code>.</li>
-      <li>Shows which games it skipped and why. CHD images have to be converted on a computer first (see the
-        README).</li>
+        a folder next to the game. With "Replace the originals" it then deletes the original <code>.bin</code>
+        and <code>.cue</code>, but only after checking the copy.</li>
+      <li>Before writing a large file the page makes sure the card has room for it plus 256 MB to spare. If not,
+        it skips that game and leaves the original as it was.</li>
+      <li>Shows which games it skipped and why. CHD images have to be converted on a computer first, with
+        <code>make_pocket_instances.py</code> or the Pocket Sync / pupdate plugin (see the README).</li>
     </ul>
     <p class="muted">Run it again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
-      one-file-per-disc game files; they still work, but disc swapping needs the combined file, and from 0.5.3
-      games with CD music need the page's track tables.</p>
+      one-file-per-disc game files; they still work, but disc swapping needs the combined file.</p>
   </section>
 
   <footer class="muted">Part of the PlayStation core for Analogue Pocket. Source and README:
@@ -156,6 +163,10 @@
     $('run').disabled = false;
   });
 
+  const showOriginals = () => $('originals').classList.toggle('hidden', !$('convert').checked);
+  $('convert').addEventListener('change', showOriginals);
+  showOriginals();
+
   $('run').addEventListener('click', async () => {
     if (!card) return;
     const option = $('core').selectedOptions[0];
@@ -167,7 +178,7 @@
       if ((await card.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('the browser was not allowed to change the card');
       const result = await PocketInstances.makeInstances(card, {
         core: option.value, platform: option.dataset.platform,
-        convert: $('convert').checked, removeOriginals: $('convert').checked,
+        convert: $('convert').checked, removeOriginals: $('convert').checked && $('replace').checked,
       }, (line) => { log.textContent += line + '\n'; log.scrollTop = log.scrollHeight; });
       summary.className = 'ok';
       summary.textContent = `Done: ${result.written} game file${result.written === 1 ? '' : 's'} written` +
