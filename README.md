@@ -24,37 +24,32 @@ images. The BIOS and games are not included and cannot be shared.
    Other common BIOS names work too (see [GAMES.md](GAMES.md#bios)). The
    console region follows the BIOS, and any BIOS plays discs from every
    region.
-3. **Games:** copy each disc, with its `.cue` and all its `.bin` files, into
-   its own folder in `Assets/playstation/common/`, for example
-   `Assets/playstation/common/Tekken 3 (USA)/`. Keep the file names as they
-   are. One folder per disc, also for multi-disc games: pupdate and Pocket
-   Sync can't make game files for discs that sit straight in `common/` or
-   share a folder (Pocket Sync even adds the BIOS to a loose disc's game
-   file, so it won't start). The plugin handles both. A disc that came as a single `.bin` without a `.cue` works too: the
-   plugin writes a `.cue` for it.
+3. **Games:** give each disc its own folder in `Assets/playstation/common/`,
+   for example `Assets/playstation/common/Tekken 3 (USA)/`, holding its
+   `.cue` and all its `.bin` files with their names unchanged. Do this for
+   every disc of a multi-disc game too. A disc with only a `.bin` and no
+   `.cue` is fine: the plugin makes the `.cue`.
 
    **LibCrypt discs:** some European discs (for example Ape Escape, Spyro:
-   Year of the Dragon and Crash Team Racing) have LibCrypt copy protection.
-   The protection key is stored on the original disc in a way `.cue`/`.bin`
-   images can't hold, so these discs also need an `.sbi` file: a small file
-   with that key, from [redump.org](http://redump.org/) for your disc. Name it like the `.cue` (for example `Ape Escape (Europe).sbi`)
-   and put it in the same folder **before** you make the game files in step
-   5. Without it the game can freeze or misbehave.
-4. **Plugin:** install the [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)
-   once in your SD card tool:
-   - [pupdate](https://github.com/mattpannella/pupdate): *Pocket Extras →
-     Plugins → Install from GitHub…*, enter
-     `GuardianSoul/openfpga-PlayStation-plugin`.
-   - [Pocket Sync](https://github.com/neil-morrison44/pocket-sync): *Plugins
-     → Add Plugin*, paste
+   Year of the Dragon and Crash Team Racing) are copy protected and also
+   need an `.sbi` file from [redump.org](http://redump.org/). Name it like
+   the `.cue` (for example `Ape Escape (Europe).sbi`) and put it in the same
+   folder **before** step 4. Without it the game can freeze.
+4. **Game files (the way to play):** with the SD card in your computer,
+   make one game file (`.json`) per game with the
+   [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin).
+   It gives every game CD music, disc swapping and one shared memory card
+   for multi-disc games.
+   - [pupdate](https://github.com/mattpannella/pupdate): the first time,
+     *Pocket Extras → Plugins → Install from GitHub…* and enter
+     `GuardianSoul/openfpga-PlayStation-plugin`. Then run *PlayStation game
+     files* from *Pocket Extras → Plugins*.
+   - [Pocket Sync](https://github.com/neil-morrison44/pocket-sync): the
+     first time, *Plugins → Add Plugin*, paste
      `https://github.com/GuardianSoul/openfpga-PlayStation-plugin` and press
-     *Verify & install plugin*.
-5. **Game files (the way to play):** with the SD card in your computer, run
-   *PlayStation game files*: in pupdate from *Pocket Extras → Plugins*, in Pocket Sync with
-   the play button next to it on the *Plugins* page. It makes one game file
-   (`.json`) per game, with CD music, disc swapping and one shared memory
-   card for multi-disc games.
-6. **Play:** put the card back in the Pocket, open **openFPGA →
+     *Verify & install plugin*. Then press the play button next to it on the
+     *Plugins* page.
+5. **Play:** put the card back in the Pocket, open **openFPGA →
    PlayStation** and pick the game.
 
 No pupdate or Pocket Sync? The [SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)
