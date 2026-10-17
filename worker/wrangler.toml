@@ -1,0 +1,8 @@
+name = "playstation-game-list"
+main = "vote.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "playstation-game-list"
+database_id = "1d353837-606e-4b34-97a3-d96540b2da7f"

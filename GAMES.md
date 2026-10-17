@@ -18,14 +18,9 @@ missing or damaged BIOS shows a one-line message, such as
 The core plays disc images as a `.cue` file with its `.bin` files
 (MODE2/2352): one `.bin` per track (redump style) or one `.bin` for the
 whole disc (as ImgBurn makes them), with up to 99 tracks. Games with CD
-audio tracks are supported. The core reads each disc as one `.bin` plus a
-small track table (`.trk`); the [SD card helper](#changing-discs) writes
-both, joining per-track files into one `<name> (one file).bin` next to them
-(the originals stay and are needed: the helper reads them each time it
-runs, so such games take twice the space). pupdate and Pocket Sync can't write the table: with their game
-files, a game with CD music starts but stops or stays silent where the
-music should play. `.chd` images need extracting first (see
-[Other ways to make game files](#other-ways-to-make-game-files)).
+audio tracks are supported. A LibCrypt disc needs its redump `.sbi` next to
+the `.cue`, with the same name. `.chd` images need extracting first; the
+game files plugin does that for you.
 
 Put each disc in its own folder under `Assets/playstation/common/`, with
 the file names unchanged:
@@ -41,66 +36,62 @@ Assets/playstation/common/
     Tekken 3 (USA) (Track 2).bin
 ```
 
-Multi-disc games need one folder per disc. pupdate skips games copied
-loose into `common/` (the SD card helper and the script below don't).
+Multi-disc games need one folder per disc.
 
-The Pocket starts a game from a small game file (`.json`) that lists the
-disc's files. Let an SD card tool make them for you:
+## Game files
 
-- **[pupdate](https://github.com/mattpannella/pupdate):** *Update All*
-  makes them for every game on the card (or use *Generate Instance JSON
-  Files* on its own; the menu says PC Engine CD, but it works for this core
-  too).
-- **[Pocket Sync](https://github.com/neil-morrison44/pocket-sync):** open
-  *Games → PlayStation* and press *Instance JSON*.
-- **[PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)** for pupdate: in *Pocket Extras → Plugins → Install from
-  GitHub…* enter `GuardianSoul/openfpga-PlayStation-plugin`, then run
-  *PlayStation game files* from the same menu. It does everything the SD
-  card helper does, and also extracts `.chd` images.
-- **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
-  (see [Changing discs](#changing-discs)).
+The Pocket starts a game from a small game file (`.json`). The
+[PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)
+makes them for every game on the card:
 
-Do this again after adding games. Then, in the core, pick the game's
-`.json` file. The list starts with a *How to add games* entry until the SD
-card helper or the script below makes your first game file; you can delete
-it from `Assets/playstation/GuardianSoul.PlayStation/`. Discs the core
-can't play yet are skipped with a message. Every game, including each disc
-of a multi-disc game, starts from these files.
+- **[pupdate](https://github.com/mattpannella/pupdate):** *Pocket Extras →
+  Plugins → Install from GitHub…*, enter
+  `GuardianSoul/openfpga-PlayStation-plugin`.
+- **[Pocket Sync](https://github.com/neil-morrison44/pocket-sync):**
+  *Plugins → Add Plugin*, paste
+  `https://github.com/GuardianSoul/openfpga-PlayStation-plugin` and press
+  *Verify & install plugin*.
+
+Then, with the SD card in your computer, run *PlayStation game files* (in
+pupdate from *Pocket Extras → Plugins*, in Pocket Sync with the play button
+next to it on the *Plugins* page), and again whenever you add games. In the
+core, pick the game. The list starts with a *How to add games* entry until your first game
+file is made; you can delete it from
+`Assets/playstation/GuardianSoul.PlayStation/`. Discs the core can't play
+yet are skipped with a message.
+
+No pupdate or Pocket Sync? The
+**[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
+page does the same as the plugin: open it in Chrome or Edge on a computer,
+pick the SD card, and press *Make game files*. Nothing to install, and
+nothing is uploaded. It can't read `.chd` images.
 
 ## Without game files
 
-The core can also start a disc directly: in the game list press Back to
-reach the files in `Assets/playstation/common/` and pick the disc's `.cue`
-(or `.bin`). That disc then gets its own memory card, and there is no disc
-swapping, so game files are the better way for multi-disc games.
+Game files are the way to play. Only when a disc has no game file yet,
+for example because you copied it to the card without running the plugin,
+the core can start it directly: in the game list press Back to reach the
+files in `Assets/playstation/common/` and pick the disc's `.cue`. That
+disc then gets its own memory card, and there is no disc swapping. If a
+disc doesn't start this way, make its game file.
 
 ## Changing discs
 
-To swap discs from the menu, a multi-disc game needs one game file that
-holds all of its discs. In pupdate the [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)
-makes it (see above). Otherwise use the **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
-page: open it in Chrome or Edge on a computer, pick the SD card, and press
-*Make game files*. Nothing to install, and nothing is uploaded. It also
-writes each disc's track table and joins per-track files into one `.bin`
-(see [Disc images](#disc-images)).
+A multi-disc game gets one game file that holds all of its discs. When the
+game asks for the next disc, open the Pocket menu, choose **Core Settings →
+Swap Discs** and pick the disc. The core opens and closes the lid for you,
+and remembers the disc you picked for next time.
 
-When the game asks for the next disc, open the Pocket menu, choose **Core
-Settings → Swap Discs** and pick the disc. The core opens and closes the lid for
-you, and remembers the disc you picked for next time.
-
-All discs of a game then share one memory card,
+All discs of a game share one memory card,
 `Saves/playstation/common/<game>.sav` (the game's name without
-"(Disc n)"), so a save made on disc 1 is there on disc 2. The helper
-starts it as a copy of your most recently used disc's card.
-
-Without the plugin or the helper, each disc keeps its own game file: to
-change discs, quit and start the next disc's game file.
+"(Disc n)"), so a save made on disc 1 is there on disc 2. It starts as a
+copy of your most recently used disc's card.
 
 ## Other ways to make game files
 
 [make_pocket_instances.py](scripts/make_pocket_instances.py) does the same
-as the SD card helper, from [Python 3](https://www.python.org/downloads/).
-With the SD card in your computer, run
+as the plugin, from [Python 3](https://www.python.org/downloads/). With the
+SD card in your computer, run
 
 ```
 python3 make_pocket_instances.py <SD card> --core PlayStation
@@ -109,4 +100,4 @@ python3 make_pocket_instances.py <SD card> --core PlayStation
 where `<SD card>` is the card's drive or mount point (for example `E:\`
 or `/Volumes/POCKET`). Add `--convert` to also extract `.chd` images with
 `chdman` from [MAME](https://www.mamedev.org/) (install it first), each
-into a folder next to the original. The originals stay. The SD card helper can't read `.chd` images.
+into a folder next to the original. The originals stay.

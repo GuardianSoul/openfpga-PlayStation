@@ -1,0 +1,54 @@
+name: Game problem
+description: A specific problem with a game. To say how a game runs, vote on the game list.
+title: "[Problem] "
+labels: [compatibility]
+body:
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      placeholder: Final Fantasy VII
+    validations:
+      required: true
+  - type: input
+    id: serial
+    attributes:
+      label: Disc serial
+      description: Printed on the disc, e.g. SCUS-94163.
+      placeholder: SCUS-94163
+  - type: dropdown
+    id: region
+    attributes:
+      label: Region
+      options:
+        - USA
+        - Europe
+        - Japan
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      options:
+        - Minor issues
+        - Major issues
+        - Doesn't boot
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Core version
+      placeholder: 0.5.3
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: What goes wrong
+      description: Where it happens and what you see or hear; a photo helps.
+      placeholder: "Disc 2: polygons flicker in the Forgotten Capital."
+    validations:
+      required: true

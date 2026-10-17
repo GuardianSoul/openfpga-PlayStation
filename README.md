@@ -13,6 +13,8 @@ You need an Analogue Pocket with the latest firmware, a PlayStation BIOS
 dumped from your own console, and your own game discs as `.cue`/`.bin`
 images. The BIOS and games are not included and cannot be shared.
 
+### First time
+
 1. **Core:** download the latest `GuardianSoul.PlayStation_<version>_<date>.zip`
    from [Releases](../../releases), unzip it and copy its contents to the
    root of the SD card, merging with the folders already there. To update,
@@ -22,30 +24,53 @@ images. The BIOS and games are not included and cannot be shared.
    Other common BIOS names work too (see [GAMES.md](GAMES.md#bios)). The
    console region follows the BIOS, and any BIOS plays discs from every
    region.
-3. **Games:** copy each disc, with its `.cue` and `.bin` files, into its own
-   folder in `Assets/playstation/common/`.
-4. **Game files:** install the [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)
+3. **Games:** copy each disc, with its `.cue` and all its `.bin` files, into
+   its own folder in `Assets/playstation/common/`, for example
+   `Assets/playstation/common/Tekken 3 (USA)/`. Keep the file names as they
+   are.
+4. **Plugin:** install the [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)
    once in your SD card tool:
    - [pupdate](https://github.com/mattpannella/pupdate): *Pocket Extras →
      Plugins → Install from GitHub…*, enter
      `GuardianSoul/openfpga-PlayStation-plugin`.
    - [Pocket Sync](https://github.com/neil-morrison44/pocket-sync): *Plugins
-     → Add*, paste `https://github.com/GuardianSoul/openfpga-PlayStation-plugin`.
-
-   Then run *PlayStation game files* from the plugins menu. Run it again
-   whenever you add games. It makes one game file per game, with CD music,
-   disc swapping and one shared memory card for multi-disc games.
-5. **Play:** on the Pocket, open **openFPGA → PlayStation** and pick a game.
+     → Add Plugin*, paste
+     `https://github.com/GuardianSoul/openfpga-PlayStation-plugin` and press
+     *Verify & install plugin*.
+5. **Game files:** with the SD card in your computer, run *PlayStation game
+   files*: in pupdate from *Pocket Extras → Plugins*, in Pocket Sync with
+   the play button next to it on the *Plugins* page. It makes one game file
+   (`.json`) per game, with CD music, disc swapping and one shared memory
+   card for multi-disc games.
+6. **Play:** put the card back in the Pocket, open **openFPGA →
+   PlayStation** and pick the game.
 
 No pupdate or Pocket Sync? The [SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)
-web page does the same from Chrome or Edge on a computer. Other ways are in
-[GAMES.md](GAMES.md).
+web page makes the same game files from Chrome or Edge on a computer.
+
+### Adding games later
+
+1. Copy the new disc folders into `Assets/playstation/common/`, as in step 3.
+2. Run *PlayStation game files* again (or the SD card helper). It adds the
+   new games and leaves your saves alone.
+3. Pick the new game in **openFPGA → PlayStation**.
+
+### Without game files
+
+Use the game files whenever you can. Only when a disc has no game file yet,
+for example because you copied it to the card without running the plugin,
+you can start it directly: in the game list press Back to reach
+`Assets/playstation/common/`, open the disc's folder and pick its `.cue`.
+A disc started this way has no disc swapping and its own memory card. If
+it doesn't start, make its game file as above.
+
+More details are in [GAMES.md](GAMES.md).
 
 ## Controls
 
 | Pocket | PlayStation |
 | --- | --- |
-| D-pad | D-pad |
+| D-Pad | D-Pad |
 | A | Circle |
 | B | Cross |
 | X | Triangle |
@@ -87,9 +112,9 @@ copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
 ## Compatibility
 
-Most games tried so far work; [COMPATIBILITY.md](COMPATIBILITY.md) lists
-the ones tested in detail. Found a problem? Open an
-[issue](../../issues) with the game, its region and what happened.
+Most games tried so far work. See the
+[game list](https://guardiansoul.github.io/openfpga-PlayStation/compatibility.html)
+and vote how your games run.
 
 ## Known issues
 
@@ -97,11 +122,11 @@ the ones tested in detail. Found a problem? Open an
 - A thin diagonal line can split the white Sony screen while it fades.
 - The picture can jump sideways for one frame when a game switches video
   mode.
-- A stray line can show under some screens.
+- Stray lines can show on some screens.
+- Discs with more than four `.bin` files can stop at the BIOS screen.
+  Merging the disc into one `.bin` works around it.
 - Some European discs with LibCrypt copy protection (for example Spyro: Year
   of the Dragon) can freeze or misbehave. Use the USA version for now.
-- Game files from pupdate's own *Update All* or Pocket Sync have no CD
-  music. Use the plugin or the SD card helper (see [Setup](#setup)).
 
 ## Building from source
 

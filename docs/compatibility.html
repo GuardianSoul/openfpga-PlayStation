@@ -1,0 +1,297 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlayStation Game List</title>
+<meta name="description" content="How games run on the PlayStation core for Analogue Pocket, from players' reports.">
+<style>
+  :root {
+    --bg: #f4f4f2; --panel: #ffffff; --text: #1d1d1f; --muted: #5f6064; --line: #d9d9d6;
+    --accent: #3d4f8f; --accent-text: #ffffff; --ok: #2f7a3e; --warn: #9a5b00; --bad: #b3261e; --code: #ececea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
+      --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --bad: #f2867e; --code: #2a2a2f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
+    --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --bad: #f2867e; --code: #2a2a2f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--muted); margin-bottom: 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  input, select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+                  background: var(--panel); color: var(--text); min-width: 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .row input { flex: 1 1 220px; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 0.92rem; }
+  .warn { color: var(--warn); }
+  ul.plain { list-style: none; margin: 0; padding: 0; }
+  #matches li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+                padding: 8px 0; border-top: 1px solid var(--line); }
+  #matches li:first-child { border-top: 0; }
+  .button { display: inline-block; font-weight: 600; text-decoration: none; border-radius: 8px; padding: 6px 14px;
+            background: var(--accent); color: var(--accent-text); white-space: nowrap; }
+  .serial { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+  details { border-top: 1px solid var(--line); }
+  details:first-child { border-top: 0; }
+  summary { display: flex; gap: 10px; align-items: baseline; padding: 10px 0; cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .badge { font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
+           white-space: nowrap; }
+  .s-playable { color: var(--ok); } .s-minor { color: var(--warn); } .s-major, .s-none { color: var(--bad); }
+  .s-boots { color: var(--accent); } .s-unknown { color: var(--muted); }
+  .reports { margin: 0 0 12px; padding: 0 0 0 14px; border-left: 3px solid var(--line); }
+  .reports li { margin: 0 0 10px; }
+  .notes { white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
+  .chip { font: inherit; font-size: 0.85rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+          border: 1px solid currentColor; background: transparent; }
+  .chip[aria-pressed="true"] { background: currentColor; }
+  .chip[aria-pressed="true"] span { color: var(--panel); }
+  .chip:disabled { opacity: 0.5; cursor: default; }
+  .chip:focus-visible, .button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .vote-title { margin: 4px 0 0; }
+  .vote-note { margin-top: -4px; }
+  .open { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 6px 14px; cursor: pointer;
+          background: var(--accent); color: var(--accent-text); white-space: nowrap; }
+  footer { margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PlayStation game list</h1>
+  <p class="lead">How games run on the PlayStation core for Analogue Pocket, voted by players.</p>
+
+  <section class="panel">
+    <h2>Find a game</h2>
+    <p class="muted" id="find-note">Find your game and vote how it runs. No account needed.</p>
+    <div class="row">
+      <input id="find" type="search" placeholder="e.g. final fantasy 7" autocomplete="off" aria-label="Game name">
+      <select id="find-region" aria-label="Region">
+        <option value="">Any region</option><option>USA</option><option>Europe</option><option>Japan</option><option>Other</option>
+      </select>
+    </div>
+    <ul id="matches" class="plain"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>Games</h2>
+    <div class="row">
+      <input id="filter" type="search" placeholder="Filter by name or serial" autocomplete="off" aria-label="Filter">
+      <select id="status" aria-label="Status"><option value="">Any status</option></select>
+    </div>
+    <p id="summary" class="muted">Loading…</p>
+    <div id="list"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Status levels</h2>
+    <ul class="plain">
+      <li><span class="badge s-playable">Playable</span> Played into normal gameplay with no problems seen</li>
+      <li><span class="badge s-minor">Minor issues</span> Playable with small graphics or sound glitches</li>
+      <li><span class="badge s-major">Major issues</span> Starts, but crashes, hangs or is too broken to play</li>
+      <li><span class="badge s-boots">Boots</span> Reaches the title or the first scenes; not played further</li>
+      <li><span class="badge s-none">Doesn't boot</span> Black screen or hang before the title</li>
+    </ul>
+  </section>
+
+  <footer class="muted">Part of the PlayStation core for Analogue Pocket:
+    <a href="https://github.com/GuardianSoul/openfpga-PlayStation">source and README</a> ·
+    <a href="./">SD card helper</a>. Game names and serials come from
+    <a href="https://github.com/libretro/libretro-database">libretro-database</a>
+    (<a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>), which builds on redump.org.</footer>
+</main>
+<script src="compat.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const CACHE = 'compat-issues', CACHE_MS = 10 * 60 * 1000;
+  const CLASSES = { 'Playable': 's-playable', 'Minor issues': 's-minor', 'Major issues': 's-major',
+                    'Boots': 's-boots', "Doesn't boot": 's-none' };
+  const voting = Boolean(Compat.VOTES);
+  let games = null, entries = [], data = { issues: [], seeds: [], versions: null }, votes = {}, mine = {};
+  const opened = new Set();   // entries the reader has open, kept open across redraws
+  const notes = new Map();    // a vote's outcome, shown under that game's buttons
+
+  const version = () => data.versions?.[0] || '';   // votes count for the latest release
+  for (const s of Compat.STATUSES) $('status').append(new Option(s, s));
+  if (!voting) $('find-note').textContent = 'Find your game to see how it runs.';
+
+  const escape = (text) => { const span = document.createElement('span'); span.textContent = text; return span.innerHTML; };
+  const badge = (s) => `<span class="badge ${CLASSES[s] || 's-unknown'}">${escape(s || 'No votes yet')}</span>`;
+  const id = (key) => 'game-' + key.replace(/[^a-z0-9]/gi, '-');
+
+  function cached() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CACHE));
+      return saved && Date.now() - saved.at < CACHE_MS ? saved.issues : null;
+    } catch (e) { return null; }
+  }
+
+  async function issues() {
+    const hit = cached();
+    if (hit) return hit;
+    const fresh = await Compat.fetchIssues();
+    try { localStorage.setItem(CACHE, JSON.stringify({ at: Date.now(), issues: fresh })); } catch (e) {}
+    return fresh;
+  }
+
+  function rebuild() {
+    entries = Compat.build(data.issues, data.seeds, games, data.versions, votes);
+    showList();
+  }
+
+  function showMatches() {
+    const found = Compat.search(games, $('find').value, $('find-region').value, 10);
+    $('matches').innerHTML = found.map((g) => `<li><span>${escape(g.name)} <span class="muted">(${escape(g.region)})</span><br>` +
+      `<span class="serial">${escape(g.serials.slice(0, 4).join(', '))}${g.serials.length > 4 ? ', …' : ''}</span></span>` +
+      `<button class="open" data-key="${escape(g.key)}">${voting ? 'Vote' : 'Show'}</button></li>`).join('');
+    if (!found.length && $('find').value.trim()) {
+      $('matches').innerHTML = `<li class="muted">${games ? 'No game matches that name in this region.' : 'The game names are still loading.'}</li>`;
+    }
+  }
+
+  // Opens a game's entry, adding an empty one if nobody has voted on it yet.
+  function openGame(key) {
+    if (!entries.some((e) => e.key === key)) {
+      const game = games?.byKey.get(key);
+      if (!game) return;
+      const entry = Compat.entryFor(game);
+      // The same game's entry without a region gives way to this one.
+      const old = entries.findIndex((e) => !e.region && Compat.nameKey(e.name) === Compat.nameKey(game.name));
+      if (old >= 0) entry.reports = entries[old].reports;
+      if (old >= 0) entries.splice(old, 1);
+      entries.push(Compat.decide(entry, votes, data.versions));
+    }
+    opened.add(key);
+    $('filter').value = ''; $('status').value = '';
+    showList();
+    document.getElementById(id(key))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function voteBlock(e) {
+    if (!voting) return '';
+    if (!e.key) {
+      const n = Compat.nameKey(e.name);
+      const picks = Compat.REGIONS.filter((r) => games?.byKey.has(`${n}|${r}`))
+        .map((r) => `<button class="open" data-key="${escape(`${n}|${r}`)}">${escape(r)}</button>`).join(' ');
+      return picks ? `<p class="muted">Which version do you have? ${picks}</p>` : '';
+    }
+    const v = version();
+    if (!data.versions?.length) return '<p class="muted">Voting is unavailable right now; try again later.</p>';
+    const counts = votes[`${e.key}|${v}`] || {}, chosen = mine[`${e.key}|${v}`];
+    const note = notes.get(e.key) || (chosen ? 'Your vote is in. Tap it again to take it back.' : 'Tap how it runs for you.');
+    return `<p class="vote-title">How does it run on the latest core (${escape(v)})?</p>` +
+      `<div class="chips">` + Compat.STATUSES.map((s) => `<button class="chip ${CLASSES[s]}" data-key="${escape(e.key)}" ` +
+        `data-status="${escape(s)}" aria-pressed="${chosen === s}"><span>${escape(s)}${counts[s] ? ' · ' + counts[s] : ''}</span></button>`).join('') +
+      `</div><p class="muted vote-note">${note}</p>`;
+  }
+
+  // "Report a problem" links, one per release so the issue gets the right serial.
+  function problemLinks(e) {
+    const seen = new Set();
+    const dumps = (e.game?.dumps || []).filter((d) => !seen.has(d.serials.join()) && seen.add(d.serials.join()));
+    const link = (d, label) => `<a href="${escape(Compat.reportUrl(e, version(), d))}" target="_blank" rel="noopener">${escape(label)}</a>`;
+    if (dumps.length < 2) return `<p class="muted">Something specific wrong? ${link(dumps[0], 'Report a problem on GitHub')} (account needed).</p>`;
+    return `<p class="muted">Something specific wrong? Report a problem on GitHub (account needed) for ` +
+      dumps.slice(0, 8).map((d) => link(d, `${d.name} (${d.serials[0]})`)).join(', ') + '.</p>';
+  }
+
+  function showList() {
+    const words = $('filter').value.toLowerCase().split(/\s+/).filter(Boolean), status = $('status').value;
+    const shown = entries.filter((e) => opened.has(e.key) || ((!status || e.status === status) &&
+      words.every((w) => (e.name + ' ' + e.serials.join(' ') + ' ' + e.region).toLowerCase().includes(w))))
+      .sort((a, b) => a.sortName.localeCompare(b.sortName) || a.region.localeCompare(b.region));
+    $('list').innerHTML = shown.map((e) => {
+      // Problem reports, plus the old list's result while no newer version has been rated.
+      const kept = e.reports.filter((r) => r.url || Compat.compareVersions(r.rank, e.version) === 0);
+      const reports = kept.slice(0, 10).map((r) => {
+        const where = r.url ? `<a href="${escape(r.url)}" target="_blank" rel="noopener">#${r.number}</a>` : escape(r.earlier);
+        const notes = r.url ? r.notes : '';
+        const text = notes.length > 400 ? notes.slice(0, 400) + '…' : notes;
+        return `<li>${badge(r.status)} <span class="muted">${where}${r.version ? ' · core ' + escape(r.version) : ''}` +
+          `${r.date ? ' · ' + escape(r.date) : ''}${r.serial ? ' · <span class="serial">' + escape(r.serial) + '</span>' : ''}</span>` +
+          (text ? `<p class="notes">${escape(text)}</p>` : '') + '</li>';
+      }).join('');
+      const total = Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0);
+      return `<details id="${id(e.key || e.name)}" data-key="${escape(e.key)}"${opened.has(e.key) ? ' open' : ''}>` +
+        `<summary><span class="name">${escape(e.name)} <span class="muted">${escape(e.region)}` +
+        `${e.version && e.version !== version() ? (e.region ? ' · ' : '') + 'on core ' + escape(e.version) : ''}${total ? ' · ' + total + (total === 1 ? ' vote' : ' votes') : ''}` +
+        `</span></span>${badge(e.status)}</summary>` + voteBlock(e) +
+        (reports ? `<ul class="reports plain">${reports}</ul>` : '') + problemLinks(e) + '</details>';
+    }).join('');
+    const counts = Compat.STATUSES.map((s) => [s, entries.filter((e) => e.status === s).length]).filter(([, n]) => n);
+    $('summary').innerHTML = `${entries.length} games` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
+      (shown.length < entries.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '');
+  }
+
+  async function castVote(button) {
+    const key = button.dataset.key, v = version(), k = `${key}|${v}`;
+    const status = mine[k] === button.dataset.status ? '' : button.dataset.status;   // a second tap withdraws
+    for (const chip of button.parentNode.querySelectorAll('.chip')) chip.disabled = true;
+    try {
+      await Compat.sendVote(key, v, status);
+      const counts = (votes[k] = { ...(votes[k] || {}) });
+      if (mine[k]) counts[mine[k]] = Math.max(0, (counts[mine[k]] || 1) - 1);
+      if (status) counts[status] = (counts[status] || 0) + 1;
+      mine[k] = status;
+      notes.set(key, status ? 'Thanks, your vote is in. Tap it again to take it back.' : 'Your vote is taken back.');
+      rebuild();
+    } catch (error) {
+      notes.set(key, `<span class="warn">Your vote wasn’t saved: ${escape(error.message)}.</span>`);
+      showList();
+    }
+  }
+
+  $('find').addEventListener('input', showMatches);
+  $('find-region').addEventListener('change', showMatches);
+  $('matches').addEventListener('click', (event) => {
+    const button = event.target.closest('button.open');
+    if (button) openGame(button.dataset.key);
+  });
+  $('list').addEventListener('click', (event) => {
+    const chip = event.target.closest('button.chip'), pick = event.target.closest('button.open');
+    if (chip) castVote(chip);
+    if (pick) openGame(pick.dataset.key);
+  });
+  $('list').addEventListener('toggle', (event) => {
+    const key = event.target.dataset?.key;
+    if (key) event.target.open ? opened.add(key) : opened.delete(key);
+  }, true);
+  $('filter').addEventListener('input', showList);
+  $('status').addEventListener('change', showList);
+
+
+  (async () => {
+    const [gameText, seeds, versions, reports, counts, own] = await Promise.all([
+      fetch('games.tsv').then((r) => (r.ok ? r.text() : '')).catch(() => ''),
+      fetch('compatibility.json').then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      Compat.fetchVersions().catch(() => null),
+      issues().catch(() => []),
+      voting ? Compat.fetchVotes().catch(() => { $('summary').dataset.note = ' <span class="warn">Votes couldn’t be loaded; try again later.</span>'; return {}; }) : {},
+      voting ? Compat.fetchMine().catch(() => ({})) : {},
+    ]);
+    games = gameText ? Compat.loadGames(gameText) : null;
+    data = { issues: reports, seeds, versions };
+    votes = counts; mine = own;
+    rebuild();
+    showMatches();
+  })();
+})();
+</script>
+</body>
+</html>

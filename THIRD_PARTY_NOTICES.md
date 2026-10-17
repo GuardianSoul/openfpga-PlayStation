@@ -41,3 +41,10 @@ LICENSE and NOTICE files under `references/`.
 Simulation models under `sim/` are behavioral; they contain no Intel
 implementation. `sim/reference/mister_memory_models.sv` derives from MiSTer's
 models (GPL-2.0).
+
+`docs/games.tsv`, the game names and disc serials behind the game list page,
+comes from [libretro-database](https://github.com/libretro/libretro-database)
+(built on redump.org data) and is licensed CC BY-SA 4.0
+(<https://creativecommons.org/licenses/by-sa/4.0/>), stated in its header.
+`scripts/make_compat_games.py` makes it from that project's
+`metadat/redump/Sony - PlayStation.dat`.
