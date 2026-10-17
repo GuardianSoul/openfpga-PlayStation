@@ -64,11 +64,12 @@ makes them for every game on the card:
   `https://github.com/GuardianSoul/openfpga-PlayStation-plugin` and press
   *Verify & install plugin*.
 
-Then, with the SD card in your computer, run *PlayStation game files* (in
+Then, with the SD card in your computer, open *PlayStation game files* (in
 pupdate from *Pocket Extras → Plugins*, in Pocket Sync with the play button
-next to it on the *Plugins* page), and again whenever you add games. In the core, pick the
+next to it on the *Plugins* page) and choose *Generate game files*. Do it
+again whenever you add games. In the core, pick the
 game. The list starts with a *How to add games* entry until your first game
-file is made; you can delete it from
+file is generated; you can delete it from
 `Assets/playstation/GuardianSoul.PlayStation/`. Discs the core can't play
 yet are skipped with a message.
 
@@ -76,12 +77,12 @@ pupdate also makes game files on its own whenever it updates your cores,
 and Pocket Sync's *Games → Instance JSON* button does the same, one per
 disc. Those work for single-disc games with up to four `.bin`
 files, but a multi-disc game gets one entry and one memory card per disc.
-Run the plugin afterwards: it replaces them with one entry per game.
+Generate game files with the plugin afterwards: it replaces them with one entry per game.
 
 No pupdate or Pocket Sync? The
 **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
 page does the same as the plugin: open it in Chrome or Edge on a computer,
-pick the SD card, and press *Make game files*. Nothing to install, and
+pick the SD card, and press *Generate game files*. Nothing to install, and
 nothing is uploaded. It can't read `.chd` images.
 
 ## Without game files
@@ -94,7 +95,7 @@ disc's tracks, so CD music is missing and some games stop where it starts.
 Pick the `.bin` only for a disc that came without a `.cue`. A
 disc started this way gets its own memory card and has no disc swapping,
 so a multi-disc game's discs don't share saves. If a disc doesn't start
-this way, make its game file.
+this way, generate its game file.
 
 ## Changing discs
 
@@ -108,7 +109,7 @@ All discs of a game share one memory card,
 "(Disc n)"), so a save made on disc 1 is there on disc 2. It starts as a
 copy of your most recently used disc's card.
 
-## Other ways to make game files
+## Other ways to generate game files
 
 [make_pocket_instances.py](scripts/make_pocket_instances.py) does the same
 as the plugin, from [Python 3](https://www.python.org/downloads/). With the

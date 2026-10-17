@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PlayStation SD Card Helper</title>
-<meta name="description" content="Make multi-disc game files for the PlayStation core on Analogue Pocket, straight from your browser.">
+<meta name="description" content="Generate multi-disc game files for the PlayStation core on Analogue Pocket, straight from your browser.">
 <link rel="stylesheet" href="site.css">
 <style>
   .step { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; vertical-align: 2px;
@@ -31,7 +31,7 @@
 </nav></header>
 <header class="hero"><div class="wrap">
   <h1>PlayStation SD card helper</h1>
-  <p class="lead">Optional. Makes one game file per multi-disc game, so you can swap discs in
+  <p class="lead">Optional. Generates one game file per multi-disc game, so you can swap discs in
     <b>Core Settings → Swap Discs</b>, and gives all of a game's discs one shared memory card.
     Single-disc games need nothing from this page.</p>
 </div></header>
@@ -53,7 +53,7 @@
   </section>
 
   <section class="panel" id="options">
-    <h2><span class="step">2</span>Make the game files</h2>
+    <h2><span class="step">2</span>Generate the game files</h2>
     <p id="core-row" class="hidden">Core: <select id="core"></select></p>
     <label><input type="checkbox" id="convert" checked>
       <span><b>Split games that keep all their tracks in one <code>.bin</code> file (cores before 0.5.3).</b>
@@ -66,7 +66,7 @@
         <span><b>Replace the originals.</b> Each original is deleted only after its split copy has been written
           and read back, so you only need free space for one game at a time.</span></label>
     </div>
-    <button id="run" disabled>Make game files</button>
+    <button id="run" disabled>Generate game files</button>
     <div id="result" class="hidden">
       <p id="summary"></p>
       <div id="log"></div>
@@ -76,7 +76,7 @@
   <section class="panel">
     <h2>What it changes on the card</h2>
     <ul class="info card">
-      <li>Makes one game file per game in <code>Assets/playstation/&lt;core&gt;/</code>. A game with several
+      <li>Generates one game file per game in <code>Assets/playstation/&lt;core&gt;/</code>. A game with several
         discs ("Game (Disc 1)", "Game (Disc 2)", …) gets one file, named after the game.</li>
       <li>Deletes the separate per-disc game files of those games, because the new file replaces them.</li>
       <li>Gives each multi-disc game one memory card for all its discs,
@@ -92,7 +92,7 @@
       <li>Shows which games it skipped and why. CHD images have to be converted on a computer first, with
         <code>make_pocket_instances.py</code> or the Pocket Sync / pupdate plugin (see the README).</li>
     </ul>
-    <p class="muted">Run it again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
+    <p class="muted">Generate game files again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
       one-file-per-disc game files; they still work, but disc swapping needs the combined file.</p>
   </section>
 

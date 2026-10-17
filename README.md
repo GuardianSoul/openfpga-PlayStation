@@ -37,45 +37,45 @@ images. The BIOS and games are not included and cannot be shared.
    the `.cue` (for example `Ape Escape (Europe).sbi`) and put it in the same
    folder **before** step 4. Without it the game can freeze.
 4. **Game files (the way to play):** with the SD card in your computer,
-   make one game file (`.json`) per game with the
+   generate one game file (`.json`) per game with the
    [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin).
    It gives every game CD music, disc swapping and one shared memory card
    for multi-disc games.
    - [pupdate](https://github.com/mattpannella/pupdate): the first time,
      *Pocket Extras → Plugins → Install from GitHub…* and enter
-     `GuardianSoul/openfpga-PlayStation-plugin`. Then run *PlayStation game
-     files* from *Pocket Extras → Plugins*.
+     `GuardianSoul/openfpga-PlayStation-plugin`. Then open *PlayStation game
+     files* from *Pocket Extras → Plugins* and choose *Generate game files*.
    - [Pocket Sync](https://github.com/neil-morrison44/pocket-sync): the
      first time, *Plugins → Add Plugin*, paste
      `https://github.com/GuardianSoul/openfpga-PlayStation-plugin` and press
      *Verify & install plugin*. Then press the play button next to it on the
-     *Plugins* page.
+     *Plugins* page and choose *Generate game files*.
 5. **Play:** put the card back in the Pocket, open **openFPGA →
    PlayStation** and pick the game.
 
 No pupdate or Pocket Sync? The [SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)
-web page makes the same game files from Chrome or Edge on a computer.
+web page generates the same game files from Chrome or Edge on a computer.
 
 ### Adding games later
 
 1. Copy the new disc folders into `Assets/playstation/common/`, as in step 3,
    with the `.sbi` for any LibCrypt disc.
-2. Run *PlayStation game files* again (or the SD card helper). It adds the
+2. Generate game files again with the plugin (or the SD card helper). It adds the
    new games and leaves your saves alone. If you add an `.sbi` to a game
-   that already has a game file, run it again too, so the game file picks
+   that already has a game file, generate again too, so the game file picks
    it up.
 3. Pick the new game in **openFPGA → PlayStation**.
 
 pupdate also makes game files by itself when it updates your cores, and
 Pocket Sync's *Games → Instance JSON* button does the same, one per disc.
-Run the plugin after either, so each multi-disc game is one entry again,
+Generate game files with the plugin after either, so each multi-disc game is one entry again,
 with its shared memory card.
 
 ### Without game files (fallback)
 
-Always make game files when you can. Starting a disc directly is only a
+Always generate game files when you can. Starting a disc directly is only a
 fallback for a disc that has no game file yet, for example because you
-copied it to the card without running the plugin: in the game list press
+copied it to the card without generating game files: in the game list press
 Back to reach `Assets/playstation/common/`, open the disc's folder and pick
 its `.cue`. Two things can go wrong:
 
@@ -86,7 +86,7 @@ its `.cue`. Two things can go wrong:
 - Multi-disc games have no Swap Discs this way, and each disc gets its own
   memory card, so a save made on disc 1 is not there on disc 2.
 
-If a disc doesn't start this way, make its game file as above.
+If a disc doesn't start this way, generate its game file as above.
 
 More details are in [GAMES.md](GAMES.md).
 
