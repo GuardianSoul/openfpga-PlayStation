@@ -32,7 +32,8 @@ images. The BIOS and games are not included and cannot be shared.
 
    **LibCrypt discs:** some European discs (for example Ape Escape, Spyro:
    Year of the Dragon and Crash Team Racing) are copy protected and also
-   need an `.sbi` file from [redump.org](http://redump.org/). Name it like
+   need the `.sbi` file for your disc, from
+   [PSXDataCenter](https://psxdatacenter.com/sbifiles.html). Rename it like
    the `.cue` (for example `Ape Escape (Europe).sbi`) and put it in the same
    folder **before** step 4. Without it the game can freeze.
 4. **Game files (the way to play):** with the SD card in your computer,

@@ -24,9 +24,10 @@ files plugin does that for you.
 Some European discs have LibCrypt copy protection. Their key is stored in
 the original disc's subchannel data, which `.cue`/`.bin` images don't keep,
 so the game needs an `.sbi` file with it: download the one for your disc
-from redump.org. Put it next to the `.cue` with the same name, **before**
-making the game files: the game file names the `.sbi`, so a game file made
-without it has to be made again. Without the right `.sbi` the game can
+from [PSXDataCenter](https://psxdatacenter.com/sbifiles.html). Put it next
+to the `.cue` and rename it to the `.cue`'s name, **before** making the
+game files: the game file names the `.sbi`, so a game file made without it
+has to be made again. Without the right `.sbi` the game can
 freeze or misbehave.
 
 A disc that came as one `.bin` without a `.cue` gets a `.cue` from the game
