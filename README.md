@@ -27,7 +27,10 @@ images. The BIOS and games are not included and cannot be shared.
 3. **Games:** copy each disc, with its `.cue` and all its `.bin` files, into
    its own folder in `Assets/playstation/common/`, for example
    `Assets/playstation/common/Tekken 3 (USA)/`. Keep the file names as they
-   are. A disc that came as a single `.bin` without a `.cue` works too: the
+   are. One folder per disc, also for multi-disc games: pupdate and Pocket
+   Sync can't make game files for discs that sit straight in `common/` or
+   share a folder (Pocket Sync even adds the BIOS to a loose disc's game
+   file, so it won't start). The plugin handles both. A disc that came as a single `.bin` without a `.cue` works too: the
    plugin writes a `.cue` for it.
 
    **LibCrypt discs:** some European discs (for example Ape Escape, Spyro:
