@@ -65,7 +65,7 @@
     return String(name || '').replace(/\s*\(([^)]*)\)/g, (all, tag) =>
       PLACES.test(tag) || /^(?:disc|cd)\s*\d+$|^rev\s*\w+$|^v\d[\d.]*$|^edc$/i.test(tag.trim())
         || /^[A-Z][a-z](?:,[A-Z][a-z])*$/.test(tag.trim()) ? '' : all)
-      .replace(/\s+/g, ' ').trim();
+      .replace(/\s+/g, ' ').trim().replace(/^(.+), The$/, 'The $1');
   }
 
   // Lower-case words, with accents, punctuation and Roman numerals evened out.

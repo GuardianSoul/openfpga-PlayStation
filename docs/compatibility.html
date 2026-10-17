@@ -6,85 +6,92 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PlayStation Game List</title>
 <meta name="description" content="How games run on the PlayStation core for Analogue Pocket, from players' reports.">
+<link rel="stylesheet" href="site.css">
 <style>
-  :root {
-    --bg: #f4f4f2; --panel: #ffffff; --text: #1d1d1f; --muted: #5f6064; --line: #d9d9d6;
-    --accent: #3d4f8f; --accent-text: #ffffff; --ok: #2f7a3e; --warn: #9a5b00; --bad: #b3261e; --code: #ececea;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
-      --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --bad: #f2867e; --code: #2a2a2f;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
-    --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --bad: #f2867e; --code: #2a2a2f;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
-  h1 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -0.01em; }
-  h2 { font-size: 1.05rem; margin: 0 0 10px; }
-  p { margin: 0 0 12px; }
-  .lead { color: var(--muted); margin-bottom: 24px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-  input, select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
-                  background: var(--panel); color: var(--text); min-width: 0; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-  .row input { flex: 1 1 220px; }
-  a { color: var(--accent); }
-  .muted { color: var(--muted); font-size: 0.92rem; }
-  .warn { color: var(--warn); }
+  .row input { flex: 1 1 240px; }
+  .row select { flex: 0 1 auto; }
   ul.plain { list-style: none; margin: 0; padding: 0; }
-  #matches li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
-                padding: 8px 0; border-top: 1px solid var(--line); }
-  #matches li:first-child { border-top: 0; }
-  .button { display: inline-block; font-weight: 600; text-decoration: none; border-radius: 8px; padding: 6px 14px;
-            background: var(--accent); color: var(--accent-text); white-space: nowrap; }
-  .serial { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
-  details { border-top: 1px solid var(--line); }
-  details:first-child { border-top: 0; }
-  summary { display: flex; gap: 10px; align-items: baseline; padding: 10px 0; cursor: pointer; list-style: none; }
+  #matches li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; }
+  #matches li:nth-child(even), #list details:nth-child(even) { background: var(--alt); }
+  #matches li.muted { display: block; }
+  .serial { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+  #list details { padding: 0 16px; }
+  #matches li + li, #list details + details { border-top: 1px solid var(--line); }
+  summary { display: flex; gap: 12px; align-items: center; padding: 11px 0; cursor: pointer; list-style: none; }
   summary::-webkit-details-marker { display: none; }
-  summary .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-  .badge { font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
-           white-space: nowrap; }
+  summary .name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 550; }
+  summary .name .muted { display: block; font-weight: 400; font-size: 0.82rem; }
+  details[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+  #list details[open] { padding-bottom: 8px; background: var(--surface); box-shadow: inset 3px 0 0 var(--accent); }
+  .badge { display: inline-block; font-size: 0.8rem; font-weight: 650; white-space: nowrap; padding: 3px 10px; border-radius: 999px;
+           color: #fff; background: var(--c, var(--muted)); }
+  .badge.s-playable { --c: var(--ok); } .badge.s-minor { --c: var(--warn); } .badge.s-major, .badge.s-none { --c: var(--bad); }
+  .badge.s-boots { --c: var(--boots); } .badge.s-unknown { --c: var(--faint); }
+  .badge.badge { color: #fff; }
+  :root[data-theme="dark"] .badge { color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge { color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); } }
   .s-playable { color: var(--ok); } .s-minor { color: var(--warn); } .s-major, .s-none { color: var(--bad); }
-  .s-boots { color: var(--accent); } .s-unknown { color: var(--muted); }
-  .reports { margin: 0 0 12px; padding: 0 0 0 14px; border-left: 3px solid var(--line); }
+  .s-boots { color: var(--boots); } .s-unknown { color: var(--muted); }
+  .reports { margin: 0 0 12px; }
   .reports li { margin: 0 0 10px; }
-  .notes { white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
-  .chip { font: inherit; font-size: 0.85rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; cursor: pointer;
-          border: 1px solid currentColor; background: transparent; }
-  .chip[aria-pressed="true"] { background: currentColor; }
-  .chip[aria-pressed="true"] span { color: var(--panel); }
-  .chip:disabled { opacity: 0.5; cursor: default; }
-  .chip:focus-visible, .button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .vote-title { margin: 4px 0 0; }
-  .vote-note { margin-top: -4px; }
-  .open { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 6px 14px; cursor: pointer;
-          background: var(--accent); color: var(--accent-text); white-space: nowrap; }
-  footer { margin-top: 28px; }
+  .notes { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
+  .chip { height: 34px; padding: 0 13px; font-size: 0.86rem; font-weight: 550; border-radius: 999px;
+          background: var(--surface); border: 1.5px solid color-mix(in srgb, currentColor 55%, transparent); }
+  .chip:hover:not(:disabled) { opacity: 1; border-color: currentColor; }
+  .chip[aria-pressed="true"] { background: currentColor; border-color: currentColor; }
+  .chip[aria-pressed="true"] span { color: var(--surface); }
+  .vote-title { margin: 0; font-weight: 550; }
+  .vote-note { margin-top: -2px; }
+  .open { height: 32px; padding: 0 14px; font-size: 0.86rem; }
+  .levels li { display: grid; grid-template-columns: 8.5rem 1fr; gap: 12px; align-items: baseline; padding: 6px 0; }
+  #summary { margin: 4px 0 10px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin-top: 24px; }
+  .stats:empty { display: none; }
+  .stat { padding: 12px 14px; border-radius: 12px; background: rgb(255 255 255 / 8%); border: 1px solid rgb(255 255 255 / 12%);
+          backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  .stat b { display: block; font-size: 1.6rem; line-height: 1.1; letter-spacing: -0.02em; }
+  .stat span { font-size: 0.8rem; color: var(--hero-muted); display: inline-flex; align-items: center; gap: 6px; }
+  .stat span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c, #fff); }
+  .bar { grid-column: 1 / -1; display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: rgb(255 255 255 / 10%); }
+  .bar i { display: block; background: var(--c); }
+  .stat.s-playable, .bar .s-playable { --c: #4ade80; } .stat.s-minor, .bar .s-minor { --c: #fbbf24; }
+  .stat.s-major, .bar .s-major, .stat.s-none, .bar .s-none { --c: #f87171; } .stat.s-boots, .bar .s-boots { --c: #93a5ff; }
+  #list summary:hover { color: var(--accent); }
+  #list details:hover:not([open]) { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+  @media (max-width: 560px) {
+    .row select { flex: 1 1 100%; }
+    .chips { display: grid; grid-template-columns: 1fr 1fr; }
+    .chip { width: 100%; }
+    .levels li { grid-template-columns: 1fr; gap: 2px; padding: 8px 0; }
+  }
 </style>
 </head>
 <body>
-<main>
+<header class="top"><nav>
+  <a class="brand" href="https://github.com/GuardianSoul/openfpga-PlayStation">PlayStation core</a>
+  <a class="tab" href="compatibility.html" aria-current="page">Game list</a>
+  <a class="tab" href="./">SD card helper</a>
+</nav></header>
+<header class="hero"><div class="wrap">
   <h1>PlayStation game list</h1>
   <p class="lead">How games run on the PlayStation core for Analogue Pocket, voted by players.</p>
+  <div id="stats" class="stats" aria-hidden="true"></div>
+</div></header>
+<main>
 
   <section class="panel">
     <h2>Find a game</h2>
-    <p class="muted" id="find-note">Find your game and vote how it runs.</p>
+    <p class="muted" id="find-note">Find your game and vote how it runs. Only vote for games started from a game file (.json) made as in the
+      <a href="https://github.com/GuardianSoul/openfpga-PlayStation#setup">Setup</a>.</p>
     <div class="row">
       <input id="find" type="search" placeholder="e.g. final fantasy 7" autocomplete="off" aria-label="Game name">
       <select id="find-region" aria-label="Region">
         <option value="">Any region</option><option>USA</option><option>Europe</option><option>Japan</option><option>Other</option>
       </select>
     </div>
-    <ul id="matches" class="plain"></ul>
+    <ul id="matches" class="plain card bleed"></ul>
   </section>
 
   <section class="panel">
@@ -94,12 +101,12 @@
       <select id="status" aria-label="Status"><option value="">Any status</option></select>
     </div>
     <p id="summary" class="muted">Loading…</p>
-    <div id="list"></div>
+    <div id="list" class="card bleed"></div>
   </section>
 
   <section class="panel">
     <h2>Status levels</h2>
-    <ul class="plain">
+    <ul class="plain levels">
       <li><span class="badge s-playable">Playable</span> Played into normal gameplay with no problems seen</li>
       <li><span class="badge s-minor">Minor issues</span> Playable with small graphics or sound glitches</li>
       <li><span class="badge s-major">Major issues</span> Starts, but crashes, hangs or is too broken to play</li>
@@ -235,6 +242,9 @@
         (reports ? `<ul class="reports plain">${reports}</ul>` : '') + problemLinks(e) + '</details>';
     }).join('');
     const counts = Compat.STATUSES.map((s) => [s, entries.filter((e) => e.status === s).length]).filter(([, n]) => n);
+    $('stats').innerHTML = `<div class="stat"><b>${entries.length}</b><span>games</span></div>` +
+      counts.map(([s, n]) => `<div class="stat ${CLASSES[s]}"><b>${n}</b><span>${escape(s)}</span></div>`).join('') +
+      `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>`;
     $('summary').innerHTML = `${entries.length} games` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
       (shown.length < entries.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '');
   }

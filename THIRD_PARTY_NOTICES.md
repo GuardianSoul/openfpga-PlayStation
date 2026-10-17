@@ -48,3 +48,7 @@ comes from [libretro-database](https://github.com/libretro/libretro-database)
 (<https://creativecommons.org/licenses/by-sa/4.0/>), stated in its header.
 `scripts/make_compat_games.py` makes it from that project's
 `metadat/redump/Sony - PlayStation.dat`.
+
+`docs/fonts/` holds the [Inter](https://github.com/rsms/inter) typeface used by the web
+pages, © The Inter Project Authors, under the SIL Open Font License 1.1
+(`docs/fonts/Inter-OFL.txt`).

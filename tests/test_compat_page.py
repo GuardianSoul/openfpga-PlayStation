@@ -154,6 +154,19 @@ class CompatPage(unittest.TestCase):
         self.assertGreaterEqual(len(entries), 30)
         self.assertEqual(search[0], 'Final Fantasy VII')
 
+    def test_shipped_entries_can_take_votes(self):
+        # Each old entry matches a listed game, so a region can be picked to vote on it.
+        script = '''
+          const C = require(process.argv[1]), fs = require('fs');
+          const games = C.loadGames(fs.readFileSync(process.argv[2], 'utf8'));
+          const seeds = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+          const lost = C.build([], seeds, games, [], {}).filter((e) => e.key ? !games.byKey.has(e.key)
+            : !C.REGIONS.some((r) => games.byKey.has(`${C.nameKey(e.name)}|${r}`)));
+          console.log(JSON.stringify(lost.map((e) => e.name)));'''
+        out = subprocess.run([NODE, '-e', script, str(DOCS/'compat.js'), str(DOCS/'games.tsv'),
+                              str(DOCS/'compatibility.json')], check=True, capture_output=True, text=True).stdout
+        self.assertEqual(json.loads(out), [])
+
 
 if __name__ == '__main__':
     unittest.main()

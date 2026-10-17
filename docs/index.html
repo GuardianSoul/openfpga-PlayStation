@@ -6,58 +6,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PlayStation SD Card Helper</title>
 <meta name="description" content="Make multi-disc game files for the PlayStation core on Analogue Pocket, straight from your browser.">
+<link rel="stylesheet" href="site.css">
 <style>
-  :root {
-    --bg: #f4f4f2; --panel: #ffffff; --text: #1d1d1f; --muted: #5f6064; --line: #d9d9d6;
-    --accent: #3d4f8f; --accent-text: #ffffff; --ok: #2f7a3e; --warn: #9a5b00; --code: #ececea;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
-      --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --code: #2a2a2f;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #161618; --panel: #202023; --text: #ececee; --muted: #a2a2a8; --line: #34343a;
-    --accent: #8fa3e8; --accent-text: #111218; --ok: #7fcf8d; --warn: #f0b45a; --code: #2a2a2f;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
-  h1 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -0.01em; }
-  h2 { font-size: 1.05rem; margin: 0 0 10px; }
-  p { margin: 0 0 12px; }
-  .lead { color: var(--muted); margin-bottom: 24px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-  .step { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; border-radius: 50%;
-          background: var(--accent); color: var(--accent-text); font-size: 0.85rem; font-weight: 600; margin-right: 8px; }
-  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer;
-           background: var(--accent); color: var(--accent-text); }
-  button:disabled { opacity: 0.45; cursor: default; }
-  select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); max-width: 100%; }
-  label { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; }
-  label input { margin-top: 5px; }
+  .step { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; vertical-align: 2px;
+          background: var(--accent); color: var(--accent-text); font-size: 0.75rem; font-weight: 700; margin-right: 10px; }
+  label { display: flex; gap: 12px; align-items: flex-start; margin: 14px 0; cursor: pointer; }
+  label input { margin-top: 4px; flex: none; }
   .indent { margin-left: 28px; }
-  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; overflow-wrap: anywhere; }
-  .muted { color: var(--muted); font-size: 0.92rem; }
-  .ok { color: var(--ok); font-weight: 600; }
-  .warn { color: var(--warn); font-weight: 600; }
-  ul { margin: 0 0 12px; padding-left: 22px; }
-  li { margin: 4px 0; }
-  #log { margin: 12px 0 0; padding: 12px; background: var(--code); border-radius: 8px; max-height: 360px; overflow: auto;
-         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-  a { color: var(--accent); }
-  .hidden { display: none; }
-  footer { margin-top: 28px; }
+  ul.info { margin: 0 0 12px; padding: 0; list-style: none; }
+  ul.info li { padding: 12px 16px; }
+  ul.info li:nth-child(even) { background: var(--alt); }
+  ul.info li + li { border-top: 1px solid var(--line); }
+  #choose, #run { height: 42px; padding: 0 20px; margin-top: 4px; }
+  #log { margin: 12px 0 0; padding: 12px; background: var(--code); border-radius: 10px; max-height: 360px; overflow: auto;
+         font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  @media (max-width: 560px) { .indent { margin-left: 0; } #choose, #run { width: 100%; } }
 </style>
 </head>
 <body>
-<main>
+<header class="top"><nav>
+  <a class="brand" href="https://github.com/GuardianSoul/openfpga-PlayStation">PlayStation core</a>
+  <a class="tab" href="compatibility.html">Game list</a>
+  <a class="tab" href="./" aria-current="page">SD card helper</a>
+</nav></header>
+<header class="hero"><div class="wrap">
   <h1>PlayStation SD card helper</h1>
-  <p class="lead">Optional. Single-disc games already work with the game files that pupdate or Pocket Sync make.
-    This page adds what those tools can't do yet: one game file per multi-disc game, so you can swap discs in
-    <b>Core Settings → Swap Discs</b>, and one memory card that all of a game's discs share.</p>
+  <p class="lead">Optional. Makes one game file per multi-disc game, so you can swap discs in
+    <b>Core Settings → Swap Discs</b>, and gives all of a game's discs one shared memory card.
+    Single-disc games need nothing from this page.</p>
+</div></header>
+<main>
 
   <div id="unsupported" class="panel hidden">
     <p class="warn">This browser can't write to an SD card.</p>
@@ -97,7 +75,7 @@
 
   <section class="panel">
     <h2>What it changes on the card</h2>
-    <ul>
+    <ul class="info card">
       <li>Makes one game file per game in <code>Assets/playstation/&lt;core&gt;/</code>. A game with several
         discs ("Game (Disc 1)", "Game (Disc 2)", …) gets one file, named after the game.</li>
       <li>Deletes the separate per-disc game files of those games, because the new file replaces them.</li>
