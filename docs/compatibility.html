@@ -51,7 +51,8 @@
   .stats:empty { display: none; }
   .stat { padding: 12px 14px; border-radius: 12px; background: rgb(255 255 255 / 8%); border: 1px solid rgb(255 255 255 / 12%);
           backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-  .stat b { display: block; font-size: 1.6rem; line-height: 1.1; letter-spacing: -0.02em; }
+  .stat.stat { color: var(--hero-text); }
+  .stat b { display: block; font-size: 1.6rem; line-height: 1.1; letter-spacing: -0.02em; color: var(--c, var(--hero-text)); }
   .stat span { font-size: 0.8rem; color: var(--hero-muted); display: inline-flex; align-items: center; gap: 6px; }
   .stat span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c, #fff); }
   .bar { grid-column: 1 / -1; display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: rgb(255 255 255 / 10%); }
