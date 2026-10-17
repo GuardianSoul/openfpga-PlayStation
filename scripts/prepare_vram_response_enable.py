@@ -99,7 +99,9 @@ def apply_response_enable(manifest, directory):
               for s in components]
     # The first vector form coalesced to one register. Scalar attributes plus
     # explicit scoped assignments must pass the post-map eight-register gate.
-    lines += [f'set_instance_assignment -name {name} ON -to {{*|vram_commands|*bank_enable*}}'
+    # QSF imports braces literally in this field; unlike a Tcl source command,
+    # a brace-delimited target becomes an invalid node name in Quartus.
+    lines += [f'set_instance_assignment -name {name} ON -to "*|vram_commands|*bank_enable*"'
               for name in ('DONT_MERGE_REGISTER','PRESERVE_REGISTER')]
     qsf.write_text('\n'.join(lines) + '\n')
     manifest['sources'] = sources

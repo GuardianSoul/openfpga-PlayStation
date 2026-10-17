@@ -16,6 +16,7 @@ import subprocess
 from prepare_pocket_config_cdc import assignments
 from prepare_resource_targets import digest
 from tool_paths import ROOT
+from prepare_pocket_disc_swap import BOOT_WAIT
 
 
 CARD_SHA = 'f565318fee5257394f99b3235b1b0c1999ad590c4fa6505722dedac4604e6f86'
@@ -59,6 +60,16 @@ def preserve_sync_flops(text):
     return out
 
 
+def ready_source(text):
+    if re.search(r'\bboot_disc_gate\b', text):
+        if text.count(BOOT_WAIT.replace('READY_SIGNAL', 'bios_go')) != 1:
+            raise ValueError('Native card disc-ready launch contract differs')
+        if text.count('.disc_settled(cd_disc_settled)') != 1:
+            raise ValueError('Native card disc-ready source differs')
+        return 'boot_disc_gate'
+    return 'bios_go'
+
+
 def top_contract(text):
     def instance(module, name):
         found = re.findall(r'^    ' + module + r'\s+' + name + r'\s*\((.*?)\);', text, re.M | re.S)
@@ -87,9 +98,10 @@ def top_contract(text):
         # wires. An extra consumer/driver invalidates the held-output contract.
         if len(re.findall(r'\b' + signal + r'\b', text)) != 3:
             raise ValueError('Native AUX net is not exclusive: ' + signal)
+    ready = ready_source(text)
     for anchor in (TOP_OLD,
-                   '    always @(posedge clk_74a) begin mc_idle74<={mc_idle74[0],!mc_busy}; boot_ready_card<=(bios_go) && mc_idle74[1]; end',
-                   '    assign memcard_load_done=(bios_go);',
+                   '    always @(posedge clk_74a) begin mc_idle74<={mc_idle74[0],!mc_busy}; boot_ready_card<=(' + ready + ') && mc_idle74[1]; end',
+                   '    assign memcard_load_done=(' + ready + ');',
                    '    psx_bios_patch bios_patch (.clk(clk_74a), .reset(!power_reset_n), .loader_ready(passed), .host_run(reset_n),',
                    '.skip(logo_skip), .bios_ready(bios_go), .patched(bios_patched),'):
         if text.count(anchor) != 1:
@@ -135,6 +147,7 @@ def prepare_project(directory, expected_top_sha256):
         sources[name] = found[0]
     source = sources['pocket_memcard_format.vhd']
     adapted = preserve_sync_flops(source.read_text()); top = top_contract(core.read_text())
+    disc_ready = ready_source(core.read_text()) == 'boot_disc_gate'
     work = directory / 'card-cdc'; scope = work / 'card.sdc'
     new_sdc = scope_text(sdc.read_text(), scope)
     token = '"' + str(source) + '"'
@@ -148,11 +161,13 @@ def prepare_project(directory, expected_top_sha256):
         raise ValueError('Card project changed during preparation')
     work.mkdir()
     (work / source.name).write_text(adapted)
-    shutil.copyfile(ROOT / 'scripts/pocket_card_scope.tcl', scope)
+    scope.write_text(('set card_cdc_boot_disc_gate 1\n' if disc_ready else '') +
+                     (ROOT / 'scripts/pocket_card_scope.tcl').read_text())
     qsf.write_text(new_q); core.write_text(top); sdc.write_text(new_sdc)
     report = dict(original=protected, card_functional_body_unchanged=True,
                   top_changes_only_existing_sync_attributes=True, preserved_sync_flops=11,
                   payload_max_ns=13, payload_min_ns=0, source_only_bounds_removed=True,
+                  load_done_launch='core_top:ic|boot_disc_gate' if disc_ready else 'core_top:ic|psx_bios_patch:bios_patch|bios_ready',
                   ordinary_local_clock_relationships_retained=True,
                   added=[dict(path=str(p), sha256=digest(p)) for p in sorted(work.iterdir())],
                   preparer_sha256=digest(Path(__file__)), physical_timing_verified=False,

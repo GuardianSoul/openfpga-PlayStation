@@ -1,9 +1,13 @@
 # Route the complete reviewed GPU stall-buffer handoff with more minimum
 # wire delay. Ordinary timing and the required150ps reserve remain active.
-set gpu_stage_owner {core_top:ic|psx_mister_psx_top_resource:psx|psx_top:component_core|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline}
-set gpu_stage_fields {valid 1 texture 1 transparent 1 rawTexture 1 dithering 1 x 10 y 9 cr 8 cg 8 cb 8 u 8 v 8 oldPixel 15}
+proc gpu_stage_profile {} {
+    # read_sdc can evaluate the file in a private namespace. Do not couple
+    # procedure globals to variables created in that caller's scope.
+    return [list {core_top:ic|psx_mister_psx_top_resource:psx|psx_top:component_core|gpu:igpu|gpu_pixelpipeline:igpu_pixelpipeline} \
+                 {valid 1 texture 1 transparent 1 rawTexture 1 dithering 1 x 10 y 9 cr 8 cg 8 cb 8 u 8 v 8 oldPixel 15}]
+}
 proc gpu_stage_key {name stage} {
-    global gpu_stage_owner gpu_stage_fields
+    lassign [gpu_stage_profile] gpu_stage_owner gpu_stage_fields
     set prefix [format {%s|} $gpu_stage_owner]
     if {[string first $prefix $name]!=0} {error "Wrong GPU handoff owner $name"}
     set suffix [string range $name [string length $prefix] end]
@@ -31,7 +35,7 @@ proc gpu_stage_exact {names} {
     return $result
 }
 proc gpu_stage_bank {stage} {
-    global gpu_stage_owner gpu_stage_fields
+    lassign [gpu_stage_profile] gpu_stage_owner gpu_stage_fields
     set names {};set keys {}
     foreach_in_collection r [get_registers -nowarn [list [format {%s|%s_*} $gpu_stage_owner $stage]]] {
         set name [get_node_info -name $r]

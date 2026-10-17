@@ -12,12 +12,14 @@ someone else tested it on an earlier 0.5 release.
 | --- | --- | --- | --- | --- |
 | Adventures of Little Ralph, The | — | Playable |  | user report |
 | Alundra | — | Playable |  | user report |
+| Castlevania: Symphony of the Night | USA, Europe | Boots, looks right | Short test only | 0.5.2 test build |
 | Cowboy Bebop | — | Playable |  | user report |
 | Crash Bandicoot | — | Boots, looks right | Attract sequence or first minutes | user report |
 | Crash Bandicoot 2: Cortex Strikes Back | — | Playable |  | user report |
 | Crash Team Racing | — | Playable |  | user report |
 | Croc: Legend of the Gobbos | — | Playable |  | user report |
 | Disruptor | — | Boots, looks right | Attract sequence or first minutes | user report |
+| Doom | USA | Boots, looks right | CD music plays, also from one merged `.bin` | 0.5.3 test build |
 | Final Fantasy VII (disc 1) | USA | Playable | Opening FMV, field, battle and music are correct. Saving and loading on memory card 1 work. | 0.5.0 |
 | Final Fantasy VIII | — | Boots, looks right | Short test only | pre-release |
 | Final Fantasy IX | — | Boots, looks right | Short test only | pre-release |
@@ -30,6 +32,7 @@ someone else tested it on an earlier 0.5 release.
 | Moon | — | Playable |  | user report |
 | Moto Racer | — | Boots, looks right | Attract sequence or first minutes | user report |
 | R4: Ridge Racer Type 4 | — | Boots, looks right | Attract sequence or first minutes | user report |
+| Rayman | Europe | Boots, looks right | All 51 tracks; past the Ubisoft logo with music | 0.5.3 test build |
 | Rayman 2 | — | Boots, looks right | Short test only | pre-release |
 | Resident Evil | — | Playable |  | user report |
 | Running Wild | — | Playable |  | user report |

@@ -4,11 +4,13 @@
 Keep the MiSTer decode, bypass, stalls, traps and all pipeline edges. Share
 register add/subtract and signed/unsigned comparisons (including SLTI/U),
 and reverse bits around one right shifter for SLL/V. Immediate ADD/IU and
-memory-address arithmetic retain their original expressions. No defaults.
+memory-address arithmetic retain their original expressions by default.
+The source-bound cache profile can also share those additions. No defaults.
 """
 import hashlib
 from pathlib import Path
 CPU_SHA256='a4bd035801471eb0dff3dd9580821fbeae439e959ab4c97d413390cfff227af0'
+CACHE_CPU_SHA256='e7fac3b0ebed127f8ff2f6b763419e6dbe92c84a54c94f1440470a57c95cdf65'
 FUNCTIONS='''
    -- Combinational execute sharing; consumer edge and pipeline are unchanged.
    function pocket_addsub(a, b : unsigned(31 downto 0); subtract : std_logic)
@@ -43,8 +45,11 @@ FUNCTIONS='''
 def once(t,a,b):
  if t.count(a)!=1:raise ValueError('CPU execute anchor changed: '+repr(a[:90]))
  return t.replace(a,b,1)
-def execute_share_text(text):
- if hashlib.sha256(text.encode()).hexdigest()!=CPU_SHA256:raise ValueError('CPU execute sharing requires exact current CPU')
+def execute_share_text(text, address_share=False):
+ source_sha=hashlib.sha256(text.encode()).hexdigest()
+ if source_sha not in (CPU_SHA256,CACHE_CPU_SHA256):raise ValueError('CPU execute sharing requires exact current CPU')
+ if address_share and source_sha!=CACHE_CPU_SHA256:
+  raise ValueError('Address sharing requires the reviewed cache-profile CPU')
  text=once(text,'architecture arch of cpu is','architecture arch of cpu is\n'+FUNCTIONS)
  text=once(text,"      variable shiftValue   : signed(32 downto 0) := (others => '0');",'''      variable sharedRight : unsigned(31 downto 0);
       variable sharedSub : std_logic;
@@ -81,10 +86,19 @@ def execute_share_text(text):
  ]:
   if text.count(old)!=count:raise ValueError('Missing arithmetic expression '+old)
   text=text.replace(old,new,count)
+ if address_share:
+  # All memory opcodes select the sign-extended immediate with subtract=0.
+  # EXEMemAddr is consumed only by memory requests/address exceptions.
+  # Non-memory idle address payloads may differ; accepted requests do not.
+  for old,new in [
+   ('calcMemAddr             := value1 + unsigned(resize(signed(decodeImmData), 32));','calcMemAddr             := sharedSum(31 downto 0);'),
+   ('calcResult    := value1 + unsigned(resize(signed(decodeImmData), 32));','calcResult    := sharedSum(31 downto 0);'),
+   ('EXEresultData        <= value1 + unsigned(resize(signed(decodeImmData), 32));','EXEresultData        <= sharedSum(31 downto 0);'),
+  ]:text=once(text,old,new)
  return text
 
 
-def prepare_project(directory):
+def prepare_project(directory, address_share=False):
     import json
     import shutil
     import subprocess
@@ -113,7 +127,7 @@ def prepare_project(directory):
     cpu,ram = one('cpu.vhd'),one('pocket_dpram_sdp.vhd')
     if ram.read_text()!=primitive((UPSTREAM/'rtl/dpram.vhd').read_text()):
         raise ValueError('Current CPU proof requires reviewed SDP primitive')
-    transformed = execute_share_text(cpu.read_text())
+    transformed = execute_share_text(cpu.read_text(), address_share=address_share)
     if qtext.count('"'+str(cpu)+'"')!=1:
         raise ValueError('Expected one quoted CPU assignment')
     before = inputs(directory)
@@ -128,6 +142,7 @@ def prepare_project(directory):
     report = dict(original=dict(path=str(cpu),sha256=digest(cpu)),candidate=dict(path=str(output),sha256=digest(output)),
         original_inputs=before,preparer_sha256=digest(Path(__file__)),additional_guest_cycles=0,
         clocks_enables_constraints_unchanged=True,registers_RAM_interfaces_unchanged=True,
+        address_adder_shared=address_share,
         scope='Combinational execute add/subtract/compare and barrel shifter only; no CPU replacement',
         fit_verified=False,timing_verified=False,hardware_verified=False,game_verified=False,production_selected=False)
     (work/'manifest.json').write_text(json.dumps(report,indent=2)+'\n')
@@ -138,4 +153,6 @@ if __name__=='__main__':
     import argparse,json
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('project',type=Path)
-    print(json.dumps(prepare_project(parser.parse_args().project),indent=2))
+    parser.add_argument('--address-share',action='store_true',help='Exact cache-profile CPU only: also share ADDI/IU and the memory-address adder')
+    args=parser.parse_args()
+    print(json.dumps(prepare_project(args.project,address_share=args.address_share),indent=2))

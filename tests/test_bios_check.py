@@ -1,0 +1,199 @@
+"""Chip32 BIOS check loader (support/chip32/psx_bios_check.asm)."""
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT/'scripts'))
+
+from chip32_vm import Chip32  # noqa: E402
+
+BIOS, CARD = 0x20, 0x10
+REGION, BIOS_REGION = 0x1100009c, 0x11000020
+SLOT_TABLE, HOST = 0xf8002000, 0xf8000000
+_built = {}
+
+
+def loader(**options):
+    """Assemble once per option set; skip when bass cannot be built here."""
+    key = repr(sorted(options.items()))
+    if key not in _built:
+        from build_chip32_loader import build
+        out = Path(tempfile.mkdtemp())/'loader.bin'
+        try:
+            build(out, **options)
+        except (OSError, subprocess.CalledProcessError, SystemExit) as error:
+            raise unittest.SkipTest(f'Chip32 assembler unavailable: {error}')
+        _built[key] = out.read_bytes()
+    return _built[key]
+
+
+class BiosCheckTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def bios(self, version=b'System ROM Version 3.0 11/18/96 A', size=524288, at=0x7ff32, name='scph5501.bin'):
+        data = bytearray(size)
+        data[at:at+len(version)] = version
+        folder = self.dir/str(len(list(self.dir.iterdir()))); folder.mkdir()
+        (folder/name).write_bytes(data)
+        return folder/name
+
+    def run_loader(self, bios, card=None, program=None, regs=None, extra=None):
+        vm = Chip32(program or loader(memcard_slot=CARD), {BIOS: bios, CARD: card, **(extra or {})}, regs=regs)
+        vm.run()
+        return vm, ''.join(vm.output)
+
+    def run_names(self, files, card=None):
+        """A --bios-names loader; files maps BIOS names to paths (renamed to match)."""
+        files = {n: p.rename(p.with_name(n)) for n, p in files.items() if p}
+        from build_chip32_loader import BIOS_NAMES
+        slots = tuple((0x20+k, n) for k, n in enumerate(BIOS_NAMES))
+        return self.run_loader(None, card, loader(slots=slots, memcard_slot=CARD),
+                               extra={0x20+k: files.get(n) for k, n in enumerate(BIOS_NAMES)})
+
+    def assert_started(self, vm, loads, region=0):
+        self.assertEqual(vm.events[0], ('core', 0))
+        self.assertEqual([e[1] for e in vm.events if e[0] == 'loadf'], loads)
+        self.assertEqual([e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] < HOST], [(REGION, region), (BIOS_REGION, region)])
+        self.assertLess(vm.events.index(('pmpw', REGION, region)), vm.events.index(('host', 0x4002, 0x4002)))
+        self.assertEqual(vm.events[-2:], [('host', 0x4002, 0x4002), ('exit', 0)])
+        self.assertEqual(vm.output, [])
+        self.assertEqual(vm.r[13] & 1, 1)
+
+    def assert_stopped(self, vm, text, *parts):
+        self.assertEqual(vm.result, 1)
+        self.assertFalse([e for e in vm.events if e[0] in ('loadf', 'host', 'fault')])
+        for part in parts: self.assertIn(part, text)
+
+    def test_usa_bios_and_card(self):
+        card = self.dir/'game.sav'; card.write_bytes(bytes(131072))
+        self.assert_started(self.run_loader(self.bios(), card)[0], [BIOS, CARD])
+
+    def test_other_usa_bios_and_no_card(self):
+        vm, _ = self.run_loader(self.bios(b'System ROM Version 4.1 12/16/97 A'))
+        self.assert_started(vm, [BIOS])
+
+    def test_without_card_slot(self):
+        vm, _ = self.run_loader(self.bios(), program=loader())
+        self.assert_started(vm, [BIOS])
+
+    def test_missing(self):
+        vm, text = self.run_loader(None)
+        self.assertEqual(text, 'Missing BIOS scph5501.bin')
+        self.assert_stopped(vm, text)
+
+    def test_wrong_size(self):
+        vm, text = self.run_loader(self.bios(size=262144))
+        self.assertEqual(text, 'Bad BIOS scph5501.bin')
+        self.assert_stopped(vm, text)
+
+    def test_not_a_bios(self):
+        for version in (b'', b'System ROM Versio', b'Something else 3.0 11/18/96 A'):
+            with self.subTest(version=version):
+                vm, text = self.run_loader(self.bios(version))
+                self.assertEqual(text, 'Bad BIOS scph5501.bin')
+                self.assert_stopped(vm, text)
+
+    def test_other_region_sets_the_cd_region(self):
+        for letter, region in ((b'J', 1), (b'E', 2)):
+            with self.subTest(region=region):
+                vm, _ = self.run_loader(self.bios(b'System ROM Version 3.0 11/18/96 '+letter))
+                self.assert_started(vm, [BIOS], region)
+
+    def test_file_name_and_platform_follow_the_package(self):
+        vm, text = self.run_loader(None, extra={0x21: None}, program=loader(slots=((0x21, 'bios.bin'),), platform='psxearly'))
+        self.assertEqual(text, 'Missing BIOS bios.bin')
+        self.assert_stopped(vm, text)
+
+    def test_names_prefer_usa_then_japan_then_europe(self):
+        usa, jp, eu = (b'System ROM Version 4.1 12/16/97 '+c for c in (b'A', b'J', b'E'))
+        vm, _ = self.run_names({'scph1001.bin': self.bios(usa), 'scph5500.bin': self.bios(jp)})
+        self.assert_started(vm, [0x22])
+        vm, _ = self.run_names({'scph5502.bin': self.bios(eu), 'scph7000.bin': self.bios(jp)})
+        self.assert_started(vm, [0x27], 1)
+        vm, _ = self.run_names({'scph102.bin': self.bios(eu)})
+        self.assert_started(vm, [0x2f], 2)
+        vm, _ = self.run_names({'scph5501.bin': self.bios(size=5), 'scph101.bin': self.bios(usa)})
+        self.assert_started(vm, [0x25])
+
+    def test_names_missing_gives_examples(self):
+        vm, text = self.run_names({})
+        self.assertEqual(text, 'Missing BIOS scph5501.bin')
+        self.assert_stopped(vm, text)
+
+    def test_names_report_the_first_unusable_file(self):
+        vm, text = self.run_names({'scph7001.bin': self.bios(size=1000), 'scph5502.bin': self.bios(b'nothing')})
+        self.assertEqual(text, 'Bad BIOS scph7001.bin')
+        self.assert_stopped(vm, text)
+        self.assertNotIn('scph5502', text)
+
+    def test_slot_table(self):
+        disc = self.dir/'disc.bin'; disc.write_bytes(bytes(2352*3))
+        game = self.dir/'game.json'; game.write_bytes(b'{}')
+        table = (0, CARD, 100, BIOS, 101, 102)
+        for complete in (False, True):
+            with self.subTest(complete=complete):
+                vm, _ = self.run_loader(self.bios(), program=loader(memcard_slot=CARD, table=table, send_complete=complete),
+                                        extra={0: game, 101: disc})
+                self.assert_started(vm, [BIOS])
+                writes = [e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] >= HOST]
+                expected = [w for k, (slot, size) in enumerate(zip(table, (2, 0, 0, 524288, 2352*3, 0)))
+                            for w in ((SLOT_TABLE+8*k, slot), (SLOT_TABLE+8*k+4, size))]
+                self.assertEqual(writes, expected + ([(HOST, 0x434d0082)] if complete else []))
+                self.assertLess(vm.events.index(('pmpw',)+writes[-1]), vm.events.index(('host', 0x4002, 0x4002)))
+                self.assertIsNone(vm.file)
+
+    def test_later_run_exits(self):
+        regs = [0]*16; regs[13] = 1
+        vm, _ = self.run_loader(None, regs=regs)
+        self.assertEqual(vm.events, [('exit', 0)])
+
+    def test_messages_fit_the_screen(self):
+        for case in (None, self.bios(size=1), self.bios(b''), self.bios(b'System ROM Version 3.0 11/18/96 X')):
+            _, text = self.run_loader(case)
+            self.assertLessEqual(len(text), 26, text)
+            self.assertNotIn('\n', text)
+            _, text = self.run_names({'scph5501.bin': case})
+            self.assertLessEqual(len(text), 26, text)
+            self.assertNotIn('\n', text)
+
+
+
+class ApplyTest(unittest.TestCase):
+    """build_chip32_loader.apply on a packaged core (the 0.5.2 slot layout)."""
+
+    def test_apply(self):
+        import json
+        import build_chip32_loader
+        loader()                                    # skip without bass
+        core = Path(tempfile.mkdtemp())
+        slots = [{'name': 'Game', 'id': 0, 'required': True, 'parameters': '0x12', 'extensions': ['json']},
+                 {'name': 'Memory Card 1', 'id': 16, 'required': False, 'parameters': '0xA4', 'nonvolatile': True,
+                  'extensions': ['sav'], 'size_maximum': '0x20000', 'address': '0x20000000'},
+                 {'name': 'Disc (cue)', 'id': 100, 'required': False, 'parameters': '0x08', 'deferload': True,
+                  'extensions': ['cue'], 'size_maximum': '0x4000'},
+                 {'name': 'BIOS', 'id': '0x20', 'required': True, 'parameters': '0x008', 'deferload': False,
+                  'filename': 'scph5501.bin', 'extensions': ['bin'], 'size_exact': 524288, 'address': '0x00000000'},
+                 {'name': 'Track 1', 'id': 101, 'required': False, 'parameters': '0x08', 'deferload': True,
+                  'extensions': ['bin'], 'size_maximum': '0x40000000'}]
+        (core/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': slots}}))
+        (core/'core.json').write_text(json.dumps({'core': {'framework': {'version_required': '1.1'}}}))
+        build_chip32_loader.apply(core, 'playstation')
+        self.assertEqual(json.loads((core/'core.json').read_text())['core']['framework']['chip32_vm'], 'chip32.bin')
+        bios = json.loads((core/'data.json').read_text())['data']['data_slots'][3]
+        self.assertEqual((bios['required'], bios['filename']), (False, 'scph5501.bin'))
+        self.assertEqual(sorted(p.name for p in core.iterdir()), ['chip32.bin', 'core.json', 'data.json'])
+        self.assertEqual((core/'chip32.bin').read_bytes(), loader(memcard_slot=CARD, table=(0, 16, 100, 0x20, 101)))
+        (core/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': slots}}))
+        build_chip32_loader.apply(core, 'playstation', names=True)
+        table = json.loads((core/'data.json').read_text())['data']['data_slots']
+        self.assertEqual(table[:5], [dict(s, required=False) if s['id'] == '0x20' else s for s in slots])
+        self.assertEqual([(s['id'], s['filename']) for s in table[5:]],
+                         [(f'{0x20+k:#04x}', n) for k, n in enumerate(build_chip32_loader.BIOS_NAMES) if k])
+        self.assertTrue(all(len(s['name']) <= 15 and not s['required'] for s in table[5:]))
+
+
+if __name__ == '__main__': unittest.main()

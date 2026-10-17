@@ -54,12 +54,15 @@ def scoped_hold_text(text):
 
 
 def adapt_apf_blank(text):
-    if text.count('psx_apf_video #(')!=1 or text.count('.blank(cpu_boot_reset)')!=1:
+    # psx_apf_video, or psx_apf_video_wide (--wide-lines), whose line buffer
+    # takes the same raw blank on its write side.
+    video_inst='psx_apf_video_wide #(' if 'psx_apf_video_wide #(' in text else 'psx_apf_video #('
+    if text.count(video_inst)!=1 or text.count('.blank(cpu_boot_reset)')!=1:
         raise ValueError('Expected one APF video instance with raw CPU boot-reset blanking')
     if text.count('psx_boot_gate boot_gate (')!=1 or 'apf_blank_cdc' in text:
         raise ValueError('Expected one unadapted CPU boot gate for APF blanking')
     text=text.replace('.blank(cpu_boot_reset)', '.blank(apf_blank_video)', 1)
-    at=text.rfind('\n',0,text.index('psx_apf_video #('))+1
+    at=text.rfind('\n',0,text.index(video_inst))+1
     return text[:at]+'''    wire apf_blank_video;
     psx_video_blank_cdc apf_blank_cdc (
         .video_clk(video_rgb_clock),.blank_async(cpu_boot_reset),
@@ -100,7 +103,7 @@ def prepare_project(directory, *, host=False, video=False, blank=False):
         adapt_apf_blank(core.read_text())
         formatters=[p for kind,p in assigned if kind=='SYSTEMVERILOG_FILE' and
                     re.search(r'^module\s+psx_apf_video\b',p.read_text(),re.M)]
-        if len(formatters)!=1 or formatters[0].read_text().count("rgb<=active && !blank ? rgb_in : 24'h0;")!=1:
+        if len(formatters)!=1 or len(re.findall(r"rgb<=active && !blank (?:&& !\(BLANK_TOP!=0 && top_line\) )?\? rgb_in : 24'h0;",formatters[0].read_text()))!=1:
             raise ValueError('APF blank CDC requires the raw-blank formatter; do not stack internal and external synchronizers')
         formatter=formatters[0]
     work.mkdir()

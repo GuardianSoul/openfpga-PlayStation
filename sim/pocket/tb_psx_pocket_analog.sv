@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 // rtl/pocket/psx_pocket_analog.sv: which APF controller types supply sticks,
-// the two-sample filter (a one-clock torn word never reaches the game) and the
-// DualShock checkbox level.
+// the held-payload crossing (only whole source words ever reach the game, even
+// when the word changes on every clk_74a edge) and the DualShock checkbox level.
 `timescale 1ns/1ps
 module tb_psx_pocket_analog;
-    reg clk=0,reset_n=0,setting=1;
+    reg clk=0,clk74=0,reset_n=0,setting=1;
     reg [3:0] type_=4'h1;
     reg [31:0] joy=32'h80808080;
     wire dualshock; wire [31:0] sticks;
     integer errors=0;
     always #14.76 clk=!clk;
-    psx_pocket_analog dut(.clk1x(clk),.reset_n(reset_n),.dualshock_setting(setting),
+    always #6.734 clk74=!clk74;
+    psx_pocket_analog dut(.clk1x(clk),.reset_n(reset_n),.clk_74a(clk74),.dualshock_setting(setting),
         .apf_type(type_),.apf_joy(joy),.dualshock(dualshock),.sticks(sticks));
     task settle; repeat(20) @(posedge clk); endtask
     task check(input [31:0] want_sticks, input want_ds, input [8*40-1:0] what);
@@ -31,9 +32,13 @@ module tb_psx_pocket_analog;
         joy=32'h7F8081C0; check(32'h7F8081C0,1,"type 2, sticks: believed");
         type_=4'h0; check(32'h80808080,1,"nothing: centred");
         type_=4'h3; joy=32'h11223344; check(32'h11223344,1,"type 3 again");
-        // a one-clock torn word never shows
-        @(negedge clk); joy=32'hDEADBEEF; @(negedge clk); joy=32'h11223344;
-        repeat(40) begin @(posedge clk); #1 if(sticks!==32'h11223344) begin errors=errors+1; $display("FAIL glitch reached the game: %h",sticks); end end
+        // a word changing on every clk_74a edge: every value the game sees
+        // is one of the words driven (never a mix of two)
+        fork
+            begin repeat(400) begin @(posedge clk74); #1 joy=(joy==32'h11223344) ? 32'hEEDDCCBB : 32'h11223344; end end
+            begin repeat(400) begin @(posedge clk); #1 if(sticks!==32'h11223344 && sticks!==32'hEEDDCCBB) begin errors=errors+1; $display("FAIL torn word reached the game: %h",sticks); end end end
+        join
+        joy=32'h11223344; check(32'h11223344,1,"settles to the last word");
         setting=0; check(32'h11223344,0,"checkbox off");
         setting=1; check(32'h11223344,1,"checkbox on");
         reset_n=0; #1 if(sticks!==32'h80808080 || dualshock!==0) begin errors=errors+1; $display("FAIL reset values"); end

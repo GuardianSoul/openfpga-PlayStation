@@ -17,6 +17,20 @@
 -- receiveBuffer, ack, isActive, padMode, JustifierIrqEnable) is cycle-exact
 -- with the pinned entity under those constraints;
 -- sim/pocket/tb_joypad_pad_dualshock.vhd checks it in lockstep.
+-- STICK_DPAD (default false, so the lockstep holds): as DuckStation's
+-- default "Use Left Analog for D-Pad in Digital Mode", a DualShock in digital
+-- mode (not analog, not config) also presses the D-pad from the left stick,
+-- with upstream's digital-pad thresholds. prepare --stick-settings sets it,
+-- so a D-pad mapped to the left stick still works in digital-mode games
+-- (sim/pocket/tb_joypad_stick_dpad.vhd).
+-- RUMBLE_ECHO (default false): 0x4D answers 0xFF for its six config bytes
+-- instead of echoing the previous config, which saves the 48-bit config
+-- register (the Pocket has no motors). True keeps upstream's echo.
+-- The fixed reply bytes and the stick scaling are one 512x8 M10K table read
+-- every clock: the stick half is exact (upstream registers analogLarge from
+-- the same inputs), the reply half answers from the pointer one clock old,
+-- which the SIO's byte spacing (actionNext at most once per byte, several
+-- clocks apart) never exposes.
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
@@ -24,6 +38,7 @@ use IEEE.numeric_std.all;
 use work.pJoypad.all;
 
 entity joypad_pad is
+   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false);
    port
    (
       clk1x                : in  std_logic;
@@ -121,14 +136,14 @@ architecture dualshock of joypad_pad is
    signal digitalPadSave  : std_logic := '0';
    signal dsSave          : std_logic := '0';
 
-   signal analogLarge     : std_logic_vector(7 downto 0);
+   signal analogLarge     : std_logic_vector(7 downto 0); -- table output
 
    -- Port 1's DualShock state (upstream portStates(0)); port 2 is never a
    -- DualShock, so upstream's portStates(1) stays at its defaults.
    signal dsConfigMode    : std_logic := '0';
    signal dsAnalogMode    : std_logic := '0';
    signal dsAnalogLock    : std_logic := '0';
-   signal dsRumbleConfig  : std_logic_vector(47 downto 0) := (others => '1');
+   signal dsRumbleConfig  : std_logic_vector(47 downto 0) := (others => '1'); -- RUMBLE_ECHO only
 
    signal dsConfigModeSave  : std_logic := '0';
    signal dsAnalogModeSave  : std_logic := '0';
@@ -147,6 +162,31 @@ architecture dualshock of joypad_pad is
       x"FF", x"FF", x"FF", x"FF"
    );
 
+   -- 0..255: scaled stick byte for each signed axis value (upstream adds
+   -- 1/8 and converts -127..127 to 0..255); 256..: the reply bytes above
+   type ttable is array (0 to 511) of std_logic_vector(7 downto 0);
+   function make_table return ttable is
+      variable t : ttable := (others => x"00");
+      variable v : signed(8 downto 0);
+   begin
+      for i in 0 to 255 loop
+         v := resize(signed(to_unsigned(i, 8)), 9);
+         v := v + v / 8;
+         if    (v > 127) then v := to_signed(127, 9);
+         elsif (v < -128) then v := to_signed(-128, 9);
+         end if;
+         t(i) := std_logic_vector(to_unsigned(to_integer(v) + 128, 8));
+      end loop;
+      for i in response'range loop
+         t(256 + i) := response(i);
+      end loop;
+      return t;
+   end function;
+   signal table : ttable := make_table; -- never written: an M10K ROM
+   attribute romstyle : string;
+   attribute romstyle of table : signal is "M10K";
+   signal tableAddr : integer range 0 to 511;
+
    signal rom_pointer : integer range 0 to 44;
    signal bytecount   : integer range 0 to 7;
    signal rumblecount : integer range 0 to 5;
@@ -163,8 +203,20 @@ begin
 
    joypad <= joypad1 when portNr = 0 else joypad2;
 
+   tableAddr <= 256 + rom_pointer when controllerState = ROMRESPONSE else
+                to_integer(unsigned(joypad.Analog2Y)) when controllerState = ANALOGRIGHTY else
+                to_integer(unsigned(joypad.Analog1X)) when controllerState = ANALOGLEFTX else
+                to_integer(unsigned(joypad.Analog1Y)) when controllerState = ANALOGLEFTY else
+                to_integer(unsigned(joypad.Analog2X));
+
    process (clk1x)
-      variable newAnalog : signed(8 downto 0) := (others => '0');
+   begin
+      if rising_edge(clk1x) then
+         analogLarge <= table(tableAddr);
+      end if;
+   end process;
+
+   process (clk1x)
    begin
       if rising_edge(clk1x) then
 
@@ -172,24 +224,6 @@ begin
          receiveBuffer  <= x"00";
 
          ack <= '0';
-
-         -- increase analog values by 1/8 and convert from -127..127 to 0..255
-         newAnalog := resize(joypad.Analog2X, 9);
-         case (controllerState) is
-            when ANALOGRIGHTX => newAnalog := resize(joypad.Analog2X, 9);
-            when ANALOGRIGHTY => newAnalog := resize(joypad.Analog2Y, 9);
-            when ANALOGLEFTX  => newAnalog := resize(joypad.Analog1X, 9);
-            when ANALOGLEFTY  => newAnalog := resize(joypad.Analog1Y, 9);
-            when others => null;
-         end case;
-
-         newAnalog := newAnalog + newAnalog / 8;
-
-         if    (newAnalog > 127) then newAnalog := to_signed(127, 9);
-         elsif (newAnalog < -128) then newAnalog := to_signed(-128, 9);
-         end if;
-
-         analogLarge <= std_logic_vector(to_unsigned(to_integer(newAnalog) + 128, 8));
 
          if (reset = '1') then
 
@@ -362,8 +396,16 @@ begin
                            elsif (command = COMMAND_4C) then
                               controllerState <= COMMAND4C;
                            elsif (command = COMMAND_RUMBLE) then
-                              controllerState <= UPDATERUMBLE;
-                              rumblecount     <= 0;
+                              if (RUMBLE_ECHO) then
+                                 controllerState <= UPDATERUMBLE;
+                                 rumblecount     <= 0;
+                              else
+                                 -- six 0xFF bytes from the table, the last without ack
+                                 rom_pointer     <= 36;
+                                 bytecount       <= 6;
+                                 controllerState <= ROMRESPONSE;
+                                 nextState       <= IDLE;
+                              end if;
                            elsif (command = COMMAND_GET_STATE) then
                               rom_pointer     <= 6;
                               bytecount       <= 2;
@@ -391,7 +433,7 @@ begin
                            receiveBuffer(6) <= not joypad.KeyDown;
                            receiveBuffer(7) <= not joypad.KeyLeft;
 
-                           if (digitalPadSave = '1') then
+                           if (digitalPadSave = '1' or (STICK_DPAD and dsSave = '1' and dsAnalogModeSave = '0' and dsConfigModeSave = '0')) then
                               if (to_integer(joypad.Analog1X) <= -64) then receiveBuffer(7) <= '0'; end if;
                               if (to_integer(joypad.Analog1X) >=  64) then receiveBuffer(5) <= '0'; end if;
                               if (to_integer(joypad.Analog1Y) <= -64) then receiveBuffer(4) <= '0'; end if;
@@ -547,20 +589,23 @@ begin
                            nextState       <= IDLE;
 
                         when UPDATERUMBLE =>
-                           receiveValid    <= '1';
-                           receiveBuffer   <= dsRumbleConfig(((8 * rumblecount) + 7) downto (8 * rumblecount));
-                           dsRumbleConfig(((8 * rumblecount) + 7) downto (8 * rumblecount)) <= transmitValue;
+                           -- reached with RUMBLE_ECHO only
+                           if (RUMBLE_ECHO) then
+                              receiveValid    <= '1';
+                              receiveBuffer   <= dsRumbleConfig(((8 * rumblecount) + 7) downto (8 * rumblecount));
+                              dsRumbleConfig(((8 * rumblecount) + 7) downto (8 * rumblecount)) <= transmitValue;
 
-                           if (rumblecount < 5) then
-                              rumblecount <= rumblecount + 1;
-                              ack         <= '1';
-                           else
-                              controllerState <= IDLE;
+                              if (rumblecount < 5) then
+                                 rumblecount <= rumblecount + 1;
+                                 ack         <= '1';
+                              else
+                                 controllerState <= IDLE;
+                              end if;
                            end if;
 
                         when ROMRESPONSE =>
                            if (bytecount > 0) then
-                              receiveBuffer   <= response(rom_pointer);
+                              receiveBuffer   <= analogLarge;
                               receiveValid    <= '1';
                               bytecount <= bytecount - 1;
                               rom_pointer <= rom_pointer + 1;

@@ -20,27 +20,33 @@ def main():
     sources=[ROOT/'rtl/pocket/psx_bios_loader.sv',ROOT/'rtl/pocket/psx_boot_gate.sv',
              ROOT/'sim/pocket/tb_bios_loader.sv',model]
     protected={str(p):digest(p) for p in (*sources,model_source,Path(__file__))}
-    def build(directory, selected):
+    def build(directory, selected, params=()):
         directory.mkdir()
         with (directory/'build.log').open('w') as log:
             subprocess.run([verilator,'--binary','--timing','-O3','-j','4','-Wno-fatal',
-                '--top-module','tb_bios_loader','--Mdir',str(directory/'obj'),
+                '--top-module','tb_bios_loader','--Mdir',str(directory/'obj'),*params,
                 *map(str,selected)],cwd=work,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
         return directory/'obj/Vtb_bios_loader'
     binary=build(work/'original',sources)
+    # Per-region BIOS slots (0x20-0x2f, Chip32 loadf): a full load from slot
+    # 0x25 and a rejected foreign slot, plus the foreign-slot case of the
+    # single-slot build.
+    REGIONS=('-GLOADER_ID=32','-GLOADER_MASK=65520')
+    regional=build(work/'regions',sources,REGIONS)
+    plan=[(binary,case,0) for case in range(15)]+[(regional,0,0x25),(regional,14,0x22)]
     runs=[]
-    for case in range(14):
-        directory=work/f'case{case}';directory.mkdir()
-        run=subprocess.run([str(binary),f'+CASE={case}'],cwd=work,capture_output=True,text=True,timeout=120)
+    for index,(selected,case,slot) in enumerate(plan):
+        directory=work/f'run{index}-case{case}';directory.mkdir()
+        run=subprocess.run([str(selected),f'+CASE={case}',f'+SLOT={slot}'],cwd=work,capture_output=True,text=True,timeout=120)
         log=directory/'run.log';log.write_text(run.stdout+run.stderr)
         passed=run.returncode==0 and log.read_text().count('PASS BIOS loader')==1 and not re.search(
             r'%Fatal|%Error|Assertion failed',log.read_text())
-        runs.append({'case':case,'passed':passed,'exit_code':run.returncode,'stdout':log.read_text(),
-                     'binary_sha256':digest(binary),'log_sha256':digest(log)})
+        runs.append({'case':case,'slot':slot,'regional':selected==regional,'passed':passed,'exit_code':run.returncode,
+                     'stdout':log.read_text(),'binary_sha256':digest(selected),'log_sha256':digest(log)})
         print(case,log.read_text(),flush=True)
         if not passed:break
     faults=[]
-    if len(runs)==14 and all(r['passed'] for r in runs):
+    if len(runs)==len(plan) and all(r['passed'] for r in runs):
         original=sources[0].read_text()
         mutations=(
             ('early-ready', 'if(allcomplete && (session==ACK_SLOT || session==ACTIVE)) complete_seen<=1;',
@@ -51,13 +57,18 @@ def main():
             ('byte-swap', 'data<=fifo_q;', 'data<={fifo_q[7:0],fifo_q[15:8],fifo_q[23:16],fifo_q[31:24]};',0,
                 'BIOS little-endian data mismatch'),
             ('wrong-address', 'address<=committed_words[16:0];','address<=committed_words[16:0]+1;',0,
-                'BIOS write address/mask/order'))
-        for name,before,after,case,marker in mutations:
+                'BIOS write address/mask/order'),
+            ('mask-ignored','(slot_id&BIOS_SLOT_MASK)==(BIOS_SLOT_ID&BIOS_SLOT_MASK)','slot_id==BIOS_SLOT_ID',0,
+                'BIOS loader timeout',REGIONS,0x25),
+            ('any-slot','(slot_id&BIOS_SLOT_MASK)==(BIOS_SLOT_ID&BIOS_SLOT_MASK)','1',14,
+                'Foreign slot acknowledged',REGIONS,0x22))
+        for name,before,after,case,marker,*extra in mutations:
+            params,slot=extra if extra else ((),0)
             if original.count(before)!=1:raise ValueError('loader fault anchor changed: '+name)
             directory=work/name;directory.mkdir()
             variant=directory/'psx_bios_loader.sv';variant.write_text(original.replace(before,after))
-            faulty=build(directory/'build',[variant,*sources[1:]])
-            run=subprocess.run([str(faulty),f'+CASE={case}'],cwd=work,capture_output=True,text=True,timeout=120)
+            faulty=build(directory/'build',[variant,*sources[1:]],params)
+            run=subprocess.run([str(faulty),f'+CASE={case}',f'+SLOT={slot}'],cwd=work,capture_output=True,text=True,timeout=120)
             log=directory/'run.log';log.write_text(run.stdout+run.stderr)
             rejected=run.returncode!=0 and marker in log.read_text()
             faults.append({'name':name,'rejected':rejected,'exit_code':run.returncode,
@@ -65,7 +76,7 @@ def main():
                 'log_sha256':digest(log),'stdout':log.read_text()})
             print(name,rejected,log.read_text(),flush=True)
     identity=all(digest(Path(p))==sha for p,sha in protected.items())
-    report={'passed':len(runs)==14 and all(r['passed'] for r in runs) and len(faults)==4
+    report={'passed':len(runs)==len(plan) and all(r['passed'] for r in runs) and len(faults)==6
                     and all(f['rejected'] for f in faults) and identity,
             'source_identity_verified':identity,'source_sha256':protected,'runs':runs,'faults':faults,
             'fixture':'authored image only, no BIOS/game assets','CPU_execution_verified':False,

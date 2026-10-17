@@ -105,6 +105,15 @@ class GPUStageRoute(unittest.TestCase):
         case('wrong-clock', period=29.5251, error='handoff2x clock differs')
         case('missing-clock', clock=False, error='handoff2x clock differs')
         case('reduced-hold-reserve', margin=0.1, error='unchanged150ps reserve')
+        case('legacy-caller-global-coupling')
+        # Recreate the actual bug: caller-local assignments plus procedure
+        # globals happen to work at top level but fail inside read_sdc's
+        # private evaluation namespace.
+        legacy = scope.replace('    lassign [gpu_stage_profile] gpu_stage_owner gpu_stage_fields',
+                               '    global gpu_stage_owner gpu_stage_fields')
+        self.assertEqual(scope.count('    lassign [gpu_stage_profile] gpu_stage_owner gpu_stage_fields'), 2)
+        legacy = legacy.replace('proc gpu_stage_key {name stage} {',
+                    'lassign [gpu_stage_profile] gpu_stage_owner gpu_stage_fields\nproc gpu_stage_key {name stage} {', 1)
         stubs = '''proc get_registers {args} {
  set result {};foreach pattern [lindex $args end] {foreach n $::nodes {
   if {$pattern eq $n || [string match $pattern $n]} {lappend result $n}
@@ -126,25 +135,31 @@ proc set_net_delay {args} {
         def quoted_list(names):
             return '[list ' + ' '.join('{' + n + '}' for n in names) + ']'
         with tempfile.TemporaryDirectory() as tmp:
-            for name, nodes, edges, error, period, margin, clock in cases:
-                fixture = (f'\nset nodes {quoted_list(nodes)}\nset edges [dict create]\n'
-                           f'set clock_period {period}\nset clock_present {int(clock)}\n'
-                           f'set pocket_cpu_hold_ns {margin}\nset route_called 0\n')
-                for a, b in edges.items():
-                    fixture += 'dict set edges {' + a + '} ' + quoted_list(b) + '\n'
-                p = Path(tmp) / (name + '.tcl')
-                p.write_text(stubs + fixture + scope + '\nif {!$route_called} {error "No routing guide"}\n'
-                             'puts "BANK_COUNTS [llength $route_sources] [llength $route_targets]"\n')
-                result = subprocess.run([*command, str(p)], text=True, capture_output=True, timeout=15)
-                with self.subTest(case=name):
-                    output = result.stdout + result.stderr
-                    if error:
-                        self.assertNotEqual(result.returncode, 0, output)
-                        self.assertIn(error, output)
-                    else:
-                        self.assertEqual(result.returncode, 0, output)
-                        self.assertIn('BANK_COUNTS ' + ('80 82' if name == 'physical-replicas' else '79 79'),
-                                      output)
+            for context in ('global', 'namespace'):
+                for name, nodes, edges, error, period, margin, clock in cases:
+                    fixture = (f'\nset nodes {quoted_list(nodes)}\nset edges [dict create]\n'
+                               f'set clock_period {period}\nset clock_present {int(clock)}\n'
+                               f'set pocket_cpu_hold_ns {margin}\nset route_called 0\n')
+                    for a, b in edges.items():
+                        fixture += 'dict set edges {' + a + '} ' + quoted_list(b) + '\n'
+                    body = legacy if name == 'legacy-caller-global-coupling' else scope
+                    if context == 'namespace':
+                        body = f'namespace eval sdc_reader {{\nset pocket_cpu_hold_ns {margin}\n' + body + '\n}\n'
+                    expected_error = ('gpu_stage_owner' if context == 'namespace' else None
+                                      ) if name == 'legacy-caller-global-coupling' else error
+                    p = Path(tmp) / (context + '-' + name + '.tcl')
+                    p.write_text(stubs + fixture + body + '\nif {!$route_called} {error "No routing guide"}\n'
+                                 'puts "BANK_COUNTS [llength $route_sources] [llength $route_targets]"\n')
+                    result = subprocess.run([*command, str(p)], text=True, capture_output=True, timeout=15)
+                    with self.subTest(case=name, context=context):
+                        output = result.stdout + result.stderr
+                        if expected_error:
+                            self.assertNotEqual(result.returncode, 0, output)
+                            self.assertIn(expected_error, output)
+                        else:
+                            self.assertEqual(result.returncode, 0, output)
+                            self.assertIn('BANK_COUNTS ' + ('80 82' if name == 'physical-replicas' else '79 79'),
+                                          output)
 
 
 if __name__ == '__main__':

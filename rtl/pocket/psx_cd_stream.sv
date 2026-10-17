@@ -20,6 +20,19 @@
 // its track by a short sequential search before the offset multiply.
 // MAX_TRACKS=1 is the original single-track loader.
 //
+// TABLE_OFFSET!=0 (one-file discs, any track count): the disc is one .bin
+// with every track back to back as on the disc (redump's track files
+// concatenated), so physical LBA 150+s is file sector s, and the slot
+// disc_slot+TABLE_OFFSET holds the disc's 400 track-info words (1,600 bytes,
+// little-endian, scripts/psx_disc_host.py layout) written by
+// make_pocket_instances.py from the cue. Each mount reads that file into the
+// last sector buffer and replays its words instead of the generated ones;
+// word 3 is the core's region with the file's LibCrypt mask (bits 15:0, from
+// the .sbi), so a one-file build needs no LIBCRYPT_SLOT, whose second held
+// buffer could leave none for a read racing the mount. Without a 1,600-byte
+// file the generated single-track table is used. Meant with MAX_TRACKS=1
+// and LIBCRYPT_SLOT=0.
+//
 // Host side (APF bridge clock): each sector is one APF target_dataslot_read
 // (opcode 0x180) of 2,352 bytes into a per-buffer bridge window at
 // STAGING_BRIDGE + buffer*4096. Up to NBUF buffers; free buffers prefetch the
@@ -62,7 +75,8 @@ module psx_cd_stream #(
     parameter integer MAX_TRACKS=1,
     parameter [15:0] TRACK_STRIDE=16'h0100,  // slot ID step between track files
     parameter [15:0] LIBCRYPT_SLOT=16'h0,    // slot of the disc's .sbi file (0: no LibCrypt)
-    parameter [15:0] DISC_STEP=16'h0         // multi-disc game files: disc n starts at DEFAULT_SLOT+(n-1)*DISC_STEP (0: off)
+    parameter [15:0] DISC_STEP=16'h0,        // multi-disc game files: disc n starts at DEFAULT_SLOT+(n-1)*DISC_STEP (0: off)
+    parameter [15:0] TABLE_OFFSET=16'h0      // one-file discs: track table file in slot disc+TABLE_OFFSET (0: off)
 ) (
     input wire host_clk, host_reset,
     input wire bridge_wr,
@@ -128,6 +142,7 @@ module psx_cd_stream #(
     reg [7:0] m_minutes=0, m_seconds=0;
     reg [TB:0] m_ntracks=1;
     reg [11:0] m_lc_bytes=0;          // bytes of the .sbi in buffer 0 (0: none)
+    reg m_tb=0;                       // TABLE_OFFSET: track table file in buffer NBUF-1
     reg [3:0] m_present=0;            // DISC_STEP: discs found in the APF table
     // Track table (MAX_TRACKS>1), one block RAM entry per track-info word:
     // entry {k,w} holds word w of record k (0: first physical LBA of file k,
@@ -178,8 +193,12 @@ module psx_cd_stream #(
     // LibCrypt (LIBCRYPT_SLOT!=0): after the tracks, the mount looks the
     // .sbi slot up and reads the file (at most one sector) into buffer 0;
     // the core side turns it into cd_top's 16-bit LibCrypt mask.
-    reg lc_done=0, lc_cmd=0;
+    // TABLE_OFFSET: the same lookup and read fetch the track table file
+    // first (side_tb), into the last buffer.
+    reg lc_done=0, lc_cmd=0, tb_done=0, tb_ok=0, side_tb=0;
     reg [11:0] lc_bytes=0;
+    localparam [SB-1:0] TB_BUF=NBUF-1;
+    wire [15:0] side_slot=side_tb ? cur_slot+TABLE_OFFSET : LIBCRYPT_SLOT;
     reg [31:0] pending_size=0;
 
     // Mount sequencer: table lookup, then one subtraction per sector that
@@ -236,6 +255,7 @@ module psx_cd_stream #(
 
     integer i;
     wire lc_hold=LIBCRYPT_SLOT!=0 && mount_waiting && m_lc_bytes!=0;
+    wire tb_hold=TABLE_OFFSET!=0 && mount_waiting && m_tb;
     reg found_ready, found_filling, found_free;
     reg [SB-1:0] ready_buf, free_buf;
     always @* begin
@@ -245,7 +265,7 @@ module psx_cd_stream #(
             if(bstate[i]==B_FILLING && !bstale[i] && btag[i]==dem_lba) found_filling=1;
             // With LibCrypt, buffer 0 holds the .sbi until the core has
             // parsed it (mount acknowledged); other buffers keep serving.
-            if(bstate[i]==B_EMPTY && !(i==0 && lc_hold)) begin found_free=1;free_buf=i[SB-1:0];end
+            if(bstate[i]==B_EMPTY && !(i==0 && lc_hold) && !(i==NBUF-1 && tb_hold)) begin found_free=1;free_buf=i[SB-1:0];end
         end
     end
 
@@ -256,9 +276,9 @@ module psx_cd_stream #(
     wire [SB+9:0] write_index=base(cmd_buf)+bridge_addr[11:2];
     always @(posedge host_clk) if(accept_word) sectors[write_index]<=bridge_data;
 
-    assign target_id=lc_cmd ? LIBCRYPT_SLOT : MAX_TRACKS>1 ? fetch_slot : cur_slot;
+    assign target_id=lc_cmd ? side_slot : MAX_TRACKS>1 ? fetch_slot : cur_slot;
     assign target_bridge=STAGING_BRIDGE+{cmd_buf,12'h000};
-    assign target_length=lc_cmd ? {20'b0,lc_bytes} : 32'd2352;
+    assign target_length=lc_cmd ? (side_tb ? 32'd1600 : {20'b0,lc_bytes}) : 32'd2352;
     assign host_busy=cmd_busy || target_read;
 
     wire mount_idle=!cmd_busy && !serving && !dem_valid && !mount_waiting;
@@ -276,7 +296,7 @@ module psx_cd_stream #(
             cur_slot<=DEFAULT_SLOT;next_slot<=DEFAULT_SLOT;disc_valid<=0;disc_end<=0;
             dem_valid<=0;ahead_ok<=0;cmd_busy<=0;done_low_seen<=0;accepted<=0;dem_lba<=0;next_fetch<=0;
             cmd_buf<=0;serve_buf<=0;serving<=0;target_read<=0;read_error<=0;
-            mount_pending<=0;mount_waiting<=0;have_size<=0;pending_size<=0;mounted_once<=0;pending_file<=0;read_since_mount<=0;lc_done<=0;lc_cmd<=0;lc_bytes<=0;m_lc_bytes<=0;probe_done<=0;present<=0;m_present<=0;
+            mount_pending<=0;mount_waiting<=0;have_size<=0;pending_size<=0;mounted_once<=0;pending_file<=0;read_since_mount<=0;lc_done<=0;lc_cmd<=0;lc_bytes<=0;m_lc_bytes<=0;tb_done<=0;tb_ok<=0;side_tb<=0;m_tb<=0;probe_done<=0;present<=0;m_present<=0;
             mstate<=M_IDLE;tindex<=0;twait<=0;tsize_word<=0;too_long<=0;remaining<=0;frames<=0;
             mul_busy<=0;mul_x<=0;mul_n<=0;
             track_sectors<=0;seek_busy<=0;f_wait<=0;f_k<=0;f_lba<=0;f_base<=0;m_ntracks<=1;t_we<=0;
@@ -321,7 +341,7 @@ module psx_cd_stream #(
                     bstale[cmd_buf]<=0;
                     bkind[cmd_buf]<=target_error!=0 ? K_FILL : K_DATA;
                     lc_cmd<=0;
-                    if(target_error!=0) begin if(lc_cmd) lc_bytes<=0; else read_error<=1; end
+                    if(target_error!=0) begin if(lc_cmd && side_tb) tb_ok<=0; else if(lc_cmd) lc_bytes<=0; else read_error<=1; end
                 end
             end
 
@@ -374,25 +394,30 @@ module psx_cd_stream #(
                         end
                     M_PUBLISH: if(DISC_STEP!=0 && !probe_done) begin
                         probe_done<=1;present<=0;tindex<=0;twait<=0;tsize_word<=0;mstate<=M_PROBE;
+                    end else if(TABLE_OFFSET!=0 && disc_valid && !tb_done) begin
+                        tb_done<=1;tb_ok<=0;side_tb<=1;tindex<=0;twait<=0;tsize_word<=0;mstate<=M_LOOK_LC;
                     end else if(LIBCRYPT_SLOT!=0 && disc_valid && !lc_done) begin
-                        lc_done<=1;lc_bytes<=0;tindex<=0;twait<=0;tsize_word<=0;mstate<=M_LOOK_LC;
+                        lc_done<=1;lc_bytes<=0;side_tb<=0;tindex<=0;twait<=0;tsize_word<=0;mstate<=M_LOOK_LC;
                     end else begin
                         m_valid<=disc_valid;m_end<=disc_end;m_slot<=cur_slot;
                         m_lc_bytes<=disc_valid ? lc_bytes : 12'd0;
+                        m_tb<=disc_valid && tb_ok;
                         m_present<=present;
                         if(disc_valid) mounted_once<=1;
                         mount_t<=~mount_t;mount_waiting<=1;mstate<=M_IDLE;
                     end
-                    // The .sbi: header plus 14-byte entries, one sector at most.
+                    // The track table (side_tb: exactly 400 words) or the .sbi
+                    // (header plus 14-byte entries, one sector at most).
                     M_LOOK_LC: if(!table_grant) twait<=0;
                         else if(twait!=2) twait<=twait+1'b1;
                         else if(!tsize_word) begin
-                            if(table_q[15:0]==LIBCRYPT_SLOT) begin tsize_word<=1;twait<=0;end
+                            if(table_q[15:0]==side_slot) begin tsize_word<=1;twait<=0;end
                             else if(tindex==31) mstate<=M_PUBLISH;
                             else begin tindex<=tindex+1'b1;twait<=0;end
-                        end else if(table_q>32'd4 && table_q<=32'd2352) begin
-                            lc_bytes<=table_q[11:0];lc_cmd<=1;cmd_buf<=0;bstale[0]<=1;
-                            cmd_busy<=1;done_low_seen<=0;accepted<=0;mul_x<=0;target_read<=1;
+                        end else if(side_tb ? table_q==32'd1600 : table_q>32'd4 && table_q<=32'd2352) begin
+                            if(side_tb) begin tb_ok<=1;cmd_buf<=TB_BUF;bstale[TB_BUF]<=1;end
+                            else begin lc_bytes<=table_q[11:0];cmd_buf<=0;bstale[0]<=1;end
+                            lc_cmd<=1;cmd_busy<=1;done_low_seen<=0;accepted<=0;mul_x<=0;target_read<=1;
                             mstate<=M_READ_LC;
                         end else mstate<=M_PUBLISH;
                     M_READ_LC: if(!cmd_busy) mstate<=M_PUBLISH;
@@ -419,7 +444,7 @@ module psx_cd_stream #(
             end else if(mount_pending && mount_idle) begin
                 // Starting a mount: drop every buffered sector of the old disc.
                 for(i=0;i<NBUF;i=i+1) begin bstate[i]<=B_EMPTY;bstale[i]<=0;end
-                ahead_ok<=0;mount_pending<=0;cur_slot<=next_slot;disc_valid<=0;read_since_mount<=h_req_edge;lc_done<=0;probe_done<=0;
+                ahead_ok<=0;mount_pending<=0;cur_slot<=next_slot;disc_valid<=0;read_since_mount<=h_req_edge;lc_done<=0;tb_done<=0;probe_done<=0;
                 // m_ntracks counts whole tracks from here; the core reads
                 // it only after the publish, and no fetch runs while mounting.
                 f_k<=0;m_ntracks<=0;track_sectors<=0;
@@ -548,7 +573,11 @@ module psx_cd_stream #(
         end
     endfunction
     // Same-clock data, valid with trackinfo_write.
-    assign trackinfo_data=track_word(trackinfo_addr,c_q);
+    // TABLE_OFFSET: the file's words from buffer NBUF-1 (q, addressed one
+    // state ahead); word 3 takes the region from the core, the LibCrypt mask
+    // from the file.
+    assign trackinfo_data=TABLE_OFFSET==0 || !m_tb ? track_word(trackinfo_addr,c_q) :
+        trackinfo_addr==3 ? {14'b0,host_region,q[15:0]} : q;
 
     always @(posedge clk) begin
         disc_change_done<=0;
@@ -572,6 +601,7 @@ module psx_cd_stream #(
                         mount_seen<=0;track_index<=0;guest_idle<=1;
                         lc_key<=0;lc_b<=12'd4;discs_present<=m_present;
                         if(!m_valid) disc_settled<=1;   // no disc: settled now; a disc settles after its table
+                        rd_addr<=base(NBUF-1);   // track table file words (TABLE_OFFSET)
                         if(m_valid) cstate<=LIBCRYPT_SLOT!=0 && m_lc_bytes!=0 ? C_LC_ADDR : C_TRACK;
                         else begin has_disc<=0;mount_done_t<=~mount_done_t;disc_change_done<=selection_current;end
                     end else if(cd_hps_req && !cd_hps_ack) begin
@@ -604,11 +634,11 @@ module psx_cd_stream #(
                     if(track_index==399) begin
                         has_disc<=1;disc_settled<=1;mount_done_t<=~mount_done_t;disc_change_done<=selection_current;cstate<=C_IDLE;
                         disc_generation<=disc_generation+1'b1;
-                    end else begin track_index<=track_index+1'b1;cstate<=C_TRACK;end
+                    end else begin track_index<=track_index+1'b1;rd_addr<=rd_addr+1'b1;cstate<=C_TRACK;end
                 end
                 // One entry per pass: read its word and the next, take the
                 // MSF from byte lane 0 or 2, then step 14 bytes.
-                C_LC_ADDR: if({1'b0,lc_b}+13'd3>{1'b0,m_lc_bytes}) cstate<=C_TRACK;
+                C_LC_ADDR: if({1'b0,lc_b}+13'd3>{1'b0,m_lc_bytes}) begin rd_addr<=base(NBUF-1);cstate<=C_TRACK;end
                     else begin rd_addr<=base(0)+lc_b[11:2];cstate<=C_LC_NEXT;end
                 C_LC_NEXT: begin rd_addr<=rd_addr+1'b1;cstate<=C_LC_FIRST;end
                 // MM:SS:FF from byte lane 0 of the first word, or lanes 2-3

@@ -1,0 +1,603 @@
+// SPDX-License-Identifier: MIT
+// Firmware for psx_cue_mount (SERV, RV32I): play a .cue or .bin picked from
+// the launch list or with "Load disc" (docs/pocket-cue-loading.md).
+//
+// The hardware (rtl/pocket/psx_cue_mount.sv) gives this program:
+//   - APF target commands (read, getfile, openfile) with wired fields,
+//   - the path struct (0x2000) and a 512-byte read window (0x2200) in RAM,
+//   - the stream's held target request (id, offset, length) and its done,
+//   - slot updates for the stream, its allcomplete, and the size it sees for
+//     the disc and table slots,
+//   - bridge writes into the stream's window (the generated table file).
+// Built by scripts/build_cue_fw.py into rtl/pocket/psx_cue_fw.hex.
+//
+// A pick is sniffed with a 4-byte read: from the launch list '{' or nothing
+// readable is a game JSON, left to APF. A raw sector starts with 0x00: a
+// plain image, passed on unchanged from Load disc, or from the launch list
+// measured and read through LAUNCH_SLOT. Anything else is a cue: getfile
+// gives its folder; FILE / TRACK / INDEX / PREGAP are parsed (non-raw track
+// types, more than 99 files or tracks fail); every FILE is opened into
+// FILE_SLOT and measured with 4-byte reads (APF reports no size for a
+// core-opened file and fails a read past the end); the layout is checked as
+// make_pocket_instances.py one_file_plan() does. The disc is then the files
+// back to back, with the track table of track_table().
+//
+// Multi-disc games: a cue whose path names "(Disc d)" (redump) has siblings
+// with the other numbers. With the core menu's Disc list (prepare
+// --disc-menu), every disc slot shows this program's disc; when the menu
+// asks for disc k, the stream's table lookups wait (menu_hold) while the
+// sibling cue is opened into CUE2_SLOT and mounted in place of the current
+// one. A disc the game doesn't have keeps the current one. The disc picked
+// at launch wins over the Disc remembered from an earlier game.
+//
+// A .m3u playlist (as DuckStation reads them: one disc per line, relative
+// to the playlist, # comments) is a multi-disc game with one save: its
+// first entry is mounted, and the menu's Disc k is entry k. Entries are
+// cues or plain images, opened into CUE2_SLOT.
+
+typedef unsigned int u32;
+typedef unsigned char u8;
+
+#define IO      ((volatile u32 *)0x80000000)
+#define INJ     ((volatile u32 *)0xC0000000)   // word w of the stream's window
+#define PATH    ((volatile u8 *)0x2000)
+#define PATHW   ((volatile u32 *)0x2000)
+#define CHUNK   ((volatile u8 *)0x2200)
+
+// IO writes
+enum { W_CMD, W_IDLEN, W_OFF, W_DONE, W_UPD, W_FLAGS, W_DISC, W_CLR };
+// IO reads
+// R_STATUS: status in bits 7:0, the menu's Disc in 9:8, the stream's slot
+// in 18:10 and length in 30:19, bit 31 set when LibCrypt is on (ST_LC)
+enum { R_STATUS, R_UOFF };
+#define ST_ERR   7u
+#define ST_CMD   8u      // a command is running
+#define ST_U     16u     // the stream's read is waiting
+#define ST_UPD   32u     // a Load disc pick is waiting
+#define ST_BOOT  64u     // allcomplete rose: the launch list's file
+#define ST_MENU  128u    // the menu's Disc is not the one loaded (stream lookups wait)
+#define ST_LC    0x80000000u   // read the cue's .sbi (prepare --cue-libcrypt)
+#define CLR_MENU 128u    // W_CLR: forget that the menu was open (a later DISC_SLOT update is no pick)
+enum { K_READ = 0, K_GETFILE = 1, K_OPEN = 2, K_USEU = 4 };   // K_USEU: into the stream's window
+#define F_ALLC    1u     // the stream's allcomplete
+#define F_MOUNTED 2u     // a cue is the disc
+#define F_FAILED  4u     // the last cue did not mount
+#define F_VDISC   8u     // the stream sees DISC_SLOT at W_DISC bytes
+#define F_VTABLE  16u    // the stream sees TABLE_SLOT at 1,600 bytes
+#define F_IDLE    32u    // the stream may start a read
+#define F_ACCEPT  64u    // any DISC_SLOT update is a pick (not only after the menu)
+#define F_DISC    0x300u // the menu Disc the disc was loaded for (bits 9:8)
+
+#define DISC_SLOT   101u
+#define LAUNCH_SLOT 0u
+#define TABLE_SLOT  102u
+#define FILE_SLOT   103u
+#define CUE_SLOT    100u    // a game JSON's cue (Pocket Sync, pupdate, make_pocket_instances.py)
+#define CUE2_SLOT   104u    // another disc's cue, opened by this program
+#define MAXF 99u
+#define MAXT 99u
+#define NONE 0xffu
+
+#define BIG __attribute__((section(".big")))
+#define NOINLINE __attribute__((noinline))   // code space: 8 KiB
+static u32 fname[MAXF] BIG;        // name offset in the cue | length << 16 | PREGAP sectors before it << 24
+static u32 fsec[MAXF + 1] BIG;     // first sector; fsec[nfiles] = total
+static u32 tstart[MAXT] BIG;       // parse: sectors in the file | file << 24; then absolute
+static u32 ti1[MAXT] BIG;          // INDEX 01, as tstart (| audio << 31 while parsing)
+static u8 base[256] BIG;           // the picked cue's path, for its sibling discs
+static u32 marks[4], nmarks;       // where base names its disc number
+static u32 fb;                     // '0' + the disc of the cue base names; 0: a playlist entry
+static u32 cur;                    // its disc number d from "(Disc d)", 0 for none
+static u32 lcmask;                 // the disc's LibCrypt mask (table word 3)
+static u32 lead;                   // sectors before track 1's INDEX 01 in the first file, not on the disc
+
+static u32 flags, nfiles, ntracks, total, open_file, dirlen, pick, cue_size, bin;
+static u32 rd = FILE_SLOT;         // where file k is read: FILE_SLOT, or (DISC_SLOT) a game JSON's slot 101 + k
+static u32 json;                   // the cue came from a game JSON (its .bin is in DISC_SLOT)
+static u32 cbase, clen, cpos;      // read window: cue bytes [cbase, cbase+clen); next byte
+static int c;                      // the byte being parsed, -1 at the end
+
+// RV32I has no multiply; the compiler calls this.
+u32 __mulsi3(u32 a, u32 b) { u32 r = 0; while (b) { if (b & 1) r += a; a <<= 1; b >>= 1; } return r; }
+// The compiler turns the counting loops below into divisions.
+u32 __udivsi3(u32 n, u32 d) {
+    u32 q = 0, r = 0;
+    for (int i = 31; i >= 0; i--) { r = r << 1 | (n >> i & 1); if (r >= d) { r -= d; q |= 1u << i; } }
+    return q;
+}
+u32 __umodsi3(u32 n, u32 d) { return n - __udivsi3(n, d) * d; }
+static u32 sectors_to_bytes(u32 n) { return (n << 11) + (n << 8) + (n << 5) + (n << 4); }   // n * 2352
+
+static void setf(u32 f) { flags = f; IO[W_FLAGS] = f; }
+
+// One APF target command; its error (0 = done).
+NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
+    IO[W_IDLEN] = id | len << 16;
+    IO[W_OFF] = off;
+    IO[W_CMD] = kind;
+    u32 s;
+    while ((s = IO[R_STATUS]) & ST_CMD) ;
+    return s & ST_ERR;
+}
+
+// The largest n < 2^(k+1) whose word ending at n*unit reads (n >= 1, or 0).
+static u32 probe(u32 slot, u32 unit, int k) {
+    u32 n = 0;
+    for (; k >= 0; k--) {
+        u32 t = n | 1u << k, end = t * unit;
+        if (end >= 4 && !cmd(K_READ, slot, end - 4, 4)) n = t;
+    }
+    return n;
+}
+
+// ---------------- cue text ----------------
+NOINLINE static int getb(void) {
+    if (cpos >= cue_size) return -1;
+    if (cpos < cbase || cpos >= cbase + clen) {
+        u32 base = cpos & ~3u, left = cue_size - base;
+        u32 len = left >= 256 ? 256 : left & ~3u;
+        if (!len) { base = cue_size - 4; len = 4; }   // under a word left: the last word
+        clen = 0;
+        if (cmd(K_READ, pick, base, len)) return -2;
+        cbase = base; clen = len;
+    }
+    return CHUNK[cpos++ - cbase];
+}
+NOINLINE static void adv(void) { if (c >= 0) c = getb(); }
+static int space(int x) { return x == ' ' || x == '\t' || x >= 0x80; }   // high bytes: a UTF-8 BOM
+static int eol(int x) { return x == '\n' || x == '\r' || x < 0; }
+static int upper(int x) { return x >= 'a' && x <= 'z' ? x - 32 : x; }
+static int digit(int x) { return x >= '0' && x <= '9'; }
+static void skipsp(void) { while (c >= 0 && space(c)) adv(); }
+static u32 number(int *ok) {
+    u32 v = 0; *ok = digit(c);
+    while (digit(c)) { v = v * 10 + (u32)(c - '0'); adv(); }
+    return v;
+}
+
+// The current track's INDEX 00/01 and PREGAP into tstart and ti1; 0 if
+// it can't mount.
+static int finish(int has0, int has1, u32 i0, u32 i1, int audio, u32 pg) {
+    u32 r = ntracks - 1, f = nfiles - 1;
+    if (!has1) return 0;
+    if (pg) {
+        // Only before a file's first track, at the file's first sector.
+        if (has0 || i1 || (r && tstart[r - 1] >> 24 == f)) return 0;
+        fname[f] |= pg << 24;
+    }
+    tstart[r] = (has0 ? i0 : i1) | f << 24;
+    ti1[r] = i1 | (u32)audio << 31;
+    return 1;
+}
+
+// MM:SS:FF in frames; 0 with *ok clear on bad syntax.
+static u32 frames(int *ok) {
+    u32 mm, ss, ff;
+    mm = number(ok); if (!*ok || c != ':') return *ok = 0; adv();
+    ss = number(ok); if (!*ok || c != ':') return *ok = 0; adv();
+    ff = number(ok);
+    return (mm * 60 + ss) * 75 + ff;
+}
+
+// FILE / TRACK / INDEX / PREGAP into fname, tstart and ti1; 0 on a cue that
+// can't mount. A PREGAP (silence not in the files) is taken for the first
+// track of a file starting at its first sector: those sectors read as zeros
+// before the file.
+NOINLINE static int parse(void) {
+    int ht = 0, has0 = 0, has1 = 0, audio = 0, ok;
+    u32 i0 = 0, i1 = 0, pg = 0;
+    nfiles = ntracks = 0;
+    cbase = clen = cpos = 0;
+    c = getb();
+    for (;;) {
+        while (c >= 0 && (eol(c) || space(c))) adv();
+        if (c == -2) return 0;
+        if (c < 0) break;
+        int k0 = upper(c), k1 = 0;
+        adv();
+        if (!eol(c) && !space(c)) k1 = upper(c);
+        while (!eol(c) && !space(c)) adv();
+        skipsp();
+        // Keywords by their first two letters (FIle, TRack, INdex, PRegap;
+        // the others differ).
+        if ((k0 == 'F' && k1 == 'I') || (k0 == 'T' && k1 == 'R')) {
+            if (ht) {
+                if (!finish(has0, has1, i0, i1, audio, pg)) return 0;
+            }
+            ht = 0;
+            if (eol(c)) return 0;
+            if (k0 == 'F') {
+                if (nfiles == MAXF) return 0;
+                u32 len = 0, off;
+                if (c == '"') { adv(); off = cpos - 1; while (!eol(c) && c != '"') { len++; adv(); } }
+                else { off = cpos - 1; while (!eol(c) && c != ' ' && c != '\t') { len++; adv(); } }
+                if (!len || len > 255) return 0;
+                fname[nfiles++] = off | len << 16;
+            } else {
+                if (!nfiles || ntracks == MAXT) return 0;
+                number(&ok);
+                if (!ok || !space(c)) return 0;
+                skipsp();
+                // AUDIO, or a raw data type (MODE1/2352, MODE2/2352)
+                int first = upper(c), t0 = 0, t1 = 0;
+                while (!eol(c) && !space(c)) { t0 = t1; t1 = c; adv(); }
+                audio = first == 'A';
+                if (!audio && !(t0 == '5' && t1 == '2')) return 0;
+                ntracks++; ht = 1; has0 = has1 = 0; i0 = i1 = pg = 0;
+            }
+        } else if (k0 == 'I' && k1 == 'N') {
+            if (!ht || eol(c)) return 0;
+            u32 n = number(&ok);
+            if (!ok || !space(c)) return 0;
+            skipsp();
+            u32 f = frames(&ok);
+            if (!ok) return 0;
+            if (n == 0) { i0 = f; has0 = 1; }
+            else if (n == 1) { i1 = f; has1 = 1; }
+        } else if (k0 == 'P' && k1 == 'R') {
+            if (!ht || has0 || has1) return 0;
+            pg = frames(&ok);
+            if (!ok || pg > 255) return 0;
+        }
+        while (!eol(c)) adv();
+        if (c == -2) return 0;
+    }
+    if (ht) {
+        if (!finish(has0, has1, i0, i1, audio, pg)) return 0;
+    }
+    return nfiles && ntracks;
+}
+
+// Build "<cue folder><name of file k>" in the path struct and open it into
+// FILE_SLOT; its error (0 = open).
+NOINLINE static u32 open(u32 k) {
+    u32 off = fname[k] & 0xffff, len = fname[k] >> 16 & 0xff, at = off & 3, err;
+    if (rd == DISC_SLOT) { open_file = k; return 0; }
+    open_file = NONE;
+    if (dirlen + len > 255) return 1;
+    clen = 0;
+    if ((err = cmd(K_READ, pick, off & ~3u, (len + at + 3) & ~3u))) return err;
+    for (u32 i = 0; i < len; i++) { u32 x = CHUNK[at + i]; PATH[dirlen + i] = x == '\\' ? '/' : x; }
+    PATH[dirlen + len] = 0;
+    err = cmd(K_OPEN, FILE_SLOT, 0, 0);
+    // A one-file cue whose .bin was renamed along with it: "<cue name>.bin".
+    if (err && nfiles == 1 && fb) {
+        u32 i = 0;
+        for (; i < 255 && base[i]; i++) PATH[i] = base[i];
+        for (u32 m = 0; m < nmarks; m++) PATH[marks[m]] = fb;
+        if (i > 4 && PATH[i - 4] == '.') {
+            PATH[i - 3] = 'b'; PATH[i - 2] = 'i'; PATH[i - 1] = 'n'; PATH[i] = 0;
+            err = cmd(K_OPEN, FILE_SLOT, 0, 0);
+        }
+    }
+    IO[W_CLR] = CLR_MENU;
+    if (err) return err;
+    open_file = k;
+    return 0;
+}
+
+// ---------------- track table (make_pocket_instances.py track_table) ----------------
+static u32 bcd(u32 v) { u32 t = 0; while (v >= 10) { v -= 10; t++; } return t << 4 | v; }
+static u32 msf(u32 v) {   // bcd(min) << 8 | bcd(sec) of v sectors
+    u32 m = 0, s = 0;
+    while (v >= 4500) { v -= 4500; m++; }
+    while (v >= 75) { v -= 75; s++; }
+    return bcd(m) << 8 | bcd(s);
+}
+NOINLINE static u32 table_word(u32 w) {
+    if (w == 0) return bcd(ntracks) << 8 | ntracks;
+    if (w == 1) return total + 150;
+    if (w == 2) return msf(total + 150);
+    if (w == 3) return lcmask;   // region (set by the stream), LibCrypt mask
+    u32 r = (w - 4) >> 2;
+    if (r >= ntracks) return 0;
+    switch (w & 3) {
+    case 0: return r ? tstart[r] + 150 : 0;
+    case 1: return (r + 1 < ntracks ? tstart[r + 1] : total) + 149;
+    case 2: return (r ? 1u << 16 : 0) | msf(ti1[r] + 150);
+    default: return 0;
+    }
+}
+
+// ---------------- mount ----------------
+// How a mount reports: a Load disc pick sends the stream a slot update, a
+// launch pick releases its allcomplete, a menu Disc does neither.
+enum { M_PICK, M_LAUNCH, M_MENU, PRESET = 4 };   // PRESET: the path struct holds the cue's path
+
+static u32 bin_slot;                     // a plain image's slot (bin)
+static u32 m3u_n, m3u_slot, m3u_ent[4];  // playlist entries: offset | length << 16
+
+static int is_disc(u32 id) { return id == 101 || id == 201 || id == 301 || id == 401; }
+
+static void fail(int mode) {
+    bin = 0;
+    setf((flags & ~(F_MOUNTED | F_VDISC | F_VTABLE)) | F_FAILED | (mode == M_LAUNCH ? F_ALLC : 0));
+    if (mode == M_PICK) IO[W_UPD] = 0;
+}
+
+static void cue(u32 slot, u32 size, int mode);
+
+// A game JSON: APF loads its slots. One from make_pocket_instances.py has
+// the track table in TABLE_SLOT; Pocket Sync's and pupdate's have only the
+// cue in CUE_SLOT and its files, so the cue is read as if it had been picked.
+static void game_json(void) {
+    // A track table is 1,600 bytes; a 0.5.2 JSON has track 2's .bin there.
+    if ((!cmd(K_READ, TABLE_SLOT, 0, 4) && cmd(K_READ, TABLE_SLOT, 1600, 4)) || cmd(K_READ, CUE_SLOT, 0, 4)) { setf(flags | F_ALLC); return; }
+    bin = 0; open_file = NONE;
+    json = 1;
+    cue(CUE_SLOT, probe(CUE_SLOT, 1, 13), M_LAUNCH);
+    json = 0;
+}
+
+static void mount(u32 slot) {
+    int mode = slot == LAUNCH_SLOT ? M_LAUNCH : M_PICK;
+    pick = slot; cur = 0; m3u_n = 0;
+    if (cmd(K_READ, slot, 0, 4)) {
+        if (mode == M_LAUNCH) game_json();   // nothing readable: APF's game JSON
+        else fail(mode);
+        return;
+    }
+    u32 c0 = CHUNK[0];
+    bin = 0; open_file = NONE;
+    setf(flags & ~(F_MOUNTED | F_VDISC | F_VTABLE));
+    if (mode == M_LAUNCH && c0 == '{') { game_json(); return; }
+    if (c0 == 0) {
+        // A raw sector: an ordinary disc image, found by size. Picked with
+        // Load disc it goes to the stream; from the launch list it is read
+        // through LAUNCH_SLOT.
+        u32 n = probe(slot, 2352, 18);
+        if (!n) { fail(M_LAUNCH); return; }
+        if (mode == M_PICK) { setf(flags & ~F_FAILED); IO[W_UPD] = sectors_to_bytes(n); return; }
+        IO[W_DISC] = sectors_to_bytes(n);
+        bin = 1; bin_slot = LAUNCH_SLOT;
+        setf((flags & ~F_FAILED) | F_VDISC | F_ALLC);
+        return;
+    }
+    cue(slot, probe(slot, 1, 13), mode);
+}
+
+// Where base names its disc number ("(Disc d)" in the folder and the file
+// name, at most four), and that number in cur.
+NOINLINE static void find_marks(void) {
+    static const char pat[] = "(Disc ";
+    nmarks = 0; cur = 0;
+    for (u32 i = 0; i + 7 < 256 && base[i]; i++) {
+        u32 j = 0;
+        while (j < 6 && base[i + j] == (u8)pat[j]) j++;
+        if (j == 6 && base[i + 7] == ')' && base[i + 6] >= '1' && base[i + 6] <= '9' && nmarks < 4) {
+            if (!cur) cur = base[i + 6] - '0';
+            if (base[i + 6] - '0' == cur) marks[nmarks++] = i + 6;
+        }
+    }
+}
+
+// Open disc k's cue (base with its number) into CUE2_SLOT; its error.
+static u32 open_disc(u32 k) {
+    u32 i = 0;
+    for (; i < 255 && base[i]; i++) PATH[i] = base[i];
+    PATH[i] = 0;
+    for (u32 m = 0; m < nmarks; m++) PATH[marks[m]] = '0' + k;
+    fb = '0' + k;
+    PATHW[64] = 0; PATHW[65] = 0;
+    u32 err = cmd(K_OPEN, CUE2_SLOT, 0, 0);
+    IO[W_CLR] = CLR_MENU;
+    open_file = NONE;
+    return err;
+}
+
+// The 16 LibCrypt sector addresses (BCD MM:SS:FF) behind mask bits 15..0
+// (make_pocket_instances.py LIBCRYPT_MSF).
+static const u32 lc_msf[16] = {0x030805, 0x030956, 0x031310, 0x031429, 0x031524, 0x031849, 0x032056, 0x032155,
+                               0x032317, 0x032412, 0x032503, 0x032828, 0x033219, 0x033356, 0x033451, 0x033542};
+
+// LibCrypt mask from the redump .sbi next to the cue (same name; path in
+// the path struct up to n). 4-byte header, 14-byte entries; 0 if none.
+NOINLINE static u32 sbi_mask(u32 n) {
+    if (n < 4 || PATH[n - 4] != '.') return 0;
+    PATH[n - 3] = 's'; PATH[n - 2] = 'b'; PATH[n - 1] = 'i';
+    u32 err = cmd(K_OPEN, FILE_SLOT, 0, 0), mask = 0;
+    IO[W_CLR] = CLR_MENU;
+    open_file = NONE;
+    if (err) return 0;
+    u32 save_pick = pick, save_size = cue_size;
+    pick = FILE_SLOT; cue_size = probe(FILE_SLOT, 1, 11);
+    clen = 0;
+    for (cpos = 4; cpos + 3 <= cue_size; cpos += 11) {
+        int a = getb(), b = getb(), c3 = getb();
+        if (c3 < 0) break;
+        u32 msf = (u32)a << 16 | (u32)b << 8 | (u32)c3;
+        for (u32 i = 0; i < 16; i++) if (msf == lc_msf[i]) mask |= 0x8000u >> i;
+    }
+    pick = save_pick; cue_size = save_size; clen = 0;
+    return mask;
+}
+
+// A cue (at most 16 KiB) in slot: its folder, its text, its files. For a
+// menu Disc the path struct already holds its path.
+static void playlist(u32 slot, int mode);
+static void cue(u32 slot, u32 size, int mode) {
+    int preset = mode & PRESET;
+    mode &= 3;
+    pick = slot;
+    if (!size || size > 0x3fff) { fail(mode); return; }
+    cue_size = size;
+    if (!preset && cmd(K_GETFILE, slot, 0, 0)) {
+        if (!json) { fail(mode); return; }
+        PATH[0] = 0;   // a game JSON's cue with no path: its .bin is in DISC_SLOT
+    }
+    u32 i = 0;
+    dirlen = 0;
+    for (; i < 255 && PATH[i]; i++) {
+        if (PATH[i] == '/') dirlen = i + 1;
+        if (!preset) base[i] = PATH[i];
+    }
+    if (i == 255) { fail(mode); return; }
+    if (!preset) {
+        base[i] = 0;
+        if (i > 4 && PATH[i - 4] == '.' && upper(PATH[i - 3]) == 'M' && PATH[i - 2] == '3' && upper(PATH[i - 1]) == 'U') {
+            playlist(slot, mode);
+            return;
+        }
+        find_marks();
+        fb = '0' + cur;
+    }
+    lcmask = IO[R_STATUS] & ST_LC ? sbi_mask(i) : 0;
+    PATHW[64] = 0; PATHW[65] = 0;   // openfile flags and size: open an existing file
+    if (!parse()) { fail(mode); return; }
+    total = 0;
+    // A game JSON whose slots 101, 102, ... hold the cue's files (pupdate,
+    // Pocket Sync; 0.5.2's layout for several files, at most 19): APF has
+    // loaded them, so file k is read from slot 101 + k with no path to
+    // resolve (re-opening by the cue's folder failed on hardware).
+    rd = DISC_SLOT;
+    for (u32 k = 0; k < nfiles; k++)
+        if (!json || k == 19 || cmd(K_READ, DISC_SLOT + k, 0, 4)) rd = FILE_SLOT;
+    // A first file holding track 1's pregap (INDEX 01 past its start, as
+    // some rippers write): the disc starts at INDEX 01.
+    lead = ti1[0] & 0xfffff;
+    for (u32 k = 0; k < nfiles; k++) {
+        if (rd == FILE_SLOT && open(k)) { fail(mode); return; }
+        u32 n = probe(rd == FILE_SLOT ? rd : rd + k, 2352, 18);
+        if (!k) n = n > lead ? n - lead : 0;
+        total += fname[k] >> 24;   // PREGAP
+        if (!n || total + n > 524138) { fail(mode); return; }   // 19-bit LBAs with the pregap
+        fsec[k] = total;
+        total += n;
+    }
+    fsec[nfiles] = total;
+    // Files back to back; a track starts at INDEX 00 (else 01); track 1 is
+    // data at 00:00:00, later tracks are audio, in order, inside the disc.
+    u32 prev = 0;
+    for (u32 r = 0; r < ntracks; r++) {
+        u32 f = tstart[r] >> 24, s = tstart[r] & 0xfffff, x = ti1[r] & 0xfffff, a = ti1[r] >> 31;
+        if (!s) s = fsec[f] - (fname[f] >> 24);   // a PREGAP starts the track
+        else s += fsec[f];
+        if (!f) { s = s > lead ? s - lead : 0; x = x > lead ? x - lead : 0; }
+        x += fsec[f];
+        if (r == 0 ? (a || s || x) : (!a || s <= prev)) { fail(mode); return; }
+        if (s > x || x >= total) { fail(mode); return; }
+        tstart[r] = s; ti1[r] = x; prev = x;
+    }
+    u32 bytes = sectors_to_bytes(total);
+    IO[W_DISC] = bytes;
+    setf((flags & ~F_FAILED) | F_MOUNTED | F_VDISC | F_VTABLE | (mode == M_LAUNCH ? F_ALLC : 0));
+    if (mode == M_PICK) IO[W_UPD] = bytes;
+}
+
+// Open playlist entry k (1-4) into CUE2_SLOT: the playlist's folder
+// (base up to dirlen) and the entry, or the entry alone if it starts with
+// '/'. Its error.
+static u32 m3u_dir;
+NOINLINE static u32 open_entry(u32 k) {
+    u32 off = m3u_ent[k - 1] & 0xffff, len = m3u_ent[k - 1] >> 16, at = off & 3, d = 0, err;
+    clen = 0;
+    if ((err = cmd(K_READ, m3u_slot, off & ~3u, (len + at + 3) & ~3u))) return err;
+    if (CHUNK[at] != '/') d = m3u_dir;
+    fb = 0;
+    if (d + len > 255) return 1;
+    for (u32 i = 0; i < d; i++) PATH[i] = base[i];
+    for (u32 i = 0; i < len; i++) { u32 x = CHUNK[at + i]; PATH[d + i] = x == '\\' ? '/' : x; }
+    PATH[d + len] = 0;
+    PATHW[64] = 0; PATHW[65] = 0;
+    err = cmd(K_OPEN, CUE2_SLOT, 0, 0);
+    IO[W_CLR] = CLR_MENU;
+    open_file = NONE;
+    return err;
+}
+
+// Mount playlist entry k: a cue, or a plain image read through CUE2_SLOT.
+static void entry(u32 k, int mode) {
+    if (open_entry(k) || cmd(K_READ, CUE2_SLOT, 0, 4)) { fail(mode); return; }
+    if (CHUNK[0] == 0) {
+        u32 n = probe(CUE2_SLOT, 2352, 18), bytes = sectors_to_bytes(n);
+        if (!n) { fail(mode); return; }
+        bin = 1; bin_slot = CUE2_SLOT;
+        IO[W_DISC] = bytes;
+        setf((flags & ~(F_FAILED | F_MOUNTED | F_VTABLE)) | F_VDISC | (mode == M_LAUNCH ? F_ALLC : 0));
+        if (mode == M_PICK) IO[W_UPD] = bytes;
+        return;
+    }
+    bin = 0;
+    cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), mode | PRESET);
+}
+
+// A playlist in slot (base holds its path): up to four entries, then the
+// first one.
+static void playlist(u32 slot, int mode) {
+    m3u_slot = slot; m3u_dir = dirlen; m3u_n = 0; nmarks = 0;
+    cbase = clen = cpos = 0;
+    c = getb();
+    while (c >= 0 && m3u_n < 4) {
+        while (c >= 0 && (eol(c) || space(c))) adv();
+        if (c < 0) break;
+        u32 off = cpos - 1, len = 0, keep = 0;
+        int comment = c == '#';
+        while (!eol(c)) { len++; if (!space(c)) keep = len; adv(); }
+        if (!comment && keep < 256) m3u_ent[m3u_n++] = off | keep << 16;
+    }
+    if (c == -2 || !m3u_n) { fail(mode); return; }
+    cur = 1;
+    entry(1, mode);
+}
+
+// The menu asks for Disc k (1-4): load that sibling of the current cue or
+// that playlist entry, if the game has it (a disc that fails to mount
+// brings the current one back). The menu Disc is recorded either way.
+static void menu_disc(u32 k) {
+    if (m3u_n) {
+        if (k > m3u_n || k == cur) return;
+        entry(k, M_MENU);
+        if (flags & F_FAILED) { k = cur; entry(k, M_MENU); }
+        cur = k;
+        return;
+    }
+    if (!cur || k == cur || !(flags & F_MOUNTED) || open_disc(k)) return;
+    cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
+    if (!(flags & F_MOUNTED)) k = cur;
+    if (!(flags & F_MOUNTED) && !open_disc(k)) cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
+    cur = k;
+    for (u32 m = 0; m < nmarks; m++) base[marks[m]] = '0' + k;
+}
+
+// ---------------- the stream's reads ----------------
+static void serve(void) {
+    u32 il = IO[R_STATUS], id = il >> 10 & 0x1ff, len = il >> 19 & 0xfff, off = IO[R_UOFF], err = 0;
+    if ((flags & F_MOUNTED) && is_disc(id - 1)) {
+        for (u32 w = 0; w < 400; w++) INJ[w] = table_word(w);
+    } else if ((flags & F_MOUNTED) && is_disc(id)) {
+        u32 k = 0;
+        while (k + 1 < nfiles && off >= sectors_to_bytes(fsec[k + 1] - (fname[k + 1] >> 24))) k++;
+        if (off < sectors_to_bytes(fsec[k])) {
+            for (u32 w = 0; w < len >> 2; w++) INJ[w] = 0;   // a PREGAP: silence
+        } else {
+            if (open_file != k) err = open(k);
+            if (!err) err = cmd(K_READ | K_USEU, rd == FILE_SLOT ? rd : rd + k, off - sectors_to_bytes(fsec[k] - (k ? 0 : lead)), len);
+        }
+    } else {
+        err = cmd(K_READ | K_USEU, bin && is_disc(id) ? bin_slot : id, off, len);
+    }
+    IO[W_DONE] = err;
+}
+
+static u32 menu_now(void) { return IO[R_STATUS] >> 8 & 3; }
+
+void main(void) {
+    nfiles = ntracks = total = dirlen = cue_size = bin = cur = 0;
+    cbase = clen = cpos = 0;
+    open_file = NONE; pick = DISC_SLOT;
+    setf(F_IDLE | F_ACCEPT);
+    for (;;) {
+        u32 s = IO[R_STATUS];
+        if (s & ST_U) { serve(); continue; }
+        if (!(s & (ST_BOOT | ST_UPD | ST_MENU))) continue;
+        // A pick or a menu Disc: stop the stream's reads (serve one that
+        // slipped in).
+        setf(flags & ~(F_IDLE | F_ACCEPT));
+        if (IO[R_STATUS] & ST_U) serve();
+        u32 m = menu_now();
+        if (s & ST_BOOT) { IO[W_CLR] = ST_BOOT | CLR_MENU; mount(LAUNCH_SLOT); }
+        else if (s & ST_UPD) { IO[W_CLR] = ST_UPD | CLR_MENU; mount(DISC_SLOT); }
+        else menu_disc(m + 1);
+        setf((flags & ~F_DISC) | m << 8 | F_IDLE | (flags & F_MOUNTED ? 0 : F_ACCEPT));
+    }
+}

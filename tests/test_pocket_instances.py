@@ -126,6 +126,22 @@ class LibCryptSlot(unittest.TestCase):
                         '--core', 'PSXEarlyLC', *extra], check=True, capture_output=True)
         return json.loads((card/'Assets/playstation/GuardianSoul.PSXEarlyLC/Ape.json').read_text())['instance']['data_slots']
 
+    def test_first_game_file_removes_the_release_placeholder(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); common = card/'Assets/playstation/common'; common.mkdir(parents=True)
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyLC'; out.mkdir(parents=True)
+            help_entry = out/'! How to add games (see README).json'; help_entry.write_text('{}')
+            self.run_script(card)
+            self.assertTrue(help_entry.exists())   # no games yet: keep it
+            (common/'Ape.bin').write_bytes(sectors(1, 4))   # loose in common
+            (common/'Ape.cue').write_text('FILE "Ape.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            self.assertEqual(self.run_card(card), [{'id': 100, 'filename': 'Ape.cue'}, {'id': 101, 'filename': 'Ape.bin'}])
+            self.assertFalse(help_entry.exists())
+
+    def run_script(self, card, *extra):
+        subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card),
+                        '--core', 'PSXEarlyLC', *extra], check=True, capture_output=True)
+
     def test_sbi_goes_to_slot_99_when_the_core_declares_it(self):
         with TemporaryDirectory() as tmp:
             card = Path(tmp); game = card/'Assets/playstation/common/Ape'; game.mkdir(parents=True)
@@ -225,3 +241,106 @@ class SharedCard(unittest.TestCase):
             shared.write_bytes(b'played')
             run()
             self.assertEqual(shared.read_bytes(), b'played')
+
+
+class OneFile(unittest.TestCase):
+    """--one-file-disc cores: one .bin plus a .trk track table per disc."""
+    declared = [{'id': 0}, {'id': 100}, {'id': 101, 'extensions': ['bin']}, {'id': 102, 'extensions': ['trk']},
+                {'id': 201, 'extensions': ['bin']}, {'id': 202, 'extensions': ['trk']}]
+
+    def card(self, tmp):
+        card = Path(tmp); core = card/'Cores/GuardianSoul.PSXEarlyOF'; core.mkdir(parents=True)
+        (core/'data.json').write_text(json.dumps({'data': {'data_slots': self.declared}}))
+        return card, card/'Assets/playstation/common', card/'Assets/playstation/GuardianSoul.PSXEarlyOF'
+
+    def run_card(self, card):
+        return subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyOF'],
+                              check=True, capture_output=True, text=True).stdout
+
+    def words(self, path):
+        data = path.read_bytes(); self.assertEqual(len(data), 1600)
+        return [int.from_bytes(data[i:i+4], 'little') for i in range(0, 1600, 4)]
+
+    def test_track_files_merge_and_match_the_multi_track_table(self):
+        from scripts.psx_disc_host import multitrack_metadata_words
+        with TemporaryDirectory() as tmp:
+            card, common, out = self.card(tmp)
+            game = common/'Rayman'; game.mkdir(parents=True)
+            counts = [12] + [151 + k for k in range(50)]   # 51 tracks, as Rayman
+            lines = []
+            for k, n in enumerate(counts):
+                name = f'Rayman (Track {k+1:02d}).bin'
+                (game/name).write_bytes(sectors(k+1, n))
+                lines += [f'FILE "{name}" BINARY', f'  TRACK {k+1:02d} {"MODE2/2352" if k == 0 else "AUDIO"}']
+                lines += ['    INDEX 01 00:00:00'] if k == 0 else ['    INDEX 00 00:00:00', '    INDEX 01 00:02:00']
+            (game/'Rayman.cue').write_text('\n'.join(lines) + '\n')
+            self.assertIn('51 tracks, one file', self.run_card(card))
+            image = game/'Rayman (one file).bin'
+            self.assertEqual(image.read_bytes(), b''.join(sectors(k+1, n) for k, n in enumerate(counts)))
+            self.assertEqual(self.words(image.with_suffix('.trk')), multitrack_metadata_words(counts))
+            slots = json.loads((out/'Rayman.json').read_text())['instance']['data_slots']
+            self.assertEqual(slots, [{'id': 100, 'filename': 'Rayman.cue'}, {'id': 101, 'filename': 'Rayman (one file).bin'},
+                                     {'id': 102, 'filename': 'Rayman (one file).trk'}])
+            mtime = image.stat().st_mtime_ns
+            self.run_card(card)   # idempotent: the merged image is not rewritten
+            self.assertEqual(image.stat().st_mtime_ns, mtime)
+
+    def test_merged_image_used_in_place_with_its_own_pregaps(self):
+        with TemporaryDirectory() as tmp:
+            card, common, out = self.card(tmp)
+            game = common/'Game'; game.mkdir(parents=True)
+            (game/'Game.bin').write_bytes(sectors(1, 10) + sectors(2, 200) + sectors(3, 100))
+            # Track 2: 150-sector pregap; track 3: 75 (1 s) stored, INDEX 01 at sector 285.
+            (game/'Game.cue').write_text(MERGED.replace('    PREGAP 00:02:00\n    INDEX 01 00:02:60\n',
+                                                        '    INDEX 00 00:02:60\n    INDEX 01 00:03:60\n'))
+            self.run_card(card)
+            self.assertFalse((game/'Game (one file).bin').exists())
+            words = self.words(game/'Game.trk')
+            self.assertEqual(words[:4], [0x0303, 460, 0x0006, 2 << 16])   # 310 sectors + 150; 460/75 = 6 s
+            self.assertEqual(words[4:8], [0, 159, 0x0002, 0])
+            self.assertEqual(words[8:12], [160, 359, (1 << 16) | 0x0004, 0])     # INDEX 01 LBA 310 = 4 s
+            self.assertEqual(words[12:16], [360, 459, (1 << 16) | 0x0005, 0])    # INDEX 01 LBA 435 = 5 s
+            self.assertEqual(words[16:], [0]*384)
+            slots = json.loads((out/'Game.json').read_text())['instance']['data_slots']
+            self.assertEqual([(s['id'], s['filename']) for s in slots], [(100, 'Game.cue'), (101, 'Game.bin'), (102, 'Game.trk')])
+
+    def test_unsupported_layouts_are_skipped(self):
+        with TemporaryDirectory() as tmp:
+            card, common, out = self.card(tmp)
+            game = common/'Game'; game.mkdir(parents=True)
+            merged_image(game)   # track 3's PREGAP is not in the image
+            (common/'Mixed').mkdir()
+            (common/'Mixed/Mixed.bin').write_bytes(sectors(1, 400))
+            (common/'Mixed/Mixed.cue').write_text('FILE "Mixed.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+                                                  '  TRACK 02 MODE2/2352\n    INDEX 00 00:01:00\n    INDEX 01 00:03:00\n')
+            log = self.run_card(card)
+            self.assertIn('PREGAP outside the image', log)
+            self.assertIn('data after track 1', log)
+            self.assertFalse(out.exists() and any(out.iterdir()))
+
+    def test_discs_of_a_game_get_image_and_table_slots(self):
+        with TemporaryDirectory() as tmp:
+            card, common, out = self.card(tmp)
+            for n in (1, 2):
+                game = common/f'Game (Disc {n})'; game.mkdir(parents=True)
+                (game/f'Game (Disc {n}).bin').write_bytes(sectors(n, 4))
+                (game/f'Game (Disc {n}).cue').write_text(f'FILE "Game (Disc {n}).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            self.run_card(card)
+            slots = json.loads((out/'Game.json').read_text())['instance']['data_slots']
+            self.assertEqual([(s['id'], s['filename']) for s in slots if s['id'] != 16],
+                             [(100, 'Game (Disc 1)/Game (Disc 1).cue'), (101, 'Game (Disc 1)/Game (Disc 1).bin'),
+                              (102, 'Game (Disc 1)/Game (Disc 1).trk'), (201, 'Game (Disc 2)/Game (Disc 2).bin'),
+                              (202, 'Game (Disc 2)/Game (Disc 2).trk')])
+
+    def test_sbi_mask_goes_into_the_table(self):
+        with TemporaryDirectory() as tmp:
+            card, common, out = self.card(tmp)
+            game = common/'Ape'; game.mkdir(parents=True)
+            (game/'Ape.bin').write_bytes(sectors(1, 4))
+            (game/'Ape.cue').write_text('FILE "Ape.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            entries = [bytes([3, 8, 5, 1]) + bytes(10), bytes([3, 8, 6, 1]) + bytes(10), bytes([3, 0x35, 0x42, 1]) + bytes(10)]
+            (game/'Ape.sbi').write_bytes(b'SBI\0' + b''.join(entries))
+            self.assertIn('LibCrypt Ape.sbi', self.run_card(card))
+            self.assertEqual(self.words(game/'Ape.trk')[3], (2 << 16) | 0x8001)
+            slots = json.loads((out/'Ape.json').read_text())['instance']['data_slots']
+            self.assertEqual([s['id'] for s in slots], [100, 101, 102])

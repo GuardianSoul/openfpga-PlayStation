@@ -7,112 +7,39 @@ built on the MiSTer PSX core.
 > music. Some may still glitch or not boot. See
 > [Compatibility](#compatibility).
 
-## What you need
+## Setup
 
-- An Analogue Pocket with the latest firmware.
-- A PlayStation BIOS file dumped from your own console. It is not included
-  and cannot be shared.
-- Your own game discs as `.bin` image files (see [Games](#games)).
+You need an Analogue Pocket with the latest firmware, a PlayStation BIOS
+dumped from your own console, and your own game discs as `.cue`/`.bin`
+images. The BIOS and games are not included and cannot be shared.
 
-## Install
+1. **Core:** download the latest `GuardianSoul.PlayStation_<version>_<date>.zip`
+   from [Releases](../../releases), unzip it and copy its contents to the
+   root of the SD card, merging with the folders already there. To update,
+   do the same with the new zip; saves and settings stay.
+2. **BIOS:** copy it to `Assets/playstation/common/`, for example as
+   `scph5501.bin` (USA), `scph5500.bin` (Japan) or `scph5502.bin` (Europe).
+   Other common BIOS names work too (see [GAMES.md](GAMES.md#bios)). The
+   console region follows the BIOS, and any BIOS plays discs from every
+   region.
+3. **Games:** copy each disc, with its `.cue` and `.bin` files, into its own
+   folder in `Assets/playstation/common/`.
+4. **Game files:** install the [PlayStation game files plugin](https://github.com/GuardianSoul/openfpga-PlayStation-plugin)
+   once in your SD card tool:
+   - [pupdate](https://github.com/mattpannella/pupdate): *Pocket Extras →
+     Plugins → Install from GitHub…*, enter
+     `GuardianSoul/openfpga-PlayStation-plugin`.
+   - [Pocket Sync](https://github.com/neil-morrison44/pocket-sync): *Plugins
+     → Add*, paste `https://github.com/GuardianSoul/openfpga-PlayStation-plugin`.
 
-1. Download the latest `GuardianSoul.PlayStation_<version>_<date>.zip` from
-   [Releases](../../releases).
-2. Unzip it and copy its contents to the root of your Pocket's SD card. It
-   adds `Cores/GuardianSoul.PlayStation`, `Platforms/playstation.json` and
-   `Assets/playstation`. Merge them with existing folders; nothing is
-   overwritten.
-3. Copy your BIOS to `Assets/playstation/common/` on the SD card and name
-   it `scph5501.bin` (the file name the core looks for).
-4. Copy your games to `Assets/playstation/common/`, one folder per disc,
-   and make their game files with pupdate or Pocket Sync (see
-   [Games](#games)).
-5. Put the SD card back, open **openFPGA → PlayStation** and pick a
-   game.
+   Then run *PlayStation game files* from the plugins menu. Run it again
+   whenever you add games. It makes one game file per game, with CD music,
+   disc swapping and one shared memory card for multi-disc games.
+5. **Play:** on the Pocket, open **openFPGA → PlayStation** and pick a game.
 
-To update, copy the new zip over the old files the same way.
-
-## Games
-
-The core plays redump-style disc images: a `.cue` file with its `.bin`
-files (one per track, MODE2/2352), up to 19 `.bin` files per disc. Games
-with CD audio tracks are supported. A disc merged into one `.bin` with a
-multi-track `.cue` needs splitting first (the [SD card helper](#changing-discs)
-does it), and `.chd` images need extracting first (see
-[Other ways to make game files](#other-ways-to-make-game-files)).
-
-Put each disc in its own folder under `Assets/playstation/common/`, with
-the file names unchanged:
-
-```
-Assets/playstation/common/
-  Final Fantasy VII (USA) (Disc 1)/
-    Final Fantasy VII (USA) (Disc 1).cue
-    Final Fantasy VII (USA) (Disc 1).bin
-  Tekken 3 (USA)/
-    Tekken 3 (USA).cue
-    Tekken 3 (USA) (Track 1).bin
-    Tekken 3 (USA) (Track 2).bin
-```
-
-Multi-disc games need one folder per disc.
-
-The Pocket starts a game from a small game file (`.json`) that lists the
-disc's files. Let an SD card tool make them for you:
-
-- **[pupdate](https://github.com/mattpannella/pupdate):** *Update All*
-  makes them for every game on the card (or use *Generate Instance JSON
-  Files* on its own).
-- **[Pocket Sync](https://github.com/neil-morrison44/pocket-sync):** open
-  *Games → PlayStation* and press *Instance JSON*.
-
-Do this again after adding games. Then, in the core, pick the game's
-`.json` file. Discs the core can't play yet are skipped with a message.
-These files are all you need: every game, including each disc of a
-multi-disc game, starts from them.
-
-### Changing discs
-
-To swap discs from the menu, a multi-disc game needs one game file that
-holds all of its discs. pupdate and Pocket Sync can't make that yet, so
-use the **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
-page: open it in Chrome or Edge on a computer, pick the SD card, and press
-*Make game files*. Nothing to install, and nothing is uploaded. It also
-fixes games stored as one big `.bin` file: it splits them into one file per
-track and then deletes the big original.
-
-When the game asks for the next disc, open the Pocket menu, choose **Core
-Settings → Disc** and pick the disc. The core opens and closes the lid for
-you, and remembers the disc you picked for next time.
-
-All discs of a game then share one memory card,
-`Saves/playstation/common/<game>.sav` (the game's name without
-"(Disc n)"), so a save made on disc 1 is there on disc 2. The helper
-starts it as a copy of your most recently used disc's card.
-
-Without the helper, each disc keeps its own game file, as in 0.5.1: to
-change discs, quit and start the next disc's game file.
-
-### Updating from 0.5.1
-
-Nothing to change: your game files and saves keep working. Run the SD card
-helper only if you want to swap discs from the menu in multi-disc games.
-
-### Other ways to make game files
-
-[make_pocket_instances.py](scripts/make_pocket_instances.py) does the same
-as the SD card helper, from [Python 3](https://www.python.org/downloads/).
-With the SD card in your computer, run
-
-```
-python3 make_pocket_instances.py <SD card> --core PlayStation
-```
-
-where `<SD card>` is the card's drive or mount point (for example `E:\`
-or `/Volumes/POCKET`). Add `--convert` to also extract `.chd` images with
-`chdman` from [MAME](https://www.mamedev.org/) (install it first) and split
-merged `.bin` files, each into a folder next to the original. The originals
-stay. The SD card helper can't read `.chd` images.
+No pupdate or Pocket Sync? The [SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)
+web page does the same from Chrome or Edge on a computer. Other ways are in
+[GAMES.md](GAMES.md).
 
 ## Controls
 
@@ -126,116 +53,59 @@ stay. The SD card helper can't read `.chd` images.
 | L / R | L1 / R1 |
 | Select / Start | Select / Start |
 
-The core emulates a digital pad. Hold Select and press L, R, Y or A for L2, R2, L3 or R3 (changeable in [Settings](#settings)). Tap Select on its own for Select. Analog sticks are not mapped yet.
+The core emulates a digital pad. Hold Select and press L, R, Y or A for
+L2, R2, L3 or R3 (changeable in [Settings](#settings)). Tap Select on its
+own for Select. Analog sticks are not mapped yet.
 
 ## Settings
 
-Under **Core Settings** in the Pocket menu:
+Under **Core Settings** in the Pocket menu. Defaults are in bold; the Pocket
+remembers your choices.
 
-- **Skip BIOS logo:** starts the game without the PlayStation intro.
-- **Disc:** the disc in the drive, for multi-disc games (see
-  [Changing discs](#changing-discs)).
-- **L Button / R Button:** what the Pocket's L and R send: L1, L2 or L3
-  (R1, R2 or R3). The default is L1 and R1.
-- **SELECT + L/R** and **SELECT + Y/A:** what those combinations send:
-  nothing, L1/R1, L2/R2 or L3/R3. The defaults are L2/R2 and L3/R3.
+| Setting | Choices | What it does |
+| --- | --- | --- |
+| Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
+| Skip BIOS logo | On, **Off** | Starts the game without the PlayStation intro |
+| L Button | None, **L1**, L2, L3 | What the Pocket's L sends |
+| R Button | None, **R1**, R2, R3 | What the Pocket's R sends |
+| SELECT + L/R | None, L1/R1, **L2/R2**, L3/R3 | What Select held with L or R sends |
+| SELECT + Y/A | None, L1/R1, L2/R2, **L3/R3** | What Select held with Y or A sends |
 
 High-resolution (interlaced, 480i) screens are woven into full frames
 automatically; there is no setting for it.
 
 ## Memory cards
 
-Memory card 1 works and is saved to the SD card:
+Memory card 1 is saved to the SD card, one card per game (multi-disc games
+share one), in `Saves/playstation/`. A new card may show as unformatted the
+first time; format it from the game's save menu.
 
-- Each game gets its own memory card:
-  `Saves/playstation/GuardianSoul.PlayStation/<game>.sav` on the SD card
-  (multi-disc games share one, see [Changing discs](#changing-discs)).
-  It is created the first time you start the game, and updating the core
-  keeps it.
-- The first time, the game may say the card is unformatted. Format it from
-  the game's own save menu.
-- Save in the game as usual. The card is written to the SD card when you
-  quit the core from the Pocket menu, so **quit through the menu before
-  you turn the Pocket off**. Turning it off mid-game loses saves made since
-  the game started.
-- To use a card from another emulator or a backup, copy its raw 128 KB
-  image (`.mcr` or `.sav`) over the game's `.sav` file.
+**Quit through the Pocket menu before you turn the Pocket off.** The card
+is written to the SD card when you quit, so turning off mid-game loses the
+saves made since the game started. To use a card from another emulator,
+copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
 ## Compatibility
 
-Most games tried so far work. The games tested in detail, and how far, are
-listed in [COMPATIBILITY.md](COMPATIBILITY.md). Reports are
-welcome: open an issue with the game, region, what happened and how far you
-got.
-
-## What's in the core
-
-| Part | Status |
-| --- | --- |
-| CPU (R3000A with instruction cache and scratchpad) | Yes |
-| GTE (3D geometry) | Yes |
-| GPU: 2D and 3D drawing, transparency, dithering, 240p and 480i | Yes |
-| SPU: 24 voices, ADPCM, reverb | Yes |
-| MDEC (FMV movies) | Yes |
-| CD-ROM with XA streamed audio | Yes |
-| Multi-disc games (disc swapping) | Yes |
-| Digital controller, port 1 | Yes |
-| Memory card, slot 1 (saved to SD) | Yes |
-| CD audio tracks (CD-DA), up to 19 files per disc | Yes |
-| Analog controller / DualShock, rumble | Not yet |
-| Second controller, multitap, light guns | Not yet |
-| Memory card slot 2 | Not yet |
-| Save states | Not planned for now |
-| Serial port (link cable) | No |
-
-## How it fits on the Pocket
-
-The Pocket's FPGA (a Cyclone V with 18,480 logic blocks) is smaller than the
-MiSTer's. The first complete build of the MiSTer PSX core with the Pocket
-platform around it needed about 28,000 logic blocks, roughly 150% of the
-chip, so a full PlayStation on the Pocket looked out of reach. The current
-core uses about 17,500 (95%). It got there without dropping anything a game
-needs:
-
-- **Save states and rewind are left out.** MiSTer keeps a shadow copy of
-  much of the machine's state for them. Without them that logic goes away.
-- **Tables move into block RAM.** Register files in the DMA, GTE, SPU and
-  memory interface were built from logic cells. They now live in the FPGA's
-  memory blocks, which are otherwise idle. Timing is unchanged.
-- **A smaller GTE.** The PS-FPGA GTE does the same math as MiSTer's in about
-  half the space, with results checked against MiSTer's GTE.
-- **External memory instead of on-chip buffers.** Main RAM, BIOS and sound
-  RAM sit in the Pocket's SDRAM, and video RAM is spread across both PSRAM
-  chips, following pocket_sotn.
-- **Unused hardware is trimmed.** The serial port keeps only its reset
-  values, the controller port has one digital pad, and an optional MiSTer
-  data cache that the real console doesn't have is removed.
-- **The Pocket does the scaling.** Video goes out at the console's own
-  resolution and the Pocket's scaler handles the rest.
-
-Each change is checked in simulation against the unmodified MiSTer core
-before it goes into a build.
+Most games tried so far work; [COMPATIBILITY.md](COMPATIBILITY.md) lists
+the ones tested in detail. Found a problem? Open an
+[issue](../../issues) with the game, its region and what happened.
 
 ## Known issues
 
 - Some games may run slower than on a real console.
 - A thin diagonal line can split the white Sony screen while it fades.
+- The picture can jump sideways for one frame when a game switches video
+  mode.
+- A stray line can show under some screens.
 - Some European discs with LibCrypt copy protection (for example Spyro: Year
   of the Dragon) can freeze or misbehave. Use the USA version for now.
-- A stray line can show under some screens.
+- Game files from pupdate's own *Update All* or Pocket Sync have no CD
+  music. Use the plugin or the SD card helper (see [Setup](#setup)).
 
 ## Building from source
 
-You need Quartus Prime Lite 25.1 with Cyclone V support, Python 3 and,
-for the tests, Icarus Verilog, GHDL and Verilator.
-
-```bash
-git clone --recurse-submodules https://github.com/GuardianSoul/openfpga-PlayStation.git
-cd openfpga-PlayStation
-make test
-```
-
-The release build steps are in [BUILDING.md](BUILDING.md).
+See [BUILDING.md](BUILDING.md).
 
 ## How this was made
 
@@ -255,11 +125,6 @@ by hardware tests. Even so, review it with that origin in mind.
   Peip (FPGAzumSpass) and contributors: the PlayStation itself.
 - [PS-FPGA](https://github.com/PS-FPGA/ps-fpga) GTE by Romain Piquois
   (Laxer3a).
-- [pocket_sotn](https://github.com/akoaysigod/pocket_sotn) by akoaysigod:
-  the memory layout this core uses (main RAM on SDRAM, video RAM across
-  both PSRAM chips), the PSRAM video RAM and memory card code, the memory
-  write FIFO and CPU write path, the Pocket SDRAM timing fixes, and the
-  approach to fitting the MiSTer core on the Pocket.
 - Adam Gastineau (agg23) and [MIRLO64](https://github.com/tortugaveloz/MIRLO64)
   by tortuga: Pocket platform glue and audio output.
 

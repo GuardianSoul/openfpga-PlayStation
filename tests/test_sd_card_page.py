@@ -91,6 +91,8 @@ class SdCardPage(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             script, page = Path(tmp)/'script', Path(tmp)/'page'
             make_card(script)
+            help_entry = script/'Assets/playstation'/CORE/'! How to add games (see README).json'
+            help_entry.parent.mkdir(parents=True, exist_ok=True); help_entry.write_text('{}')
             shutil.copytree(script, page)
             py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
                                  '--core', 'PlayStation', '--convert'], check=True, capture_output=True, text=True)
@@ -102,6 +104,7 @@ class SdCardPage(unittest.TestCase):
                 self.assertEqual(tree(page)[name], data, name)
             out = page/'Assets/playstation'/CORE
             names = sorted(p.name for p in out.iterdir())
+            self.assertNotIn(help_entry.name, names)   # the release placeholder goes
             self.assertIn('Final Fantasy IX (v1.1).json', names)
             self.assertIn('Game.json', names)
             self.assertNotIn('Final Fantasy IX (USA) (Disc 2) (Rev 1).json', names)
@@ -130,6 +133,37 @@ class SdCardPage(unittest.TestCase):
                                    check=True, capture_output=True, text=True)
             self.assertIn('0 images converted', again.stdout)
             self.assertIn('wrote Game.json (3 tracks)', again.stdout)
+
+    def test_one_file_core_matches_the_script(self):
+        # --one-file-disc core: merged images used as they are, per-track
+        # files merged into "(one file).bin", a .trk table per disc.
+        with TemporaryDirectory() as tmp:
+            script, page = Path(tmp)/'script', Path(tmp)/'page'
+            make_card(script)
+            common = script/'Assets/playstation/common'
+            with_audio(common/'Rayman', 'Rayman (USA)', 50)
+            (common/'Plain').mkdir()
+            (common/'Plain/Game.bin').write_bytes(sectors(1, 10) + sectors(2, 200) + sectors(3, 100))
+            (common/'Plain/Plain.cue').write_text(MERGED.replace('    PREGAP 00:02:00\n    INDEX 01 00:02:60\n',
+                                                                 '    INDEX 00 00:02:60\n    INDEX 01 00:03:60\n'))
+            (common/'Ape Escape (Europe)/Ape Escape (Europe).sbi').write_bytes(b'SBI\0' + bytes([3, 8, 5, 1]) + bytes(10))
+            declared = ([{'id': 0}, {'id': 16}, {'id': 100}]
+                        + [{'id': 100*n + k, 'extensions': ['bin' if k == 1 else 'trk']} for n in (1, 2, 3, 4) for k in (1, 2)])
+            (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+            shutil.copytree(script, page)
+            py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                 '--core', 'PlayStation', '--convert'], check=True, capture_output=True, text=True)
+            js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE, '--convert'],
+                                check=True, capture_output=True, text=True)
+            self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+            self.assertEqual(tree(script).keys(), tree(page).keys())
+            for name, data in tree(script).items():
+                self.assertEqual(tree(page)[name], data, name)
+            self.assertIn('wrote Rayman (USA).json (51 tracks, one file)', js.stdout)
+            self.assertIn('wrote Plain.json (3 tracks, one file)', js.stdout)
+            self.assertIn('LibCrypt Ape Escape (Europe).sbi', js.stdout)
+            self.assertTrue((page/'Assets/playstation/common/Rayman/Rayman (USA) (one file).trk').is_file())
+            self.assertFalse((page/'Assets/playstation/common/Merged/Game').exists())   # nothing split
 
 
 if __name__ == '__main__':

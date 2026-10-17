@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Main RAM, BIOS and SPU RAM on the Pocket SDRAM through MiSTer's own
 // sdram.sv on clk3x, wired to the core's native ports as MiSTer's PSX.sv
-// does (pocket_sotn layout, references/pocket_sotn): ch1 = core reads
+// does: ch1 = core reads
 // (scalar, cache line, DMA), ch2 = core writes, ch3 = BIOS loader while the
 // CPU is held in reset, SPU RAM afterwards. No adapter or clock crossing on
 // the CPU path: sdram.sv aligns its clk1x requests to clk3x itself.
-// The sdram module is a patched copy (prepare_pocket_early.py --sotn-memory).
+// The sdram module is a patched copy (prepare_pocket_early.py).
 // MiSTer byte map: main RAM 0, BIOS 0x800000, SPU RAM 0x1000000.
 `default_nettype none
 module psx_native_memory (

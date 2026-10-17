@@ -90,13 +90,14 @@ def adapt_top(text):
             '.host_clk(clk_74a)', '.clk(clk1x)',
             '.host_reset(cd_stream_reset)', '.reset(cd_stream_reset)')):
         raise ValueError('CD and loader transport clock/reset domains differ')
-    # --disc-swap adds two clk1x consumers of the same transport reset.
-    # Require the complete known pair; never guess a domain for another
-    # consumer or replace arbitrary reset ports by their signal name alone.
-    optional = []
+    # The released disc menu replaces disc_select beside disc_swap. Accept
+    # either complete, reviewed clk1x pair; never guess another consumer's
+    # domain or replace arbitrary reset ports by their signal name alone.
+    optional = {}
     for module, pattern in (
             ('psx_disc_swap', r'^    psx_disc_swap disc_swap \('),
-            ('psx_disc_select', r"^    psx_disc_select #\(\.DISC_SLOT\(16'[dh][0-9a-fA-F]+\)\) disc_select \(")):
+            ('psx_disc_select', r"^    psx_disc_select #\(\.DISC_SLOT\(16'[dh][0-9a-fA-F]+\)\) disc_select \("),
+            ('psx_disc_menu', r"^    psx_disc_menu #\(\.FIRST_SLOT\(16'd101\), \.STEP\(16'd100\), \.DISCS\(4\)\) disc_menu \(")):
         declarations = re.findall(r'^\s*' + module + r'\b', text, re.M)
         found = list(re.finditer(pattern, text, re.M))
         if not declarations:
@@ -107,13 +108,27 @@ def adapt_top(text):
         instance = text[at:text.index(');', at) + 2]
         if instance.count('.clk(clk1x)') != 1 or instance.count('.reset(cd_stream_reset)') != 1:
             raise ValueError('Disc-swap and loader transport clock/reset domains differ')
-        optional.append(instance)
-    if len(optional) not in (0, 2):
+        optional[module] = instance
+    if set(optional) not in (set(), {'psx_disc_swap', 'psx_disc_select'},
+                             {'psx_disc_swap', 'psx_disc_menu'}):
         raise ValueError('Expected the complete disc-swap reset consumer pair')
+    cue_changes = []
+    cue = list(re.finditer(r'^    psx_cue_mount\b', text, re.M))
+    if re.search(r'^\s*psx_cue_mount\b', text, re.M):
+        if len(cue) != 1:
+            raise ValueError('Expected one released CUE host reset consumer')
+        at = cue[0].start(); instance = text[at:text.index(');', at)+2]
+        header = '    psx_cue_mount #(' + ', '.join(
+            f'.FIRMWARE{n}("psx_cue_fw{n}.hex")' for n in range(4)) + ') cue_mount ('
+        if (instance.count(header) != 1 or instance.count('.clk(clk_74a)') != 1 or
+                instance.count('.reset(cd_stream_reset)') != 1):
+            raise ValueError('CUE firmware/host clock/reset profile differs')
+        cue_changes.append((instance, instance.replace('.reset(cd_stream_reset)', '.reset(cd_host_reset)')))
     changes = [*TOP_PATCHES[:2],
                (cd, cd.replace('.host_reset(cd_stream_reset)', '.host_reset(cd_host_reset)').replace(
                    '.reset(cd_stream_reset)', '.reset(cd_core_reset)')),
-               *((p, p.replace('.reset(cd_stream_reset)', '.reset(cd_core_reset)')) for p in optional)]
+               *((p, p.replace('.reset(cd_stream_reset)', '.reset(cd_core_reset)'))
+                 for p in optional.values()), *cue_changes]
     changed = patches(text, changes)
     if re.search(r'\bcd_stream_reset\b', changed):
         raise ValueError('Unrecognized consumer of the raw CD transport reset')

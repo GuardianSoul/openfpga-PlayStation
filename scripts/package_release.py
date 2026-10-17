@@ -20,19 +20,27 @@ import shutil
 import zipfile
 
 from tool_paths import ROOT
+import build_chip32_loader
 import pocket_image
 
 AUTHOR = 'GuardianSoul'
 REPO = f'https://github.com/{AUTHOR}/openfpga-PlayStation'
+PAGES = f'https://{AUTHOR.lower()}.github.io/openfpga-PlayStation/'
 SOURCE_AUTHORS = ('GuardianSoul', AUTHOR)   # authors of workspace packages, older and current
 PLATFORM = 'playstation'
+# A placeholder in the game list: the core only lists .json game files, and
+# users who copy .cue/.bin files without making them see no games at all.
+# Its missing cue's name is the instruction. make_pocket_instances.py and the
+# SD card helper delete it once they write a game file.
+HELP_ENTRY = '! How to add games (see README).json'
+HELP_CUE = 'Put each game in its own folder in common, then make game files with pupdate, Pocket Sync or the SD card helper.cue'
 LICENSES = (                       # (source, name in the core's licenses folder)
     (ROOT/'LICENSE', 'LICENSE-GPL-2.0.txt'),
     (ROOT/'licenses/MIT.txt', 'MIT.txt'),
     (ROOT/'licenses/dual-clock-fifo-BSD.txt', 'dual-clock-fifo-BSD.txt'),
-    (ROOT/'references/MIRLO64/NOTICE', 'MIRLO64-NOTICE.txt'),   # agg23 / openfpga-litex MIT attributions
+    (ROOT/'licenses/APF-NOTICE.txt', 'APF-NOTICE.txt'),   # APF template, Intel IP and agg23 MIT notices
     (ROOT/'references/PSX_MiSTer/LICENSE', 'PSX_MiSTer-LICENSE.txt'),
-    # Not MIRLO64's Apache-2.0 LICENSE or the LiteX notice: their memory files
+    # Not MIRLO64's NOTICE or Apache-2.0 LICENSE, or the LiteX notice: their memory files
     # are workspace-only and must not be in a GPL-2.0 release bitstream.
 )
 INFO = """PlayStation core for Analogue Pocket, by {author}.
@@ -40,7 +48,9 @@ A general PlayStation core built on the MiSTer PSX core. See the README for
 compatibility, controls, multi-disc games and memory cards.
 
 You need your own BIOS (Assets/playstation/common/scph5501.bin) and your own
-games. None are included.
+games. None are included. Games only show up after you make their game files
+with pupdate, Pocket Sync or the SD card helper; see
+Assets/playstation/common/HOW-TO-ADD-GAMES.txt.
 
 Source code, credits and licenses: {repo}
 The core is GPL-2.0; see the licenses folder.
@@ -83,6 +93,13 @@ def main():
     for slot in data['data']['data_slots']:
         if slot.get('filename') == 'bios.bin': slot['filename'] = 'scph5501.bin'
     write('data.json', data)
+    # The BIOS check names the file; rebuild it for the renamed slot.
+    if 'chip32_vm' in load('core.json')['core']['framework']:
+        extra = lambda s: 0x21 <= int(str(s['id']), 0) <= 0x2f     # --bios-names slots, made again
+        names = any(map(extra, data['data']['data_slots']))
+        data['data']['data_slots'] = [s for s in data['data']['data_slots'] if not extra(s)]
+        write('data.json', data)
+        build_chip32_loader.apply(core, PLATFORM, names)
 
     meta = load('core.json')
     meta['core']['metadata'].update(platform_ids=[PLATFORM], shortname='PlayStation',
@@ -97,7 +114,9 @@ def main():
 
     notices = core/'licenses'; shutil.rmtree(notices, ignore_errors=True); notices.mkdir()
     for source, name in LICENSES: shutil.copyfile(source, notices/name)
-    shutil.copyfile(ROOT/'THIRD_PARTY_NOTICES.md', notices/'THIRD_PARTY_NOTICES.md')
+    # The opt-in pocket_sotn files are never in a release (from 0.5.3), so its row goes too.
+    (notices/'THIRD_PARTY_NOTICES.md').write_text(''.join(
+        l for l in (ROOT/'THIRD_PARTY_NOTICES.md').read_text().splitlines(keepends=True) if 'pocket_sotn' not in l))
 
     (sd/'Platforms').mkdir(parents=True)
     (sd/'Platforms/_images').mkdir()
@@ -109,8 +128,22 @@ def main():
     assets = sd/'Assets'/PLATFORM/'common'; assets.mkdir(parents=True)
     (assets/'PLACE-BIOS-HERE.txt').write_text(
         'Place your own PlayStation BIOS dump here as scph5501.bin (US console, 524288 bytes).\n'
-        'Put each game disc (.cue and .bin files) here in its own folder, then make the\n'
-        'game files with pupdate or Pocket Sync (see the README). No BIOS or game is included.\n')
+        'No BIOS or game is included.\n')
+    (assets/'HOW-TO-ADD-GAMES.txt').write_text(
+        'Games do not show up in the core until you make their game files (.json).\n\n'
+        '1. Put each disc here in its own folder, with its .cue and all its .bin files:\n'
+        '   Assets/playstation/common/Tekken 3 (USA)/Tekken 3 (USA).cue\n'
+        '   pupdate skips games copied loose into this folder.\n'
+        '2. Make the game files with one of these:\n'
+        '   - pupdate: Update All, or "Generate Instance JSON Files"\n'
+        '     (the menu says PC Engine CD, but it works for this core too)\n'
+        '   - Pocket Sync: Games > PlayStation > Instance JSON\n'
+        f'   - the SD card helper page: {PAGES}\n'
+        '3. In the core, pick the game. Do step 2 again after adding games.\n\n'
+        '.chd images and discs merged into one .bin need converting first; see the README.\n')
+    games = sd/'Assets'/PLATFORM/core.name; games.mkdir(parents=True)
+    (games/HELP_ENTRY).write_text(json.dumps({'instance': {'magic': 'APF_VER_1', 'data_path': '',
+        'data_slots': [{'id': 100, 'filename': HELP_CUE}]}}, indent=2)+'\n')
 
     names = [a for a in SOURCE_AUTHORS if a != AUTHOR]
     private = re.compile('|'.join([*map(re.escape, names), r'/(?:home|run/media|tmp)/']), re.I)

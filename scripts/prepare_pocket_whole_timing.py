@@ -19,6 +19,7 @@ from prepare_native_sdram_io import prepare_project as native_pins
 from prepare_pocket_config_cdc import assignments, scoped_hold_text
 from prepare_pocket_audio_stream import refresh_audio_scope
 from prepare_pocket_cpu_hold import prepare_project as cpu_hold
+from prepare_pocket_cd_cdc import MENU_MINS, legacy_held_lists, prepare_project as cd_cdc
 from prepare_pocket_status_cdc import prepare_project as status
 from prepare_pocket_reset_release import prepare_project as reset_release
 from prepare_resource_targets import digest
@@ -26,7 +27,7 @@ from prepare_video_reports_cdc import prepare_project as reports
 from tool_paths import ROOT
 
 
-def strict_cd_hold(text):
+def strict_cd_hold(text, *, disc_menu=False):
     """Do not inherit 053eca1's same-clock hold relaxation by source alone.
 
     Restore only the exact known legacy -13ns line to its stronger 0ns bound.
@@ -37,6 +38,13 @@ def strict_cd_hold(text):
     output = []
     for line in text.splitlines(keepends=True):
         if re.match(r'^\s*set_min_delay\b', line) and 'disc_stream|' in line and ' -to ' not in line:
+            if disc_menu and any(line == f'set_min_delay {n} -from [get_registers {{{held}}}]\n'
+                    for held in legacy_held_lists(disc_menu=True,table_offset=True,libcrypt=True)
+                    for n in ('0', '-13')):
+                strengthened = line.replace('set_min_delay -13 ', 'set_min_delay 0 ', 1)
+                changes += strengthened != line
+                output.append(strengthened)
+                continue
             sha = hashlib.sha256(line.encode()).hexdigest()
             if sha == '384c29a43d0ae0d0beab551490e397379853d3ab4def0dbf86c76096103bddc7':
                 line = line.replace('set_min_delay -13 ', 'set_min_delay 0 ', 1)
@@ -47,7 +55,7 @@ def strict_cd_hold(text):
     return ''.join(output), changes
 
 
-def prepare_project(directory, expected_top_sha256, *, cpu_hold_margin_ns=.1):
+def prepare_project(directory, expected_top_sha256, *, cpu_hold_margin_ns=.1, disc_menu_cdc=False):
     directory = Path(directory).resolve()
     if (not directory.is_relative_to(ROOT / 'build') or
             subprocess.run(['git', 'check-ignore', '--quiet', str(directory / 'whole-timing/manifest.json')],
@@ -70,7 +78,9 @@ def prepare_project(directory, expected_top_sha256, *, cpu_hold_margin_ns=.1):
     sdc = (directory / 'pocket.sdc').read_text()
     refreshed_sdc = refresh_audio_scope(sdc)
     audio_scope_refreshed = refreshed_sdc != sdc
-    refreshed_sdc, cd_hold_strengthened = strict_cd_hold(refreshed_sdc)
+    refreshed_sdc, cd_hold_strengthened = strict_cd_hold(refreshed_sdc, disc_menu=disc_menu_cdc)
+    if disc_menu_cdc and not re.search(r'^\s*psx_disc_menu\b', core.read_text(), re.M):
+        raise ValueError('Disc menu CDC requires the released menu configuration')
     _, removed = scoped_hold_text(sdc)
     if removed or '--static-host-cuts' in sdc:
         raise ValueError('Regenerate without static-host or clock-family timing cuts')
@@ -105,6 +115,8 @@ def prepare_project(directory, expected_top_sha256, *, cpu_hold_margin_ns=.1):
                                   audio_setup_ns=1, audio_hold_ns=1,
                                   falling_audio_pads=True)
     overlays['reset_release'] = reset_release(directory, digest(core))
+    if disc_menu_cdc:
+        overlays['disc_menu_CD_CDC'] = cd_cdc(directory, digest(core))
     overlays['CPU_hold_reserve'] = cpu_hold(directory, digest(core), margin_ns=cpu_hold_margin_ns)
     if any(digest(Path(p)) != sha for p, sha in protected.items()):
         raise ValueError('An original HDL source changed during whole timing preparation')
@@ -130,7 +142,10 @@ if __name__ == '__main__':
     parser.add_argument('--expected-top-sha256', required=True)
     parser.add_argument('--cpu-hold-ns', type=float, default=.1,
                         help='Additional physical hold reserve; retains device-derived uncertainty (default .1 ns)')
+    parser.add_argument('--disc-menu-cdc', action='store_true',
+                        help='Apply reviewed endpoint CD/menu CDC after local reset preparation')
     args = parser.parse_args()
-    result = prepare_project(args.project, args.expected_top_sha256, cpu_hold_margin_ns=args.cpu_hold_ns)
+    result = prepare_project(args.project, args.expected_top_sha256, cpu_hold_margin_ns=args.cpu_hold_ns,
+                             disc_menu_cdc=args.disc_menu_cdc)
     print(json.dumps(dict(project=str(args.project), prepared=len(result['after']),
                           fit_run=False, hardware_verified=False)))

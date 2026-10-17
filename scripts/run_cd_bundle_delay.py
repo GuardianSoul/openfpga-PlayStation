@@ -9,6 +9,7 @@ R=Path(__file__).resolve().parents[1];sys.path.insert(0,str(R/'scripts'))
 from prepare_resource_targets import digest
 from psx_disc_host import metadata_words,multitrack_metadata_words
 from tool_paths import find_tool
+from prepare_pocket_cd_cdc import REVIEWED_CD_SOURCES, preserve_sync_flops
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output',type=Path)
 parser.add_argument('--libcrypt',action='store_true',help='Exercise slot 99 and delayed 12-bit mount length')
@@ -23,12 +24,10 @@ else:
  D=Path(tempfile.mkdtemp(prefix='checks-',dir=parent))
 print(D,flush=True)
 source=R/'rtl/pocket/psx_cd_stream.sv';bench=R/'sim/pocket/tb_cd_stream.sv'
-if digest(source) not in {'eaaa6978025b0f9a8afb84f6f407b37ccb626648804870710fa2c7779281a5dd',
-                         '10717e58e9c4e3d36dcfe36964d15920a899814a5ebcd09246f4ef498b0d909a'}:
+if digest(source) not in set(REVIEWED_CD_SOURCES) | {'eaaa6978025b0f9a8afb84f6f407b37ccb626648804870710fa2c7779281a5dd'}:
  raise ValueError('CD source has not been reviewed for the delay model')
 if args.libcrypt or args.prepared_cdc:
- from prepare_pocket_cd_cdc import CD_SHA,preserve_sync_flops
- if digest(source)!=CD_SHA:raise ValueError('LibCrypt/preservation requires the reviewed current source')
+ if digest(source) not in REVIEWED_CD_SOURCES:raise ValueError('LibCrypt/preservation requires a reviewed source')
 paths=[source,bench,R/'scripts/psx_disc_host.py',R/'references/MIRLO64/target/pocket/core_bridge_cmd.v',R/'references/MIRLO64/platform/pocket/common.v',R/'sim/pocket/mf_datatable_model.sv']
 before={str(p):digest(p) for p in paths}
 for name,n in [('meta-a.hex',40),('meta-b.hex',9),('meta-a2.hex',30),('meta-big.hex',317787)]:

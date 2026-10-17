@@ -41,12 +41,15 @@ DUALSHOCK_TOP = (
     reg dualshock_setting=1'b1;
     always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000040) dualshock_setting<=|bridge_wr_data;
     wire pad_dualshock; wire [31:0] pad_sticks;
-    psx_pocket_analog pad_analog (.clk1x(clk1x),.reset_n(cpu_locked),.dualshock_setting(dualshock_setting),
+    psx_pocket_analog pad_analog (.clk1x(clk1x),.reset_n(cpu_locked),.clk_74a(clk_74a),.dualshock_setting(dualshock_setting),
         .apf_type(cont1_key[31:28]),.apf_joy(cont1_joy),.dualshock(pad_dualshock),.sticks(pad_sticks));
     psx_pocket_pad pad_input ('''),
     ('.joypad1_KeyL3(joypad1_KeyL3),', '.joypad1_KeyL3(joypad1_KeyL3),\n.pad_dualshock(pad_dualshock),\n.pad_sticks(pad_sticks),'),
 )
 
-# Level synchronizer first stage, like pad_input's keys_meta; the stable-sample
-# filter behind it rejects words torn across a host update.
-DUALSHOCK_SDC = 'set_false_path -to [get_registers {*|pad_analog|analog_meta[*]}]\n'
+# Held payload: req/ack toggles cross through two-flop synchronizers (first
+# stages cut); hold is stable from req's toggle until ack returns, so its
+# paths into clk1x are bounded to one clk_74a period like psx_cd_stream's.
+DUALSHOCK_SDC = ('set_false_path -to [get_registers {*|pad_analog|req_s[0] *|pad_analog|ack_s[0]}]\n'
+                 'set_max_delay 13 -from [get_registers {*|pad_analog|hold[*]}]\n'
+                 'set_min_delay -13 -from [get_registers {*|pad_analog|hold[*]}]\n')

@@ -30,19 +30,29 @@ set dma_route_sources [dma_route_regs nextAddr]
 set dma_route_targets [dma_route_regs dmaSettings.D_MADR]
 set dma_route_target_names {}
 foreach_in_collection r $dma_route_targets {lappend dma_route_target_names [get_node_info -name $r]}
-set dma_route_pairs {}
+set dma_route_pairs {};set dma_route_observed_bits {};set dma_route_observed_targets {}
 foreach_in_collection r $dma_route_sources {
     set name [get_node_info -name $r]
     regexp {nextAddr\[([0-9]+)\]} $name -> bit
-    set found 0
     foreach_in_collection out [get_fanouts [dma_route_exact [list $name]]] {
         set target [get_node_info -name $out]
         if {$target in $dma_route_target_names} {
             if {![regexp {D_MADR\[([0-9]+)\]} $target -> target_bit] || $bit!=$target_bit} {error "DMA address routing crossed bit lanes $name $target"}
-            lappend dma_route_pairs [list $name $target];incr found
+            lappend dma_route_pairs [list $name $target]
+            lappend dma_route_observed_bits $bit
+            lappend dma_route_observed_targets $target
         }
     }
-    if {!$found} {error "Missing DMA address-bank consumer $name"}
+}
+# Physical copies can partition fanout: one copy feeds IRQ/control logic,
+# another the address-bank data input. Require each logical lane and every
+# destination copy, keeping ALL source copies in the routing collection.
+set dma_route_expected_bits {};for {set bit 0} {$bit<24} {incr bit} {lappend dma_route_expected_bits $bit}
+if {[lsort -integer -unique $dma_route_observed_bits] ne $dma_route_expected_bits} {
+    error "Missing logical DMA address-bank consumer"
+}
+if {[lsort -unique $dma_route_observed_targets] ne [lsort -unique $dma_route_target_names]} {
+    error "DMA address-bank destination has no source"
 }
 set dma_route_pairs [lsort -unique $dma_route_pairs]
 set_net_delay -min 0.5 -from $dma_route_sources -to $dma_route_targets

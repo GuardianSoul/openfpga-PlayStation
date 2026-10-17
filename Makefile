@@ -1,6 +1,6 @@
 .PHONY: test test-python test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache preflight resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte inspect-assets diagnose-bios
 
-test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-memcard-format test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-joypad-dualshock test-joypad-dualshock-lean test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram
+test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-joypad-dualshock test-joypad-dualshock-lean test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-vram-psram test-memcard-slot test-memorymux-fifo-ram
 
 .PHONY: test-sdram-selector test-sdram-ctrl release
 .PHONY: test-native-sdram-spec check-native-sdram-spec
@@ -19,12 +19,26 @@ release:
 	python3 scripts/package_release.py "$(RC_PACKAGE)" --version $(VERSION)
 	python3 scripts/release_source.py "$(RC_PROJECT)" --version $(VERSION)
 
+.PHONY: test-spu-cd-queue
+test: test-spu-cd-queue
+test-spu-cd-queue:
+	python3 scripts/run_spu_cd_queue.py
+	! python3 scripts/run_spu_cd_queue.py --fault > build/spu-cd-queue-fault.log 2>&1
+
+.PHONY: test-spu-ch3-cache
+test: test-spu-ch3-cache
+test-spu-ch3-cache:
+	python3 scripts/run_spu_ch3_cache.py
+
 test-sdram-ctrl:
 	python3 scripts/run_sdram_ctrl.py
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 2 --compare-cl2
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 3 --spu-first
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 300 --dclk 0.5 --tret 0.5 --expect-fail
 	python3 scripts/run_sdram_ctrl.py --cas 2 --ops 300 --dclk 5 --tret 5 --no-reference --expect-fail
+
+test-cue-mount:
+	python3 scripts/run_cue_mount.py
 
 test-sdram-selector:
 	python3 scripts/run_sdram_selector.py
@@ -136,12 +150,19 @@ test-cd-xa:
 test-cd-disc-swap:
 	python3 scripts/run_cd_disc_swap.py
 
+test-vram-psram:
+	python3 scripts/run_vram_psram.py --quick
+
+test-memcard-slot:
+	python3 scripts/run_memcard_slot.py --quick
+
+test-memorymux-fifo-ram:
+	python3 scripts/run_memorymux_fifo_ram.py --quick
+
 test-memcard-window:
 	python3 scripts/run_memcard_window.py
 
-.PHONY: test-memcard-format
-test-memcard-format:
-	python3 scripts/run_memcard_format.py
+.PHONY: test-vram-psram test-memcard-slot test-memorymux-fifo-ram
 
 .PHONY: test-apf-bridge
 test: test-apf-bridge
@@ -192,9 +213,7 @@ test-main-lean:
 	python3 scripts/run_main_lean.py
 
 # Requires the locally installed Intel simulation library (not a CI default).
-.PHONY: test-memorymux-m10k
-test-memorymux-m10k:
-	python3 scripts/run_memorymux_m10k.py
+.PHONY:
 
 test-gpu-no-watchdog:
 	python3 scripts/run_gpu_no_watchdog.py
@@ -548,6 +567,26 @@ test-cd-controller-apf:
 test-cd-swap-apf:
 	python3 scripts/run_cd_swap_apf.py
 
+.PHONY: test-cd-menu-cdc test-cd-table-cdc test-cd-table-menu-cdc
+test: test-cd-menu-cdc test-cd-table-cdc test-cd-table-menu-cdc
+test-cd-menu-cdc:
+	python3 scripts/run_cd_menu_cdc.py
+
+test-cd-table-cdc:
+	python3 scripts/run_cd_table_cdc.py
+
+test-cd-table-menu-cdc:
+	python3 scripts/run_cd_table_menu_cdc.py
+
+.PHONY: test-clean-memory-cdc
+test-clean-memory-cdc:
+	python3 scripts/run_clean_memory_cdc.py
+
+.PHONY: test-divider-bank
+test: test-divider-bank
+test-divider-bank:
+	python3 scripts/run_divider_bank.py
+
 .PHONY: test-memcard-initialize test-apf-target-arb
 test-memcard-initialize:
 	python3 scripts/run_memcard_initialize.py
@@ -598,3 +637,12 @@ test-joypad-dualshock:
 .PHONY: test-pad-combo
 test-pad-combo:
 	python3 scripts/run_pad_combo.py
+
+.PHONY: test-stick-map
+test: test-stick-map
+test-stick-map:
+	iverilog -g2012 -s tb_psx_pocket_stick_map -o build/tb_stick_map sim/pocket/tb_psx_pocket_stick_map.sv rtl/pocket/psx_pocket_stick_map.sv
+	vvp -n build/tb_stick_map | tee /dev/stderr | grep -q 'PASS psx_pocket_stick_map'
+	python3 -m unittest tests.test_pocket_stick_settings
+	mkdir -p build/tb_stick_dpad && cd build/tb_stick_dpad && ghdl -a --std=08 -frelaxed ../../references/PSX_MiSTer/rtl/pJoypad.vhd ../../rtl/pocket/joypad_pad_dualshock.vhd ../../sim/pocket/tb_joypad_stick_dpad.vhd && ghdl -e --std=08 -frelaxed tb_joypad_stick_dpad && \
+		for g in true false; do ghdl -r --std=08 -frelaxed tb_joypad_stick_dpad -gSTICK_DPAD=$$g 2>&1 | grep -q "PASS stick dpad STICK_DPAD=$$g" || exit 1; done

@@ -24,6 +24,17 @@ LibCrypt (cores packaged with --libcrypt, which declare slot 99): a PAL disc's
 redump .sbi file next to its cue (same name, or the only .sbi in the folder)
 goes into slot 99, and the core reads its protected-sector list from it.
 
+One-file cores (packaged with --one-file-disc, which declare a .trk slot 102):
+each disc is one .bin with all its tracks in slot 100*n+1 and a 1,600-byte
+track table (.trk, the core's 400 track-info words) in slot 100*n+2, so
+discs with any number of tracks (up to 99) play. A cue with one merged .bin
+is used as it is, with the table written next to it; per-track files are
+copied once into "<cue name> (one file).bin" (the originals stay). Tracks may
+have any pregap stored in the image; a PREGAP outside it, or a data track
+after track 1, is not supported. With --convert, .chd files are extracted as
+one merged .bin instead of split. A disc's .sbi goes into the table (its
+LibCrypt mask in word 3) instead of a slot.
+
 Multi-disc games (names with "(Disc N)") share one memory card: the Pocket
 names a save after the game file, so each disc would otherwise get its own
 card and a save made before a disc change would not show on the next disc.
@@ -49,6 +60,7 @@ SECTOR = 2352
 PREGAP = 150
 LIBCRYPT_SLOT = 99
 CARD_SLOT = 16
+HELP_ENTRY = '! How to add games (see README).json'   # package_release.py's placeholder
 DISC = re.compile(r' \(Disc \d+\)')
 DISC_N = re.compile(r'\s*\(Disc (\d+)\)', re.I)
 # Other tags in parentheses (region, release, languages) can differ between
@@ -163,8 +175,90 @@ def split_cue(cue, dest, move=False):
     return out_cue
 
 
-def extract_chd(chd, dest, chdman):
-    """chdman extractcd into a scratch folder beside dest, then split_cue."""
+def one_file_plan(files, folder):
+    """(sources, tracks) for a one-file disc, or a reason string.
+
+    sources: [(path, sectors)] concatenated in order; tracks: [(start,
+    index01)] in sectors from the start of the image (start is INDEX 00, or
+    INDEX 01 without one)."""
+    if not files: return 'no FILE entries'
+    sources, tracks, offset = [], [], 0
+    for name, entries in files:
+        path = folder/name
+        if not path.is_file(): return f'{name}: file missing'
+        size = path.stat().st_size
+        if size % SECTOR or not size: return f'{name}: not whole 2352-byte sectors'
+        for number, kind, index in entries:
+            if not raw_track(kind): return f'track {number}: {kind} is not 2352-byte sectors'
+            if 1 not in index: return f'track {number}: no INDEX 01'
+            if index.get('pregap'): return f'track {number}: PREGAP outside the image'
+            if tracks and kind != 'AUDIO': return f'track {number}: data after track 1'
+            tracks.append((offset + index.get(0, index[1]), offset + index[1]))
+        sources.append((path, size//SECTOR)); offset += size//SECTOR
+    if not tracks or files[0][1][0][1] == 'AUDIO' or tracks[0] != (0, 0): return 'track 1 must be data with INDEX 01 at 00:00:00'
+    if len(tracks) > 99: return f'{len(tracks)} tracks (a CD has at most 99)'
+    if any(not a[1] < b[0] or not a[0] <= a[1] for a, b in zip(tracks, tracks[1:])) or not tracks[-1][1] < offset:
+        return 'indexes out of order or past the image'
+    if offset + PREGAP > 524288: return 'longer than the core\'s 19-bit LBAs'
+    return sources, tracks
+
+
+def bcd(value): return (value//10)*16 + value%10
+
+
+# The 16 LibCrypt sector addresses (absolute BCD MM:SS:FF) behind mask bits
+# 15..0, as Main_MiSTer support/psx/psx.cpp libCryptMask and psx_cd_stream.
+LIBCRYPT_MSF = (0x030805, 0x030956, 0x031310, 0x031429, 0x031524, 0x031849, 0x032056, 0x032155,
+                0x032317, 0x032412, 0x032503, 0x032828, 0x033219, 0x033356, 0x033451, 0x033542)
+
+
+def libcrypt_mask(sbi):
+    """16-bit mask from a redump .sbi: 4-byte header, 14-byte entries."""
+    data, mask = sbi.read_bytes(), 0
+    for offset in range(4, len(data) - 2, 14):
+        msf = int.from_bytes(data[offset:offset+3], 'big')
+        if msf in LIBCRYPT_MSF: mask |= 1 << (15 - LIBCRYPT_MSF.index(msf))
+    return mask
+
+
+def track_table(tracks, sectors, region=2, mask=0):
+    """The core's 400 track-info words (scripts/psx_disc_host.py layout)."""
+    end = sectors + PREGAP
+    minutes, seconds = divmod(end//75, 60)
+    words = [0]*400
+    words[:4] = [(bcd(len(tracks)) << 8) | len(tracks), end, (bcd(minutes) << 8) | bcd(seconds), (region << 16) | mask]
+    for k, (start, index01) in enumerate(tracks):
+        minutes, seconds = divmod((index01 + PREGAP)//75, 60)
+        last = (tracks[k+1][0] if k+1 < len(tracks) else sectors) + PREGAP - 1
+        words[4*k+4:4*k+8] = [0 if k == 0 else start + PREGAP, last, ((k != 0) << 16) | (bcd(minutes) << 8) | bcd(seconds), 0]
+    return words
+
+
+def write_one_file(cue, files, sbi=None):
+    """Write the one-file image (when the cue has several files) and its
+    table; returns (bin path, table path, track count) or a reason string."""
+    plan = one_file_plan(files, cue.parent)
+    if isinstance(plan, str): return plan
+    sources, tracks = plan
+    total = sum(n for _, n in sources)
+    if len(sources) == 1: image = sources[0][0]
+    else:
+        image = cue.parent/f'{cue.stem} (one file).bin'
+        if not (image.is_file() and image.stat().st_size == total*SECTOR):
+            partial = image.with_name(image.name + '.part')
+            with open(partial, 'wb') as out:
+                for path, _ in sources:
+                    with open(path, 'rb') as src: shutil.copyfileobj(src, out, 1 << 22)
+            os.replace(partial, image)
+    table = image.with_suffix('.trk')
+    data = b''.join(w.to_bytes(4, 'little') for w in track_table(tracks, total, mask=libcrypt_mask(sbi) if sbi else 0))
+    if not (table.is_file() and table.read_bytes() == data): table.write_bytes(data)
+    return image, table, len(tracks)
+
+
+def extract_chd(chd, dest, chdman, split=True):
+    """chdman extractcd into a scratch folder beside dest, then split_cue
+    (or, without split, move the merged cue and image into dest)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.chd-', dir=dest.parent) as scratch:
         cue = Path(scratch)/(chd.stem + '.cue')
@@ -173,13 +267,19 @@ def extract_chd(chd, dest, chdman):
         if result.returncode or not cue.is_file():
             message = (result.stderr or result.stdout).strip().splitlines()
             raise ValueError('chdman failed' + (': ' + message[-1] if message else ''))
+        if not split:
+            dest.mkdir(parents=True, exist_ok=True)
+            os.replace(cue.with_suffix('.bin'), dest/(chd.stem + '.bin'))
+            os.replace(cue, dest/(chd.stem + '.cue'))
+            return dest/(chd.stem + '.cue')
         return split_cue(cue, dest, move=True)
 
 
-def convert(common, chdman):
-    """Extract .chd files and split merged cues under common. Returns counts."""
+def convert(common, chdman, one_file=False):
+    """Extract .chd files and split merged cues under common (one-file
+    cores: extract only, merged cues stay as they are). Returns counts."""
     done = failed = 0
-    for image in visible(common, '*.chd') + visible(common, '*.cue'):
+    for image in visible(common, '*.chd') + ([] if one_file else visible(common, '*.cue')):
         dest = image.parent/image.stem
         if image.parent.name == image.stem or (dest/(image.stem + '.cue')).is_file(): continue
         if image.suffix == '.cue':
@@ -190,7 +290,7 @@ def convert(common, chdman):
         elif not chdman:
             print(f'skip {image.relative_to(common)}: chdman not found (install MAME tools, or pass --chdman)'); failed += 1; continue
         try:
-            out = extract_chd(image, dest, chdman) if image.suffix == '.chd' else split_cue(image, dest)
+            out = extract_chd(image, dest, chdman, not one_file) if image.suffix == '.chd' else split_cue(image, dest)
         except (ValueError, OSError) as error:
             shutil.rmtree(dest, ignore_errors=True)
             print(f'skip {image.relative_to(common)}: {error}'); failed += 1; continue
@@ -224,11 +324,15 @@ def main():
                         help="list .sbi files in slot 99 (default: when the core's data.json declares slot 99)")
     parser.add_argument('--shared-cards', action=argparse.BooleanOptionalAction, default=None,
                         help="one memory card per multi-disc game (default: when the core's data.json declares slot 16)")
+    parser.add_argument('--one-file', action=argparse.BooleanOptionalAction, default=None,
+                        help="one .bin plus a .trk table per disc (default: when the core's data.json declares a .trk slot 102)")
     parser.add_argument('--max-tracks', type=int, help="track slots the core declares (default: read from the core's data.json on the card, else 8)")
     args = parser.parse_args()
     data = args.card/'Cores'/f'GuardianSoul.{args.core}'/'data.json'
     try: declared = json.loads(data.read_text())['data']['data_slots']
     except (OSError, KeyError, ValueError): declared = None
+    if args.one_file is None:
+        args.one_file = declared is not None and any(s.get('id') == 102 and 'trk' in s.get('extensions', []) for s in declared)
     if args.max_tracks is None:
         args.max_tracks = 8 if declared is None else sum(1 for s in declared if isinstance(s.get('id'), int) and 101 <= s['id'] <= 199)
     if args.shared_cards is None:
@@ -238,7 +342,7 @@ def main():
     common = args.card/'Assets'/args.platform/'common'
     out = args.card/'Assets'/args.platform/f'GuardianSoul.{args.core}'
     if args.convert:
-        done, failed = convert(common, args.chdman)
+        done, failed = convert(common, args.chdman, args.one_file)
         print(f'{done} images converted, {failed} failed')
     disc_tracks = {n: sum(1 for s in (declared or []) if isinstance(s.get('id'), int) and 100*n+1 <= s['id'] <= 100*n+99)
                    for n in range(2, 10)}
@@ -250,8 +354,13 @@ def main():
         folder = cue.parent
         try: files = parse_cue(cue)
         except ValueError as error: files, reason = None, str(error)
-        else: reason = check(files, folder)
-        if reason is None and len(files) > args.max_tracks: reason = f'{len(files)} track files (core takes {args.max_tracks})'
+        else: reason = None if args.one_file else check(files, folder)
+        if args.one_file and folder.name == cue.stem and (folder.parent/cue.name).is_file(): continue  # split copy of a merged cue
+        if reason is None and args.one_file:
+            made = write_one_file(cue, files, find_sbi(cue))
+            if isinstance(made, str): reason = made
+            else: files = [(made[0].relative_to(folder).as_posix(), None), (made[1].relative_to(folder).as_posix(), None)]; tracks_n = made[2]
+        if reason is None and not args.one_file and len(files) > args.max_tracks: reason = f'{len(files)} track files (core takes {args.max_tracks})'
         if reason and (folder/cue.stem/(cue.stem + '.cue')).is_file(): continue  # converted copy is listed
         if reason:
             print(f'skip {cue.relative_to(common)}: {reason}'); skipped += 1; continue
@@ -265,8 +374,8 @@ def main():
             continue
         data_path = folder.relative_to(common).as_posix()
         slots = [{'id': 100, 'filename': cue.name}] + [{'id': 101+k, 'filename': name} for k, (name, _) in enumerate(files)]
-        sbi = find_sbi(cue) if args.libcrypt else None
-        if sbi: slots.append({'id': LIBCRYPT_SLOT, 'filename': sbi.name})
+        sbi = find_sbi(cue) if args.libcrypt or args.one_file else None
+        if sbi and not args.one_file: slots.append({'id': LIBCRYPT_SLOT, 'filename': sbi.name})
         prefix = data_path + '/' if data_path != '.' else ''
         shared = shared_card_name(cue.stem) if args.shared_cards else None
         if shared:
@@ -277,14 +386,15 @@ def main():
         instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
         out.mkdir(parents=True, exist_ok=True)
         (out/(cue.stem + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
-        print(f'wrote {cue.stem}.json ({len(files)} track{"s" if len(files) > 1 else ""}{", LibCrypt " + sbi.name if sbi else ""})'); written += 1
+        count = tracks_n if args.one_file else len(files)
+        print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{", one file" if args.one_file else ""}{", LibCrypt " + sbi.name if sbi else ""})'); written += 1
     for game, found in sorted(games.items()):
         first_tags = found.get(1, [(None, None, [])])[0][2]
         parts = {n: next(((c, f) for c, f, t in cands if t == first_tags), cands[0][:2]) for n, cands in found.items()}
         numbers = sorted(parts)
         if numbers != list(range(1, len(numbers)+1)) or len(numbers) > discs_declared:
             print(f'skip {game}: discs {numbers} (core takes discs 1-{discs_declared})'); skipped += 1; continue
-        too_long = [n for n in numbers[1:] if len(parts[n][1]) > disc_tracks[n]]
+        too_long = [] if args.one_file else [n for n in numbers[1:] if len(parts[n][1]) > disc_tracks[n]]
         if too_long:
             print(f'skip {game}: disc {too_long[0]} has more track files than the core declares'); skipped += 1; continue
         root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
@@ -313,6 +423,8 @@ def main():
         for n in numbers:   # per-disc files from earlier runs
             (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
         print(f'wrote {name}.json ({len(numbers)} discs)'); written += 1
+    if written:   # the release's "how to add games" placeholder
+        (out/HELP_ENTRY).unlink(missing_ok=True)
     for name, stems in sorted(discs.items()):
         seeded = seed_shared_card(args.card, args.platform, args.core, stems, name)
         if seeded: print(f'shared card {name} starts from {seeded.name}')

@@ -76,7 +76,10 @@ module tb_cd_stream;
 `ifndef CD_STREAM_LC
 `define CD_STREAM_LC 16'h0
 `endif
- psx_cd_stream #(.DEFAULT_SLOT(16'h20),.NBUF(`CD_STREAM_NBUF),.MAX_TRACKS(`CD_STREAM_TRACKS),.LIBCRYPT_SLOT(`CD_STREAM_LC)) dut(.host_clk(hclk),.host_reset(host_reset),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),
+`ifndef CD_STREAM_TB
+`define CD_STREAM_TB 16'h0
+`endif
+ psx_cd_stream #(.DEFAULT_SLOT(16'h20),.NBUF(`CD_STREAM_NBUF),.MAX_TRACKS(`CD_STREAM_TRACKS),.LIBCRYPT_SLOT(`CD_STREAM_LC),.TABLE_OFFSET(`CD_STREAM_TB)) dut(.host_clk(hclk),.host_reset(host_reset),.bridge_wr(bridge_wr),.bridge_addr(bridge_addr),
   .bridge_data(bridge_data),.allcomplete(allcomplete),.slot_update(slot_update),.slot_update_id(update_id),
   .slot_update_size(update_size),.table_active(table_active),.table_grant(table_grant),.table_addr(table_addr),.table_q(table_q),
   .target_read(target_read),.target_ready(target_ready),.target_id(target_id),.target_offset(target_offset),.target_bridge(target_bridge),
@@ -138,6 +141,8 @@ module tb_cd_stream;
   if(slot==16'h31) return 7*2352;
   if(slot==16'h131) return 160*2352+100;
   if(slot==16'h63) return SBI_BYTES;
+  if(`CD_STREAM_TB!=0 && slot==16'h60) return 1600;
+  if(`CD_STREAM_TB!=0 && slot==16'h64) return 1599;
   return -1;
  endfunction
 
@@ -175,10 +180,17 @@ module tb_cd_stream;
   write_bus(32'hf8002050,swap(32'h31));write_bus(32'hf8002054,swap(7*2352));
   write_bus(32'hf8002058,swap(32'h131));write_bus(32'hf800205c,swap(160*2352+100));
   if(`CD_STREAM_LC!=0) begin write_bus(32'hf8002060,swap(32'h63));write_bus(32'hf8002064,swap(SBI_BYTES));end
+  // One-file discs (case 9): disc A's track table file in slot 0x60; slot
+  // 0x64 (the full-size disc's) is one byte short and must be ignored.
+  if(`CD_STREAM_TB!=0) begin
+   write_bus(32'hf8002068,swap(32'h64));write_bus(32'hf800206c,swap(32'd1599));
+   write_bus(32'hf8002070,swap(32'h60));write_bus(32'hf8002074,swap(32'd1600));
+  end
  endtask
  reg op_table=0,op_allcomplete=0,op_update=0;integer update_value=0;
  integer apf_latency=0,apf_spacing=0,fail_offset=-1,reads=0,read_bytes=0;
- integer apf_seed=7,sbi_reads=0;
+ integer apf_seed=7,sbi_reads=0,tb_reads=0;reg tb_fail=0;
+ reg [31:0] meta_tb[0:399];
  reg apf_enabled=1,apf_shuffle=0,apf_serving=0;
  task automatic serve_target();
   reg [31:0] status,id,offset,addr,length,word;integer delay;
@@ -194,6 +206,13 @@ module tb_cd_stream;
   if(status[15:0]!=16'h0180) $fatal(1,"APF target opcode %h",status[15:0]);
   read_bus(32'hf8001020,id);read_bus(32'hf8001024,offset);
   read_bus(32'hf8001028,addr);read_bus(32'hf800102c,length);
+  if(`CD_STREAM_TB!=0 && id==16'h60) begin
+   if(length!=1600 || offset!=0 || addr!=32'h24000000+(`CD_STREAM_NBUF-1)*32'h1000) $fatal(1,"APF track table read shape");
+   write_bus(32'hf8001000,swap(32'h62750000));
+   if(tb_fail) begin tb_fail=0;tb_reads++;write_bus(32'hf8001000,swap(32'h6f6b0003));return;end
+   for(integer n=0;n<400;n++) write_bus(addr+n*4,meta_tb[n]);
+   tb_reads++;write_bus(32'hf8001000,swap(32'h6f6b0000));return;
+  end
   if(id==16'h63) begin
    // The .sbi: one read of the whole file into a staging window.
    if(length!=SBI_BYTES || offset!=0 || addr<32'h24000000 || addr[11:0]!=0) $fatal(1,"APF .sbi read shape");
@@ -248,10 +267,14 @@ module tb_cd_stream;
  end
  integer change_count=0;
  always @(posedge cclk) if(disc_change_done) change_count<=change_count+1;
+ reg tb_off=0;   // case 9: the table read failed, the generated table is expected
  task automatic check_table(input integer which);
   for(integer i=0;i<400;i++) begin
    reg [31:0] want;
    want=which==0 ? meta_a[i] : which==1 ? meta_b[i] : which==2 ? meta_a2[i] : which==4 ? meta_mt[i] : meta_big[i];
+   // One-file build: disc A (slot 0x20) carries its track table file;
+   // word 3 is the core's region with the file's LibCrypt mask.
+   if(`CD_STREAM_TB!=0 && (which==0 || which==2) && !tb_off) want=i==3 ? {meta_a[3][31:16],meta_tb[3][15:0]} : meta_tb[i];
    if(i==3 && `CD_STREAM_LC!=0) want|=32'h8401;   // the .sbi's LibCrypt mask (case 8)
    if(table_seen[i]!==want) $fatal(1,"Track table word %0d=%h expected %h",i,table_seen[i],want);
    checks++;
@@ -312,7 +335,7 @@ module tb_cd_stream;
  initial begin
   if($value$plusargs("CASE=%d",test_case)) begin end
   base_changes=0;
-  $readmemh({"meta-a.hex"},meta_a);if(`CD_STREAM_TRACKS>1) $readmemh({"meta-mt.hex"},meta_mt);$readmemh({"meta-b.hex"},meta_b);$readmemh({"meta-a2.hex"},meta_a2);$readmemh({"meta-big.hex"},meta_big);
+  $readmemh({"meta-a.hex"},meta_a);if(`CD_STREAM_TRACKS>1) $readmemh({"meta-mt.hex"},meta_mt);if(`CD_STREAM_TB!=0) $readmemh({"meta-tb.hex"},meta_tb);$readmemh({"meta-b.hex"},meta_b);$readmemh({"meta-a2.hex"},meta_a2);$readmemh({"meta-big.hex"},meta_big);
   size_a=sectors_a*2352;size_b=sectors_b*2352;size_a2=30*2352;
   if(test_case==1) begin apf_latency=60000;apf_spacing=6;apf_shuffle=1;end  // up to ~0.8 ms per sector
   else if(test_case==5) begin apf_latency=60000;apf_spacing=2;end
@@ -425,6 +448,31 @@ module tb_cd_stream;
     sequential(16'h20,sectors_a,150,6,0);fetch(16'h20,sectors_a,170,0);
     select(16'h21);if(!has_disc || sbi_reads!=2) $fatal(1,"Second mount .sbi reads=%0d",sbi_reads);
     check_table(1);fetch(16'h21,sectors_b,150,0);sequential(16'h21,sectors_b,151,4,0);
+   end
+   9: begin
+    // One-file discs: disc A's table file (read once per mount into the
+    // last buffer, which serves sectors again afterwards), disc B without
+    // one (generated table), a table file of the wrong size (ignored), a
+    // failed table read (generated table, sectors still served), and A again.
+    if(tb_reads!=1) $fatal(1,"Expected one track table read, got %0d",tb_reads);
+    sequential(16'h20,sectors_a,150,8,0);fetch(16'h20,sectors_a,170,0);
+    select(16'h21);if(!has_disc || tb_reads!=1) $fatal(1,"Disc without a table file: reads=%0d",tb_reads);
+    check_table(1);sequential(16'h21,sectors_b,150,4,0);
+    select(16'h24);if(!has_disc || tb_reads!=1) $fatal(1,"Short table file read: reads=%0d",tb_reads);
+    check_table(3);fetch(16'h24,317787,150+317786,0);
+    tb_fail=1;select(16'h20);if(!has_disc || tb_reads!=2) $fatal(1,"Failed table read: reads=%0d",tb_reads);
+    tb_off=1;check_table(0);tb_off=0;sequential(16'h20,sectors_a,150,4,0);
+    if(read_error) $fatal(1,"A failed table read reported a sector read error");
+    select(16'h20);if(!has_disc || tb_reads!=3) $fatal(1,"Table after a failed read: reads=%0d",tb_reads);
+    check_table(0);sequential(16'h20,sectors_a,160,6,0);
+    // Reads racing a remount: the table buffer must not take a sector
+    // before the core has replayed its words.
+    fork
+     for(integer l=180;l<186;l++) fetch(16'h20,sectors_a,l,0);
+     begin repeat(300) @(negedge cclk);select(16'h20);end
+    join
+    if(tb_reads!=4) $fatal(1,"Racing remount table reads=%0d",tb_reads);
+    check_table(0);sequential(16'h20,sectors_a,150,3,0);
    end
    default: begin
     // Pregap, sequential prefetch, repeat, seeks, image end, past end.

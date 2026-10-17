@@ -13,6 +13,7 @@ import re
 import shutil
 import zipfile
 
+import build_chip32_loader
 from prepare_resource_targets import digest
 from tool_paths import ROOT
 
@@ -31,12 +32,17 @@ def main():
     parser.add_argument('--version', default='0.0.1')
     parser.add_argument('--allow-timing-failure', action='store_true')
     parser.add_argument('--memcard-slot', action='store_true', help='Memory card 1 save slot (prepare --memcard-slot)')
-    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='prepare --disc-menu: declare discs 2..DISCS (slots n01, n02, ...; tracks per extra disc as the 32-slot table allows) and the "Disc" menu list')
+    parser.add_argument('--bios-check', action='store_true', help='Chip32 loader: a message naming the BIOS file and folder when it is missing, not 512 KB or not a USA BIOS (support/chip32/psx_bios_check.asm)')
+    parser.add_argument('--bios-names', action='store_true', help='With --bios-check: also accept other BIOS file names, one slot each from 0x20 (prepare --bios-names)')
+    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='prepare --disc-menu: declare discs 2..DISCS (slots n01, n02, ...; tracks per extra disc as the 32-slot table allows) and the "Swap Discs" menu list')
     parser.add_argument('--libcrypt', action='store_true', help='Declare data slot 99 for a disc\'s LibCrypt .sbi (prepare --libcrypt; make_pocket_instances.py fills it)')
+    parser.add_argument('--stick-settings', action='store_true', help='Menu lists "D-pad" and "SELECT + D-pad" and the stick options of "SELECT + A/B/X/Y" (prepare --stick-settings; needs --dualshock --shoulder-setting)')
     parser.add_argument('--dualshock', action='store_true', help='Menu checkbox "DualShock" (prepare --dualshock, bridge 0x50000040, on by default) and the analog notes in info.txt')
     parser.add_argument('--pad-combos', action='store_true', help='Explain the Select combos in info.txt (prepare --pad-combos); the Controls list stays plain because combos cannot be remapped')
     parser.add_argument('--boot-log', action='store_true', help='Add the nonvolatile boot-trace slot (prepare --boot-trace)')
     parser.add_argument('--disc', action='store_true', help='Disc slot 0 (.bin from SD, prepare --cd-stream); BIOS moves to slot 0x20')
+    parser.add_argument('--cue-mount', action='store_true', help='prepare --cue-mount: the launch list takes a game JSON, .cue or .bin; without --disc-menu, "Load disc" (slot 101, reloadable without a restart) swaps to another .cue or .bin')
+    parser.add_argument('--one-file-disc', action='store_true', help='prepare --one-file-disc: disc n is one .bin in slot 100*n+1 and its track table (.trk) in 100*n+2 (make_pocket_instances.py merges track files)')
     parser.add_argument('--multi-track', type=int, default=0, help='Discs as instance JSONs: cue slot 100, track bins 101..100+N (prepare --multi-track N)')
     parser.add_argument('--logo-skip-setting', action='store_true', help='Menu checkbox to skip the BIOS logo (prepare --logo-skip-setting)')
     parser.add_argument('--field-swap-setting', action='store_true', help='Menu checkbox to swap the 480i field order (prepare --field-swap-setting)')
@@ -44,6 +50,9 @@ def main():
     parser.add_argument('--weave-setting', action='store_true', help='Menu checkbox for 480i weave (prepare --weave-setting)')
     parser.add_argument('--pal288', action='store_true', help='With --slots480: slot 7 is 320x288 for PAL instead of 368x480 (prepare --pal288)')
     parser.add_argument('--video-test-setting', action='store_true', help='Diagnostic Settings list "Video test" (prepare --video-test-setting)')
+    parser.add_argument('--wide-lines', action='store_true', help='Scaler slots 640x240/480/288 for stretched lines (prepare --wide-lines)')
+    parser.add_argument('--hybrid-slots', action='store_true', help='With --wide-lines: native 320/256/512 slots plus stretched 640 slots (prepare --hybrid-slots)')
+    parser.add_argument('--slot6-368', action='store_true', help='With --pal288: slot 6 is 368x480 instead of 512x480 (prepare --slot6-368)')
     parser.add_argument('--slots480', action='store_true', help='Add 640/512/368 x 480 scaler slots 5-7 (prepare --slots480)')
     parser.add_argument('--platform', default=PLATFORM, help="Platform id; 'playstation' uses the existing Assets/playstation/common folder")
     parser.add_argument('--bios-name', default='bios.bin')
@@ -89,6 +98,9 @@ def main():
                   'extensions': ['bin'], 'size_maximum': '0x40000000', 'address': '0x24000000'},
                  dict(slots[0], id='0x20')]
     if args.libcrypt and not args.multi_track: parser.error('--libcrypt needs --multi-track')
+    if args.one_file_disc and not args.multi_track: parser.error('--one-file-disc needs --multi-track')
+    if args.cue_mount and not args.one_file_disc: parser.error('--cue-mount needs --one-file-disc')
+    if args.one_file_disc and args.libcrypt: parser.error('--one-file-disc: the LibCrypt mask is in the track table; drop --libcrypt')
     if args.multi_track:
         if not args.disc: parser.error('--multi-track needs --disc')
         # The PC Engine CD core's Pocket convention: an instance JSON (made by
@@ -104,9 +116,45 @@ def main():
         slots = [{'name': 'Game', 'id': 0, 'required': True, 'parameters': '0x12' if args.disc_menu else '0x13', 'extensions': ['json']},
                  {'name': 'Disc (cue)', 'id': 100, 'required': False, 'parameters': '0x08', 'deferload': True,
                   'extensions': ['cue'], 'size_maximum': '0x4000'}, slots[1]]
-        slots += [{'name': f'Track {k}', 'id': 100+k, 'required': False, 'parameters': '0x08', 'deferload': True,
-                   'extensions': ['bin'], 'size_maximum': '0x40000000'} for k in range(1, args.multi_track+1)]
-        write('instance-packager.json', {'output': f'Assets/{args.platform}/GuardianSoul.{name}', 'platform_id': args.platform,
+        # prepare --one-file-disc: every disc is one .bin of all its tracks and
+        # a 1,600-byte track table file (.trk) in the next slot.
+        disc_slots = lambda n, label: ([{'name': f'{label}Disc image', 'id': 100*n+1, 'required': False, 'parameters': '0x08', 'deferload': True,
+                                         'extensions': ['bin'], 'size_maximum': '0x40000000'},
+                                        {'name': f'{label}Track table', 'id': 100*n+2, 'required': False, 'parameters': '0x08', 'deferload': True,
+                                         'extensions': ['trk'], 'size_maximum': '0x640'}])
+        if args.one_file_disc:
+            slots += disc_slots(1, '')
+        if args.cue_mount:
+            # prepare --cue-mount: the launch list takes a game JSON, a .cue
+            # or a .bin (probe PSXLaunchA: JSONs in the core's folder, Back
+            # reaches the loose files; no BIOS screen first). psx_cue_mount
+            # sniffs slot 0 before the stream starts. "Load disc" in Core
+            # Settings swaps to another .cue or .bin (0x09: user-reloadable,
+            # read-only, no core restart; 0x89's restart hung on the SCE
+            # screen on hardware). The core opens track files into 103. A
+            # .m3u playlist is a multi-disc game with one save (Disc menu).
+            # With --disc-menu, Swap Discs is the one disc option: slot 101
+            # stays the JSON route's disc image, not user-reloadable.
+            slots[0]['extensions'] = ['json', 'cue', 'bin', 'm3u']
+            # A game JSON's slot 100 may hold a .m3u (the multi-disc plugin).
+            next(x for x in slots if x['id'] == 100)['extensions'] = ['cue', 'm3u']
+            if not args.disc_menu:
+                next(x for x in slots if x['id'] == 101).update({'name': 'Load disc', 'parameters': '0x09', 'extensions': ['cue', 'bin', 'm3u']})
+            # The cue's track files, opened one at a time by the core.
+            slots.append({'name': 'Track file', 'id': 103, 'required': False, 'parameters': '0x08', 'deferload': True,
+                          'extensions': ['bin'], 'size_maximum': '0x40000000'})
+            # Another disc's cue ("(Disc n)" siblings, for the Disc menu).
+            slots.append({'name': 'Disc cue', 'id': 104, 'required': False, 'parameters': '0x08', 'deferload': True,
+                          'extensions': ['cue'], 'size_maximum': '0x4000'})
+        elif not args.one_file_disc:
+            slots += [{'name': f'Track {k}', 'id': 100+k, 'required': False, 'parameters': '0x08', 'deferload': True,
+                       'extensions': ['bin'], 'size_maximum': '0x40000000'} for k in range(1, args.multi_track+1)]
+        if args.one_file_disc: write('instance-packager.json', {'output': f'Assets/{args.platform}/GuardianSoul.{name}', 'platform_id': args.platform,
+            'data_slots': [{'id': 100, 'filename': '*.cue', 'sort': 'single', 'required': True, 'as_filename': True},
+                           {'id': 101, 'filename': '*.bin', 'sort': 'single', 'required': True},
+                           {'id': 102, 'filename': '*.trk', 'sort': 'single', 'required': False}]
+                          + ([{'id': 99, 'filename': '*.sbi', 'sort': 'single', 'required': False}] if args.libcrypt else [])})
+        else: write('instance-packager.json', {'output': f'Assets/{args.platform}/GuardianSoul.{name}', 'platform_id': args.platform,
             'slot_limit': {'count': args.multi_track+1+bool(args.libcrypt),
                            'message': f'Games with more than {args.multi_track} track files are not supported yet.'},
             'data_slots': [{'id': 100, 'filename': '*.cue', 'sort': 'single', 'required': True, 'as_filename': True},
@@ -120,6 +168,7 @@ def main():
             free = 32 - len(slots) - 1 - (1 if args.memcard_slot else 0) - (1 if args.boot_log else 0) - (1 if args.libcrypt else 0)
             per_disc = max(1, free // (args.disc_menu - 1))
             for n in range(2, args.disc_menu + 1):
+                if args.one_file_disc: slots += disc_slots(n, f'Disc {n} '); continue
                 slots += [{'name': f'Disc {n} track {k}', 'id': 100*n+k, 'required': False, 'parameters': '0x08', 'deferload': True,
                            'extensions': ['bin'], 'size_maximum': '0x40000000'} for k in range(1, per_disc+1)]
         if args.libcrypt:
@@ -143,14 +192,36 @@ def main():
         # into entry 5.
         slots.insert(1, {'name': 'Memory Card 1', 'id': 0x10, 'required': False, 'parameters': '0xA4',
             'nonvolatile': True, 'extensions': ['sav'], 'size_maximum': '0x20000', 'address': '0x20000000'})
+        # The card is named after the launch pick: Saves/<platform>/<core>/
+        # <json>.sav for a game JSON, Saves/<platform>/common/<folder>/<file>.sav
+        # for a .cue or .bin (probe PSXLaunchB).
+    if args.cue_mount:
+        # A game JSON (0.5.2's layout) may put a track's .bin in 101-104 or
+        # n01-n02; 105-119 are not declared (2026-10-17: the slots go
+        # to all 16 BIOS names), so 0.5.2 files for games with more than four
+        # .bin files need regenerating.
+        for x in slots:
+            if isinstance(x['id'], int) and (101 <= x['id'] <= 119 or (x['id'] > 200 and x['id'] % 100 in (1, 2))):
+                x.update({'size_maximum': '0x40000000', 'extensions': sorted(set(x['extensions']) | {'bin'})})
+    if len(slots) > 32: parser.error(f'{len(slots)} data slots; APF takes 32')
     write('data.json', {'data': {'magic': 'APF_VER_1', 'data_slots': slots}})
+    if args.bios_names and not args.bios_check: parser.error('--bios-names needs --bios-check')
+    if args.bios_check: build_chip32_loader.apply(core, args.platform, args.bios_names)
     # Interlaced BIOS screens arrive as 240-line fields.
     # Slot order matches psx_apf_video SLOT_SELECT: 640, 320, 256, 368, 512
     # (x 240), then with SLOT480 640, 512, 368 x 480.
-    write('video.json', {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
+    if args.wide_lines:
+        # prepare --wide-lines: every line is 640 pixels; slots by height only.
+        write('video.json', {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
+            {'width': 640, 'height': h, 'aspect_w': 4, 'aspect_h': 3, 'rotation': 0, 'mirror': 0}
+            for h in (240, 480, 288)]}} if not args.hybrid_slots else {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
+            {'width': w, 'height': h, 'aspect_w': 4, 'aspect_h': 3, 'rotation': 0, 'mirror': 0}
+            for w, h in ((640, 240), (320, 240), (256, 240), (640, 480), (320, 288), (256, 288), (640, 288), (512, 240))]}})
+    else:
+         write('video.json', {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
         {'width': w, 'height': h, 'aspect_w': 4, 'aspect_h': 3, 'rotation': 0, 'mirror': 0}
         for w, h in ((640, 240), (320, 240), (256, 240), (368, 240), (512, 240))
-        + ((((640, 480), (512, 480), (320, 288)) if args.pal288 else ((640, 480), (512, 480), (368, 480))) if args.slots480 else ())]}})
+        + ((((640, 480), (368 if args.slot6_368 else 512, 480), (320, 288)) if args.pal288 else ((640, 480), (512, 480), (368, 480))) if args.slots480 else ())]}})
     # With --shoulder-setting the Settings pick what L and R send, so the
     # Controls list names the plain buttons.
     buttons = [(k, {'L1': 'L Buttons', 'R1': 'R Buttons'}.get(n, n) if args.shoulder_setting else n) for k, n in BUTTONS]
@@ -173,18 +244,31 @@ def main():
         # prepare --dualshock: pad 1 is a DualShock (on) or a digital pad (off).
         variables.append({'name': 'DualShock', 'id': 20, 'type': 'check', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x50000040', 'defaultval': 1, 'value': 1, 'value_off': 0})
+    if args.stick_settings and not (args.dualshock and args.shoulder_setting):
+        parser.error('--stick-settings needs --dualshock --shoulder-setting')
     if args.shoulder_setting:
         # prepare --shoulder-setting: what the Pocket's L and R press. Rows,
         # options and addresses come from the preparer.
         from prepare_pocket_early import SHOULDER_ROWS, SHOULDER_COMBOS
         for n, (name, address, targets) in enumerate(SHOULDER_ROWS):
+            # None is listed first but keeps value 3, which matches no button in
+            # the preparer's selects: the plain L or R press reaches nothing and
+            # the Select combos still work.
             variables.append({'name': name, 'id': 4+n, 'type': 'list', 'enabled': True, 'persist': True,
                               'writeonly': True, 'address': f'0x{address:08X}', 'defaultval': 0,
-                              'options': [{'value': v, 'name': t} for v, t in enumerate(targets)]})
+                              'options': [{'value': 3, 'name': 'None'}] + [{'value': v, 'name': t} for v, t in enumerate(targets)]})
+        from prepare_pocket_stick_settings import STICK_LISTS, FACE_NAME, FACE_EXTRA, FACE_ROW
         for n, (name, address, targets, default, _) in enumerate(SHOULDER_COMBOS):
+            if args.stick_settings and len(SHOULDER_ROWS)+n == FACE_ROW: name, targets = FACE_NAME, targets + FACE_EXTRA
             variables.append({'name': name, 'id': 4+len(SHOULDER_ROWS)+n, 'type': 'list', 'enabled': True, 'persist': True,
                               'writeonly': True, 'address': f'0x{address:08X}', 'defaultval': default,
                               'options': [{'value': v, 'name': t} for v, t in enumerate(targets)]})
+        if args.stick_settings:
+            # prepare --stick-settings: what the D-pad and Select+D-pad send.
+            for n, (name, address, targets, default) in enumerate(STICK_LISTS):
+                variables.append({'name': name, 'id': 22+n, 'type': 'list', 'enabled': True, 'persist': True,
+                                  'writeonly': True, 'address': f'0x{address:08X}', 'defaultval': default,
+                                  'options': [{'value': v, 'name': t} for v, t in enumerate(targets)]})
     if args.video_test_setting:
         variables.append({'name': 'Video test', 'id': 8, 'type': 'list', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x5000004C', 'defaultval': 0,
@@ -194,11 +278,11 @@ def main():
         # prepare --disc-menu: remembered, so a game resumed on disc 2 starts
         # there (swapped before anything reads the disc); a game without that
         # disc falls back to disc 1.
-        variables.append({'name': 'Disc', 'id': 21, 'type': 'list', 'enabled': True, 'persist': True,
+        variables.append({'name': 'Swap Discs', 'id': 21, 'type': 'list', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x50000044', 'defaultval': 0,
                           'options': [{'value': n, 'name': f'Disc {n+1}'} for n in range(args.disc_menu)]})
-    # The Disc list comes first in Core Settings.
-    variables.sort(key=lambda v: v['name'] != 'Disc')
+    # The Swap Discs list comes first in Core Settings.
+    variables.sort(key=lambda v: v['name'] != 'Swap Discs')
     write('interact.json', {'interact': {'magic': 'APF_VER_1', 'variables': variables, 'messages': []}})
     write('variants.json', {'variants': {'magic': 'APF_VER_1', 'variant_list': []}})
     write('audio.json', {'audio': {'magic': 'APF_VER_1'}})
@@ -212,13 +296,25 @@ def main():
         info.append('* Hold Select: L = L2, R = R2, Square (Y) = L3, Circle (A) = R3. A Select tap still works as '
                     'Select; Select held alone for one second passes through. Docked controllers keep their own L2/R2/L3/R3.')
     if args.shoulder_setting:
-        info.append('* Settings > "L Button" / "R Button": what L Button and R Button press in the game (L1, L2 or L3 / '
-                    'R1, R2 or R3). Controls > "L Buttons" / "R Buttons" only chooses which physical buttons those are. '
-                    '"SELECT + L/R" and "SELECT + Y/A" pick what those combos press: None, L1/R1, L2/R2 or L3/R3 '
-                    '(defaults L2/R2 and L3/R3).')
+        info.append('* Settings > "L Button" / "R Button": what L Button and R Button press in the game (None, L1, L2 or '
+                    'L3 / None, R1, R2 or R3). Controls > "L Buttons" / "R Buttons" only chooses which physical buttons '
+                    'those are. "SELECT + L/R" and "SELECT + Y/A" pick what those combos press: None, L1/R1, L2/R2 or '
+                    'L3/R3 (defaults L2/R2 and L3/R3).')
+    if args.stick_settings:
+        info.append('* Sticks on the handheld: Settings > "D-pad" makes the D-pad the left or right stick, '
+                    '"SELECT + D-pad" picks what Select + D-pad sends (left stick by default), and "SELECT + A/B/X/Y" '
+                    'can also be a stick (X up, B down, Y left, A right). Games need the pad in analog mode '
+                    '(DualShock on; the game or L3+R3+Up switches it).')
     if args.disc_menu:
         info.append('* Multi-disc games: one game file holds every disc (one memory card). Change discs with Core '
                     'Settings > Disc when the game asks; the core opens and closes the lid.')
+    if variables:
+        # One line per Core Settings entry, default first (as the menu shows them).
+        def default_name(v):
+            if v['type'] == 'check': return 'On' if v['defaultval'] == v['value'] else 'Off'
+            return next(o['name'] for o in v['options'] if o['value'] == v['defaultval'])
+        info.append('* Core Settings (default in brackets): ' + '; '.join(
+            f"{v['name']} [{default_name(v)}]" for v in variables) + '.')
     if args.allow_timing_failure: info.append('* Built with known timing violations; glitches are possible')
     (core/'info.txt').write_text('\n'.join(info) + '\n')
     assets = sd/'Assets'/args.platform/'common'; assets.mkdir(parents=True)

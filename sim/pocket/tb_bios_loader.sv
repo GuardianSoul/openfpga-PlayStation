@@ -1,6 +1,9 @@
 `timescale 1ps/1ps
-module tb_bios_loader;
-    integer CASE=0;
+module tb_bios_loader #(
+    // Per-region BIOS slots: the Chip32 loader loadf's one of 0x20-0x2f.
+    parameter [15:0] LOADER_ID=16'd0, LOADER_MASK=16'hffff
+);
+    integer CASE=0,SLOT=0;
     reg host_clk=0,cpu_clk=0,cpu_clock_on=1;
     always #6734 host_clk=~host_clk;
     always #14763 if(cpu_clock_on) cpu_clk=~cpu_clk;
@@ -15,7 +18,7 @@ module tb_bios_loader;
     wire [15:0] req_be;
     wire [17:0] received_words,committed_words;
     reg rsp_valid=0,rsp_error=0;
-    psx_bios_loader loader(.*,.clk(host_clk));
+    psx_bios_loader #(.BIOS_SLOT_ID(LOADER_ID),.BIOS_SLOT_MASK(LOADER_MASK)) loader(.*,.clk(host_clk));
     psx_boot_gate gate(.host_clk(host_clk),.cpu_clk(cpu_clk),.reset_async(reset),
         .cpu_locked(cpu_locked),.host_run(host_run),.bios_ready(ready),
         .freeze_toggle(freeze_toggle),.cpu_reset(cpu_reset),.freeze_ack(freeze_ack));
@@ -82,7 +85,7 @@ module tb_bios_loader;
         integer before_freeze;
         begin
             before_freeze=transactions;
-            @(negedge host_clk);slot_id=0;slot_size=size;slot_request=1;
+            @(negedge host_clk);slot_id=SLOT;slot_size=size;slot_request=1;
             while(!slot_ack) begin
                 @(negedge host_clk);freeze_waits++;
                 if(transactions!=before_freeze) $fatal(1,"Writes before APF slot acknowledgement");
@@ -110,7 +113,19 @@ module tb_bios_loader;
     endtask
     initial begin
         if($value$plusargs("CASE=%d",CASE)) begin end
+        if($value$plusargs("SLOT=%d",SLOT)) begin end
         repeat(5) @(negedge host_clk);reset=0;memory_ready=1;cpu_locked=1;host_run=1;
+        if(CASE==14) begin
+            // Another slot's write request (a memory card, the disc) is not
+            // the BIOS: no acknowledgement, no freeze, then a normal load.
+            @(negedge host_clk);slot_id=SLOT^16'h0030;slot_size=524288;slot_request=1;
+            repeat(50) begin
+                @(negedge host_clk);
+                if(slot_ack || busy || failed) $fatal(1,"Foreign slot acknowledged");
+            end
+            @(negedge host_clk);slot_request=0;
+            repeat(2) @(negedge host_clk);
+        end
         if(CASE==1) begin open_bios(524284);expect_failure();end
         if(CASE==10) begin
             @(negedge cpu_clk);cpu_clock_on=0;

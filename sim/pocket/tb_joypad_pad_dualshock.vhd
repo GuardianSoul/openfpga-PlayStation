@@ -8,6 +8,11 @@
 -- deselects, port switches while deselected, slot-busy and resets. Every
 -- output except the rumble motors and ss_out (not produced) is compared on
 -- every clock. Generic PAD2 enables port 2 as a second digital pad.
+-- ECHO=1 builds the lean pad with RUMBLE_ECHO (exact everywhere); ECHO=0
+-- (the Pocket build) may differ only in the six 0x4D config bytes, which
+-- must then read 0xFF. actionNext never fires on two clocks in a row: the
+-- SIO raises it once per byte, many clocks apart, and the lean pad reads its
+-- reply table one clock behind.
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
@@ -16,7 +21,7 @@ use IEEE.math_real.all;
 use work.pJoypad.all;
 
 entity tb_joypad_pad_dualshock is
-   generic (PAD2 : integer := 0; CYCLES : integer := 400000; SEED : integer := 1);
+   generic (PAD2 : integer := 0; CYCLES : integer := 400000; SEED : integer := 1; ECHO : integer := 1);
 end entity;
 
 architecture sim of tb_joypad_pad_dualshock is
@@ -43,6 +48,7 @@ begin
    clk <= not clk after 5 ns when not done;
 
    dut : entity work.joypad_pad
+      generic map (RUMBLE_ECHO => ECHO /= 0)
       port map (clk1x => clk, ce => ce, reset => reset, DSAltSwitchMode => '0', isMultitap => '0',
          multitapDigital => '0', multitapAnalog => '0', joypad1 => j1, joypad2 => j2, joypad3 => j0, joypad4 => j0,
          joypad1_rumble => a.r1, joypad2_rumble => a.r2, joypad3_rumble => a.r3, joypad4_rumble => a.r4,
@@ -71,6 +77,8 @@ begin
       variable sel_hold : natural := 0;
       variable sel_new, ds_now : std_logic := '1';
       variable f3s, s73s : natural := 0;
+      variable rumble_left, rumble_ffs : natural := 0;
+      variable rumble_byte : boolean;
       impure function rnd return real is begin uniform(s1, s2, r); return r; end function;
       impure function bit_r(p : real) return std_logic is begin if rnd < p then return '1'; else return '0'; end if; end function;
       impure function byte_r return std_logic_vector is
@@ -130,7 +138,7 @@ begin
          else
             sel_hold := sel_hold - 1;
          end if;
-         actionNext <= bit_r(0.15);
+         if actionNext = '1' then actionNext <= '0'; else actionNext <= bit_r(0.15); end if;
          transmitting <= bit_r(0.8);
          slotIdle <= bit_r(0.95);
          transmitValue <= byte_r;
@@ -141,7 +149,21 @@ begin
          end if;
          wait until rising_edge(clk);
          wait for 0 ns; wait for 0 ns;
-         if a.rvalid /= b.rvalid or a.rbuf /= b.rbuf or a.ack /= b.ack or a.active /= b.active or
+         -- the reference's six 0x4D config bytes (after its F3 and 5A)
+         rumble_byte := false;
+         if reset = '1' or selected = '0' then
+            rumble_left := 0;
+         elsif b.rvalid = '1' then
+            if b.rbuf = x"F3" and transmitValue = x"4D" then
+               rumble_left := 7;
+            elsif rumble_left > 0 then
+               rumble_byte := rumble_left <= 6;
+               rumble_left := rumble_left - 1;
+            end if;
+         end if;
+         if ECHO = 0 and rumble_byte and a.rvalid = '1' and a.rbuf = x"FF" and b.rbuf /= x"FF" then
+            rumble_ffs := rumble_ffs + 1;
+         elsif a.rvalid /= b.rvalid or a.rbuf /= b.rbuf or a.ack /= b.ack or a.active /= b.active or
             a.padMode /= b.padMode or a.jirq /= b.jirq then
             errs := errs + 1;
             if errs <= 10 then
@@ -161,7 +183,7 @@ begin
          if b.rvalid = '1' and b.rbuf = x"73" then s73s := s73s + 1; end if;
       end loop;
       report "PAD2=" & integer'image(PAD2) & " cycles=" & integer'image(CYCLES) & " receiveValid=" & integer'image(valids) &
-         " acks=" & integer'image(acks) & " config=" & integer'image(f3s) & " analog=" & integer'image(s73s) & " errs=" & integer'image(errs);
+         " acks=" & integer'image(acks) & " config=" & integer'image(f3s) & " analog=" & integer'image(s73s) & " rumble_ff=" & integer'image(rumble_ffs) & " errs=" & integer'image(errs);
       assert errs = 0 report "FAIL" severity failure;
       assert valids > 1000 and f3s > 20 and s73s > 20 report "too little coverage" severity failure;
       done <= true;

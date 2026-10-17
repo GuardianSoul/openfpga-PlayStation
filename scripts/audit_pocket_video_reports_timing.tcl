@@ -11,7 +11,30 @@ if {[llength $quartus(args)]==2} {
 set output [file normalize [lindex $quartus(args) 0]]
 if {[file exists $output]} {error "Fresh report audit output required"}
 file mkdir $output
+proc reports_audit_initialized {} {
+    # This logical scalar can acquire physical replicas. Do not weaken the
+    # fixed synchronizer-stage counts in the project's constraint scope.
+    set owner {core_top:ic|psx_mister_psx_top_resource:psx|psx_top:component_core|gpu:igpu|gpu_videoout:igpu_videoout|gpu_videoout_async:igpu_videoout_async|psx_video_reports_cdc:video_reports}
+    set regs [get_registers -nowarn [list [format {%s|dst_initialized*} $owner]]]
+    set physical [dict create];set original 0
+    foreach_in_collection reg $regs {
+        set name [get_node_info -name $reg]
+        if {[string first ${owner}| $name]!=0 ||
+            ![regexp {^dst_initialized(~DUPLICATE[0-9]*)?$} [string range $name [expr {[string length $owner]+1}] end]]} {
+            error "Unknown report initialization copy $name"
+        }
+        if {$name eq "${owner}|dst_initialized"} {set original 1}
+        set cell [get_node_info -cell $reg]
+        if {[dict exists $physical $cell]} {error "Aliased report initialization copy"}
+        dict set physical $cell 1
+    }
+    if {!$original || [dict size $physical]<1 || [dict size $physical]>4} {
+        error "Missing report initialization geometry"
+    }
+    return $regs
+}
 project_open apf_top
+try {
 create_timing_netlist
 read_sdc
 update_timing_netlist
@@ -28,6 +51,7 @@ set old [get_registers -nowarn [list {*|gpu_videoout_async:igpu_videoout_async|v
 if {[get_collection_size $old]!=0} {error "Old report sampler or timer edge detector remains"}
 if {[get_collection_size [get_registers -nowarn {*|timer:itimer|*}]]<100} {error "Missing connected timer"}
 reports_regs read_valid 1
+set initialized [reports_audit_initialized]
 set corner 0
 foreach_in_collection condition [get_available_operating_conditions] {
     set_operating_conditions $condition
@@ -60,9 +84,15 @@ foreach_in_collection condition [get_available_operating_conditions] {
             if {[get_collection_size [get_timing_paths -false_path -$kind -from $a -to $b -npaths 1]]!=0} {error "Report online second stage hidden"}
             report_timing -$kind -from $a -to $b -npaths 20 -detail full_path -file [file join $output corner${corner}-${meta}-second-${kind}.txt]
         }
-        foreach name {src_fault dst_initialized} {
-            report_timing -$kind -to [reports_regs $name 1] -npaths 100 -detail full_path -file [file join $output corner${corner}-${name}-${kind}.txt]
+        report_timing -$kind -to [reports_regs src_fault 1] -npaths 100 -detail full_path -file [file join $output corner${corner}-src_fault-${kind}.txt]
+        report_timing -$kind -to $initialized -npaths 100 -detail full_path -file [file join $output corner${corner}-dst_initialized-${kind}.txt]
+        set expected {};foreach_in_collection reg $initialized {lappend expected [get_node_info -name $reg]}
+        set seen {}
+        if {[get_collection_size [get_timing_paths -false_path -$kind -to $initialized -npaths 1]]} {error "Report initialization path was hidden"}
+        foreach_in_collection path [get_timing_paths -$kind -to $initialized -npaths 100 -nworst 1] {
+            lappend seen [get_node_info -name [get_path_info -to $path]]
         }
+        if {[lsort -unique $seen] ne [lsort $expected]} {error "Report initialization timing coverage incomplete"}
     }
     foreach pipe {src_reset_pipe dst_reset_pipe} {
         set p [reports_regs [format {%s[*]} $pipe] 3]
@@ -87,5 +117,7 @@ if {$faults} {
     report_net_delay -nworst 500 -file [file join $output planted-net.txt]
     report_max_skew -npaths 500 -detail full_path -file [file join $output planted-skew.txt]
 }
-delete_timing_netlist
-project_close -dont_export_assignments
+} finally {
+    catch {delete_timing_netlist}
+    project_close -dont_export_assignments
+}

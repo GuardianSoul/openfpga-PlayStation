@@ -97,10 +97,17 @@ foreach {direction stem width} {host_core rd_word 15 core_host rd_data 32} {
     set_max_skew -from $from -to $to 13
     puts "CARD_CDC_SCOPE $direction [get_collection_size $from] [get_collection_size $to] local_[llength $card_cdc_local_names($direction)]"
 }
+if {![info exists card_cdc_boot_disc_gate]} {set card_cdc_boot_disc_gate 0}
+if {$card_cdc_boot_disc_gate ni {0 1}} {error "Unknown card load-done launch profile"}
+if {$card_cdc_boot_disc_gate} {
+    set card_load_owner core_top:ic;set card_load_stem boot_disc_gate
+} else {
+    set card_load_owner {core_top:ic|psx_bios_patch:bios_patch};set card_load_stem bios_ready
+}
 set card_cdc_chains [list \
     $card_cdc_owner rd_tog_s 3 $card_cdc_owner rd_tog host_core \
     $card_cdc_owner rd_ack_s 3 $card_cdc_owner rd_ack core_host \
-    $card_cdc_owner done_s 3 {core_top:ic|psx_bios_patch:bios_patch} bios_ready host_core \
+    $card_cdc_owner done_s 3 $card_load_owner $card_load_stem host_core \
     core_top:ic mc_idle74 2 $card_cdc_owner busy core_host]
 foreach {owner stem width source_owner source_stem direction} $card_cdc_chains {
     set src [card_cdc_regs $source_owner $source_stem 1]

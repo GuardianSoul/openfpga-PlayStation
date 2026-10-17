@@ -111,7 +111,7 @@ def drop_unused(files, project):
     dropped = [p for p in files if entities.get(p) and not any(map(used, entities[p]))
                and not PACKAGE.search(p.read_text(errors='replace'))]
     kept = [p for p in files if p not in dropped and p.suffix in ('.v', '.sv', '.vhd')]
-    for path in dropped:
+    for path in list(dropped):
         for name in entities[path]:
             n = re.escape(name)
             # Instances only: "name #(", "name inst (", VHDL "name port map",
@@ -119,7 +119,10 @@ def drop_unused(files, project):
             use = re.compile(rf'\b{n}\s*#\s*\(|\b{n}\s+[A-Za-z_]\w*\s*\(|\b{n}\s+(?:generic|port)\s+map\b'
                              rf'|\bentity\s+\w+\.{n}\b|\bcomponent\s+{n}\b', re.I)
             users = [p.name for p in kept if use.search(uncommented(p))]
-            if users: raise ValueError(f'{path.name} has no instance in the map hierarchy but {users[0]} instantiates {name}')
+            # Named by a kept file but absent from the map hierarchy: an
+            # instance in a disabled generate branch (SERV's serv_aligner
+            # under ALIGN=0). Keep the file; the .rbf comparison still holds.
+            if users and path in dropped: dropped.remove(path)
     for path in dropped: del files[path]
     return dropped
 
@@ -166,11 +169,19 @@ def main():
         for number, line in enumerate(text.splitlines(), 1):
             if LEAKS.search(line): problems.append(f'{name}:{number}: {line.strip()[:120]}')
         entries[name] = text.encode()
-    for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'): entries[name] = (ROOT/name).read_bytes()
+    entries['LICENSE'] = (ROOT/'LICENSE').read_bytes()
+    # No pocket_sotn file is in a release from 0.5.3, so neither is its row.
+    entries['THIRD_PARTY_NOTICES.md'] = ''.join(l for l in (ROOT/'THIRD_PARTY_NOTICES.md').read_text().splitlines(keepends=True)
+                                                if 'pocket_sotn' not in l).encode()
     for path in sorted((ROOT/'licenses').iterdir()):
         if path.name in WORKSPACE_ONLY_LICENSES: continue   # its code is never in a release bitstream
         entries['licenses/' + path.name] = path.read_bytes()
     entries['README.txt'] = README.format(version=args.version, repo=REPO).encode()
+    # From 0.5.3 the public release carries no pocket_sotn code, paths or
+    # mentions (2026-10-17); the bundle stops on any remaining text.
+    for name, data in sorted(entries.items()):
+        for number, line in enumerate(data.decode(errors='replace').splitlines(), 1):
+            if 'pocket_sotn' in line.lower(): problems.append(f'{name}:{number}: names pocket_sotn: {line.strip()[:100]}')
     if problems:
         raise SystemExit('Source bundle stopped:\n  ' + '\n  '.join(problems[:60]))
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)

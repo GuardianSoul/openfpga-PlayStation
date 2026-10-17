@@ -56,7 +56,7 @@
   <h1>PlayStation SD card helper</h1>
   <p class="lead">Optional. Single-disc games already work with the game files that pupdate or Pocket Sync make.
     This page adds what those tools can't do yet: one game file per multi-disc game, so you can swap discs in
-    <b>Core Settings → Disc</b>, and one memory card that all of a game's discs share.</p>
+    <b>Core Settings → Swap Discs</b>, and one memory card that all of a game's discs share.</p>
 
   <div id="unsupported" class="panel hidden">
     <p class="warn">This browser can't write to an SD card.</p>
@@ -77,9 +77,10 @@
     <h2><span class="step">2</span>Make the game files</h2>
     <p id="core-row" class="hidden">Core: <select id="core"></select></p>
     <label><input type="checkbox" id="convert" checked>
-      <span><b>Split games that keep all their tracks in one <code>.bin</code> file.</b> Games with CD music
-        need one <code>.bin</code> per track. The page writes the split copy to a new folder next to the game and
-        then deletes the original, so you only need free space for one game at a time.</span></label>
+      <span><b>Split games that keep all their tracks in one <code>.bin</code> file (cores before 0.5.3).</b>
+        Older cores need one <code>.bin</code> per track for CD music. The page writes the split copy to a new
+        folder next to the game and then deletes the original, so you only need free space for one game at a
+        time. From 0.5.3 the core plays one <code>.bin</code> as it is, so nothing is split.</span></label>
     <button id="run" disabled>Make game files</button>
     <div id="result" class="hidden">
       <p id="summary"></p>
@@ -96,13 +97,18 @@
       <li>Gives each multi-disc game one memory card for all its discs,
         <code>Saves/playstation/common/&lt;game&gt;.sav</code>. It starts as a copy of the card from the disc you
         played last. If that card already exists, it is left alone. Your other saves are not touched.</li>
-      <li>With the box ticked: splits games that keep all their tracks in one <code>.bin</code> into a folder next
-        to the game, then deletes the original <code>.bin</code> and <code>.cue</code>.</li>
+      <li>From core 0.5.3: writes a small track table (<code>.trk</code>) next to each disc's <code>.bin</code>.
+        Games stored as one <code>.bin</code> per track also get a joined copy, <code>&lt;game&gt; (one
+        file).bin</code>, so they take twice the space. Keep the per-track files and the <code>.cue</code>: the
+        page reads them each time it runs.</li>
+      <li>Older cores, with the box ticked: splits games that keep all their tracks in one <code>.bin</code> into
+        a folder next to the game, then deletes the original <code>.bin</code> and <code>.cue</code>.</li>
       <li>Shows which games it skipped and why. CHD images have to be converted on a computer first (see the
         README).</li>
     </ul>
     <p class="muted">Run it again after adding games. Running pupdate or Pocket Sync afterwards can bring back the
-      one-file-per-disc game files; they still work, but disc swapping needs the combined file.</p>
+      one-file-per-disc game files; they still work, but disc swapping needs the combined file, and from 0.5.3
+      games with CD music need the page's track tables.</p>
   </section>
 
   <footer class="muted">Part of the PlayStation core for Analogue Pocket. Source and README:

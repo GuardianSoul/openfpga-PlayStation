@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Release BIOS writer. BRIDGE words are already little-endian (APF
 // bridge_endian_little=1). The separate diagnostic retains CRC/readback.
+// BIOS_SLOT_MASK selects which slot-ID bits must equal BIOS_SLOT_ID, so one
+// loader can take any of several per-region BIOS slots (the Chip32 loader
+// loadf's exactly one of them); the default accepts BIOS_SLOT_ID alone.
 module psx_bios_loader #(
-    parameter [15:0] BIOS_SLOT_ID=16'd0
+    parameter [15:0] BIOS_SLOT_ID=16'd0,
+    parameter [15:0] BIOS_SLOT_MASK=16'hffff
 ) (
     input wire clk, reset, memory_ready,
     input wire slot_request, input wire [15:0] slot_id,
@@ -25,7 +29,7 @@ module psx_bios_loader #(
     reg prev_slot_request=0, prev_write=0;
     reg good_size=0, complete_seen=0, reject_busy=0;
     reg fifo_clear=0, pop=0;
-    wire is_bios_slot=slot_request && slot_id==BIOS_SLOT_ID;
+    wire is_bios_slot=slot_request && (slot_id&BIOS_SLOT_MASK)==(BIOS_SLOT_ID&BIOS_SLOT_MASK);
     wire begin_slot=is_bios_slot && !prev_slot_request;
     wire load_range=bridge_addr[31:19]==0;
     wire push=bridge_wr && !prev_write && load_range;
