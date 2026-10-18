@@ -666,5 +666,15 @@
     return summary;
   }
 
-  Object.assign(exports, { makeInstances, findCores, parseCue, sharedCardName, jsonDumps, SECTOR });
+  // Cores before 0.5.3 (neither a cue reader nor one-file) need merged
+  // images split into one .bin per track; the page only offers it to them.
+  async function needsSplit(card, core) {
+    let declared = null;
+    try { declared = JSON.parse(await (await fileAt(card, ['Cores', core, 'data.json'])).text()).data.data_slots; } catch (e) { declared = null; }
+    if (!Array.isArray(declared)) return true;
+    const takes = (id, ext) => declared.some((s) => s && s.id === id && (s.extensions || []).includes(ext));
+    return !takes(0, 'cue') && !takes(102, 'trk');
+  }
+
+  Object.assign(exports, { makeInstances, findCores, needsSplit, parseCue, sharedCardName, jsonDumps, SECTOR });
 })(typeof module === 'object' && module.exports ? module.exports : (globalThis.PocketInstances = {}));
