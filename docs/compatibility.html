@@ -231,7 +231,7 @@
         const where = r.url ? `<a href="${escape(r.url)}" target="_blank" rel="noopener">#${r.number}</a>` : escape(r.earlier);
         const notes = r.url ? r.notes : '';
         const text = notes.length > 400 ? notes.slice(0, 400) + '…' : notes;
-        return `<li>${badge(r.status)} <span class="muted">${where}${r.version ? ' · core ' + escape(r.version) : ''}` +
+        return `<li>${r.resolved ? '<span class="badge s-playable">Resolved</span>' : badge(r.status)} <span class="muted">${where}${r.version ? ' · core ' + escape(r.version) : ''}` +
           `${r.date ? ' · ' + escape(r.date) : ''}${r.serial ? ' · <span class="serial">' + escape(r.serial) + '</span>' : ''}</span>` +
           (text ? `<p class="notes">${escape(text)}</p>` : '') + '</li>';
       }).join('');

@@ -184,6 +184,7 @@
       date: (issue.created_at || '').slice(0, 10), number: Number(issue.number) || 0,
       url: /^https:\/\/github\.com\//.test(issue.html_url || '') ? issue.html_url : '',
       author: String(issue.user?.login || '').toLowerCase(), votes: 1 + Math.max(0, up - down),
+      resolved: issue.state === 'closed',   // fixed: listed, but no longer sets the status
     };
     report.game = report.game.slice(0, 120);
     return report.game || report.serial ? report : null;
@@ -271,7 +272,7 @@
     const known = released ? new Set(released) : null;
     const versions = Object.keys(votes || {}).filter((k) => entry.key && k.startsWith(entry.key + '|'))
       .map((k) => k.slice(entry.key.length + 1)).filter((v) => !known || known.has(v));
-    const rated = entry.reports.filter((r) => r.status);
+    const rated = entry.reports.filter((r) => r.status && !r.resolved);
     const all = [...versions, ...rated.map((r) => r.rank)];
     const newest = all.sort((a, b) => compareVersions(b, a))[0] ?? '';
     const tally = {};
