@@ -62,6 +62,7 @@
   .levels .badge { justify-self: start; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin-top: 24px; }
   .stats:empty { display: none; }
+  .stats .votes { grid-column: 1 / -1; margin: -2px 0 0; font-size: 0.8rem; color: var(--hero-muted); }
   .stat { padding: 12px 14px; border-radius: 12px; background: rgb(255 255 255 / 8%); border: 1px solid rgb(255 255 255 / 12%);
           backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
   .stat.stat { color: var(--hero-text); }
@@ -268,11 +269,12 @@
         (reports ? `<ul class="reports plain">${reports}</ul>` : '') + problemLinks(e) + '</details>';
     }).join('');
     const counts = Compat.STATUSES.map((s) => [s, entries.filter((e) => e.status === s).length]).filter(([, n]) => n);
+    const allVotes = Object.values(votes).reduce((sum, v) => sum + Object.values(v).reduce((a, b) => a + b, 0), 0);
     const voteCount = entries.reduce((sum, e) => sum + Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0), 0);
     $('stats').innerHTML = `<div class="stat"><b>${entries.length}</b><span>games</span></div>` +
-      (voting ? `<div class="stat"><b>${voteCount}</b><span>${voteCount === 1 ? 'vote' : 'votes'}</span></div>` : '') +
       counts.map(([s, n]) => `<div class="stat ${CLASSES[s]}"><b>${n}</b><span>${escape(s)}</span></div>`).join('') +
-      `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>`;
+      `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>` +
+      (voting && allVotes ? `<p class="votes">${voteCount} ${voteCount === 1 ? 'vote' : 'votes'} on the latest core, ${allVotes} in total</p>` : '');
     $('summary').innerHTML = `${entries.length} games` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
       (shown.length < entries.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '') +
       (words.length && !shown.length && games && !Compat.search(games, $('filter').value, $('region').value, 1).length ? ' No game matches that name.' : '');
