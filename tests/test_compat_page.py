@@ -141,6 +141,12 @@ class CompatPage(unittest.TestCase):
         self.assertEqual((crash['status'], crash['version'], len(crash['numbers'])), ('Minor issues', '0.5.3', 1))
         self.assertEqual(entries[('Final Fantasy VII', 'Europe')]['status'], 'Major issues')
 
+    def test_game_in_one_region_takes_it(self):
+        entries, _ = self.run_page([], [{'game': 'Tekken 3', 'status': 'Playable', 'version': '0.5'},
+                                        {'game': 'Final Fantasy VII', 'status': 'Boots', 'version': '0.5'}])
+        self.assertEqual(entries[('Tekken 3', 'USA')]['status'], 'Playable')   # only listed for USA
+        self.assertIn(('Final Fantasy VII', ''), entries)                     # USA and Europe: the player picks
+
     def test_works_without_the_game_list(self):
         entries, _ = self.run_page([
             issue(1, game='Tekken 3', serial='SLUS-00402', region='USA', status='Playable', version='0.5.3'),

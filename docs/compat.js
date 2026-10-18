@@ -326,6 +326,14 @@
       keys.add(key);
       entries.push(entryFor(game));
     }
+    // A game listed in only one region takes that region.
+    entries.forEach((e, i) => {
+      if (e.region || !games) return;
+      const n = nameKey(e.name), only = REGIONS.map((r) => games.byKey.get(`${n}|${r}`)).filter(Boolean);
+      if (only.length !== 1 || keys.has(only[0].key)) return;
+      keys.add(only[0].key);
+      entries[i] = { ...entryFor(only[0]), reports: e.reports };
+    });
     // An entry without a region gives way to the same game's regional entries:
     // its reports move into each of them as older reports.
     const regional = new Map();
