@@ -4,8 +4,9 @@ An FPGA core that runs original PlayStation games on the Analogue Pocket,
 built on the MiSTer PSX core.
 
 > **Status: early.** Most games tried so far play with sound, FMVs and CD
-> music. Some may still glitch or not boot. See
-> [Compatibility](#compatibility).
+> music. Some may still glitch or not boot. See the
+> [game list](https://guardiansoul.github.io/openfpga-PlayStation/compatibility.html)
+> and vote how your games run.
 
 ## Setup
 
@@ -145,12 +146,6 @@ first time; format it from the game's save menu.
 is written to the SD card when you quit, so turning off mid-game loses the
 saves made since the game started. To use a card from another emulator,
 copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
-
-## Compatibility
-
-Most games tried so far work. See the
-[game list](https://guardiansoul.github.io/openfpga-PlayStation/compatibility.html)
-and vote how your games run.
 
 ## Known issues
 
