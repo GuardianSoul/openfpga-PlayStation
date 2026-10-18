@@ -66,10 +66,11 @@ web page generates the same game files from Chrome or Edge on a computer.
    it up.
 3. Pick the new game in **openFPGA → PlayStation**.
 
-pupdate also makes game files by itself when it updates your cores, and
-Pocket Sync's *Games → Instance JSON* button does the same, one per disc.
-Generate game files with the plugin after either, so each multi-disc game is one entry again,
-with its shared memory card.
+Always make game files with the plugin. Pocket Sync's own *Games →
+Instance JSON* button and pupdate's core updates also write game files, but
+only one per disc, so multi-disc games lose Swap Discs and get a memory
+card per disc. After updating cores with pupdate, generate game files with
+the plugin again.
 
 ### Without game files (fallback)
 

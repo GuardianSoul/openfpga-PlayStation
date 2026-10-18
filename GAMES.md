@@ -73,11 +73,12 @@ file is generated; you can delete it from
 `Assets/playstation/GuardianSoul.PlayStation/`. Discs the core can't play
 yet are skipped with a message.
 
-pupdate also makes game files on its own whenever it updates your cores,
-and Pocket Sync's *Games → Instance JSON* button does the same, one per
-disc. Those work for single-disc games with up to four `.bin`
-files, but a multi-disc game gets one entry and one memory card per disc.
-Generate game files with the plugin afterwards: it replaces them with one entry per game.
+Always make game files with the plugin. Pocket Sync's own *Games →
+Instance JSON* button and pupdate's core updates also write game files, one
+per disc: they work for single-disc games with up to four `.bin` files, but
+a multi-disc game gets one entry and one memory card per disc. After
+updating cores with pupdate, generate game files with the plugin again: it
+replaces them with one entry per game.
 
 No pupdate or Pocket Sync? The
 **[SD card helper](https://guardiansoul.github.io/openfpga-PlayStation/)**
