@@ -167,6 +167,7 @@
     log.textContent = ''; summary.textContent = 'Working…'; summary.className = '';
     $('result').classList.remove('hidden');
     $('run').disabled = $('choose').disabled = true;
+    window.addEventListener('beforeunload', stay);
     try {
       if ((await card.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('the browser was not allowed to change the card');
       const result = await PocketInstances.makeInstances(card, {
@@ -181,10 +182,13 @@
       summary.className = 'warn';
       summary.textContent = 'Stopped: ' + error.message;
     } finally {
+      window.removeEventListener('beforeunload', stay);
       $('run').disabled = $('choose').disabled = false;
     }
   });
 
+  // The browser asks before closing or leaving the page while the card is being written.
+  function stay(event) { event.preventDefault(); event.returnValue = ''; }
   function escape(text) {
     const span = document.createElement('span'); span.textContent = text; return span.innerHTML;
   }
