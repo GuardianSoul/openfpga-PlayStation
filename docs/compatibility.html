@@ -10,11 +10,23 @@
 <style>
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
   .row input { flex: 1 1 240px; }
-  .row select { flex: 0 1 auto; }
+  .row select { flex: 1 1 0; }
+  .search input { flex: 1 1 0; }
+  .toolbar { position: sticky; top: 52px; z-index: 5; margin: 0 -20px 4px; padding: 10px 20px 2px;
+             background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .toolbar .row { margin-bottom: 8px; }
+  /* Shadow under the floating bar, as wide as the list and only falling downwards. */
+  .toolbar::after { content: ""; position: absolute; left: 20px; right: 20px; top: 100%; height: 14px; pointer-events: none;
+                    border-top: 1px solid var(--line); background: linear-gradient(rgb(16 22 50 / 12%), transparent);
+                    opacity: 0; transition: opacity 0.2s; }
+  .toolbar.stuck::after { opacity: 1; }
+  #list details { scroll-margin-top: 180px; }
   ul.plain { list-style: none; margin: 0; padding: 0; }
   #matches li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; }
   #matches li:nth-child(even), #list details:nth-child(even) { background: var(--alt); }
   #matches li.muted { display: block; }
+  .more { margin: 18px 0 8px; font-weight: 600; }
+  #list:empty + .more { margin-top: 4px; }
   .serial { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
   #list details { padding: 0 16px; }
   #matches li + li, #list details + details { border-top: 1px solid var(--line); }
@@ -47,6 +59,7 @@
   .open { height: 32px; padding: 0 14px; font-size: 0.86rem; }
   .levels li { display: grid; grid-template-columns: 8.5rem 1fr; gap: 12px; align-items: baseline; padding: 6px 0; }
   #summary { margin: 4px 0 10px; }
+  .levels .badge { justify-self: start; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin-top: 24px; }
   .stats:empty { display: none; }
   .stat { padding: 12px 14px; border-radius: 12px; background: rgb(255 255 255 / 8%); border: 1px solid rgb(255 255 255 / 12%);
@@ -62,7 +75,11 @@
   #list summary:hover { color: var(--accent); }
   #list details:hover:not([open]) { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
   @media (max-width: 560px) {
-    .row select { flex: 1 1 100%; }
+    .row select { flex: 1 1 40%; min-width: 0; }
+    .row #sort { flex-basis: 100%; }
+    .toolbar { margin: 0 -16px 4px; padding: 8px 16px 0; }
+    .toolbar::after { left: 0; right: 0; }
+    #list details { scroll-margin-top: 230px; }
     .chips { display: grid; grid-template-columns: 1fr 1fr; }
     .chip { width: 100%; }
     .levels li { grid-template-columns: 1fr; gap: 2px; padding: 8px 0; }
@@ -83,26 +100,28 @@
 <main>
 
   <section class="panel">
-    <h2>Find a game</h2>
-    <p class="muted" id="find-note">Find your game and vote how it runs. Only vote for games started from a game file (.json) made as in the
-      <a href="https://github.com/GuardianSoul/openfpga-PlayStation#setup">Setup</a>.</p>
-    <div class="row">
-      <input id="find" type="search" placeholder="e.g. final fantasy 7" autocomplete="off" aria-label="Game name">
-      <select id="find-region" aria-label="Region">
-        <option value="">Any region</option><option>USA</option><option>Europe</option><option>Japan</option><option>Other</option>
-      </select>
-    </div>
-    <ul id="matches" class="plain card bleed"></ul>
-  </section>
-
-  <section class="panel">
     <h2>Games</h2>
-    <div class="row">
-      <input id="filter" type="search" placeholder="Filter by name or serial" autocomplete="off" aria-label="Filter">
-      <select id="status" aria-label="Status"><option value="">Any status</option></select>
+    <p class="muted" id="find-note">Vote how your games run. Missing a game? Search for it to add it. Only vote for games started from a game file (.json) made as in the
+      <a href="https://github.com/GuardianSoul/openfpga-PlayStation#setup">Setup</a>.</p>
+    <div class="toolbar">
+      <div class="row search">
+        <input id="filter" type="search" placeholder="Find or add a game by name or serial" autocomplete="off" aria-label="Find a game">
+      </div>
+      <div class="row">
+        <select id="status" aria-label="Status"><option value="">Any status</option></select>
+        <select id="region" aria-label="Region">
+          <option value="">Any region</option><option>USA</option><option>Europe</option><option>Japan</option><option>Other</option>
+        </select>
+        <select id="sort" aria-label="Sort">
+          <option value="name">Sort: name</option><option value="best">Sort: runs best</option>
+          <option value="worst">Sort: runs worst</option><option value="votes">Sort: most votes</option>
+        </select>
+      </div>
     </div>
     <p id="summary" class="muted">Loading…</p>
     <div id="list" class="card bleed"></div>
+    <p id="more-title" class="more hidden">Not in the list yet</p>
+    <ul id="matches" class="plain card bleed"></ul>
   </section>
 
   <section class="panel">
@@ -137,7 +156,7 @@
 
   const version = () => data.versions?.[0] || '';   // votes count for the latest release
   for (const s of Compat.STATUSES) $('status').append(new Option(s, s));
-  if (!voting) $('find-note').textContent = 'Find your game to see how it runs.';
+  if (!voting) $('find-note').textContent = 'How games run on the latest core.';
 
   const escape = (text) => { const span = document.createElement('span'); span.textContent = text; return span.innerHTML; };
   const badge = (s) => `<span class="badge ${CLASSES[s] || 's-unknown'}">${escape(s || 'No votes yet')}</span>`;
@@ -163,14 +182,15 @@
     showList();
   }
 
+  // Games from the full game list that match the filter but aren't in the list yet.
   function showMatches() {
-    const found = Compat.search(games, $('find').value, $('find-region').value, 10);
+    const query = $('filter').value.trim(), listed = new Set(entries.map((e) => e.key));
+    const found = query.length < 2 || $('status').value ? [] :
+      Compat.search(games, query, $('region').value, 20).filter((g) => !listed.has(g.key)).slice(0, 10);
+    $('more-title').classList.toggle('hidden', !found.length);
     $('matches').innerHTML = found.map((g) => `<li><span>${escape(g.name)} <span class="muted">(${escape(g.region)})</span><br>` +
       `<span class="serial">${escape(g.serials.slice(0, 4).join(', '))}${g.serials.length > 4 ? ', …' : ''}</span></span>` +
       `<button class="open" data-key="${escape(g.key)}">${voting ? 'Vote' : 'Show'}</button></li>`).join('');
-    if (!found.length && $('find').value.trim()) {
-      $('matches').innerHTML = `<li class="muted">${games ? 'No game matches that name in this region.' : 'The game names are still loading.'}</li>`;
-    }
   }
 
   // Opens a game's entry, adding an empty one if nobody has voted on it yet.
@@ -186,7 +206,7 @@
       entries.push(Compat.decide(entry, votes, data.versions));
     }
     opened.add(key);
-    $('filter').value = ''; $('status').value = '';
+    $('filter').value = ''; $('status').value = ''; $('region').value = '';
     showList();
     document.getElementById(id(key))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -221,9 +241,14 @@
 
   function showList() {
     const words = $('filter').value.toLowerCase().split(/\s+/).filter(Boolean), status = $('status').value;
-    const shown = entries.filter((e) => opened.has(e.key) || ((!status || e.status === status) &&
+    const region = $('region').value, sort = $('sort').value;
+    const rank = (e) => (e.status ? Compat.STATUSES.indexOf(e.status) : Compat.STATUSES.length);
+    const count = (e) => Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0);
+    const order = { best: (a, b) => rank(a) - rank(b), worst: (a, b) => (!a.status - !b.status) || rank(b) - rank(a),
+                    votes: (a, b) => count(b) - count(a) }[sort];
+    const shown = entries.filter((e) => opened.has(e.key) || ((!status || e.status === status) && (!region || e.region === region) &&
       words.every((w) => (e.name + ' ' + e.serials.join(' ') + ' ' + e.region).toLowerCase().includes(w))))
-      .sort((a, b) => a.sortName.localeCompare(b.sortName) || a.region.localeCompare(b.region));
+      .sort((a, b) => (order ? order(a, b) : 0) || a.sortName.localeCompare(b.sortName) || a.region.localeCompare(b.region));
     $('list').innerHTML = shown.map((e) => {
       // Problem reports, plus the old list's result while no newer version has been rated.
       const kept = e.reports.filter((r) => r.url || Compat.compareVersions(r.rank, e.version) === 0);
@@ -247,7 +272,9 @@
       counts.map(([s, n]) => `<div class="stat ${CLASSES[s]}"><b>${n}</b><span>${escape(s)}</span></div>`).join('') +
       `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>`;
     $('summary').innerHTML = `${entries.length} games` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
-      (shown.length < entries.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '');
+      (shown.length < entries.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '') +
+      (words.length && !shown.length && games && !Compat.search(games, $('filter').value, $('region').value, 1).length ? ' No game matches that name.' : '');
+    showMatches();
   }
 
   async function castVote(button) {
@@ -268,11 +295,16 @@
     }
   }
 
-  $('find').addEventListener('input', showMatches);
-  $('find-region').addEventListener('change', showMatches);
+  // The filter bar gets a shadow while it floats over the list.
+  const bar = document.querySelector('.toolbar');
+  const floating = () => bar.classList.toggle('stuck', bar.getBoundingClientRect().top <= parseFloat(getComputedStyle(bar).top) + 0.5
+    && $('list').getBoundingClientRect().top < bar.getBoundingClientRect().bottom);
+  addEventListener('scroll', floating, { passive: true });
+  addEventListener('resize', floating);
   $('matches').addEventListener('click', (event) => {
     const button = event.target.closest('button.open');
-    if (button) openGame(button.dataset.key);
+    if (!button) return;
+    openGame(button.dataset.key);
   });
   $('list').addEventListener('click', (event) => {
     const chip = event.target.closest('button.chip'), pick = event.target.closest('button.open');
@@ -285,6 +317,8 @@
   }, true);
   $('filter').addEventListener('input', showList);
   $('status').addEventListener('change', showList);
+  $('region').addEventListener('change', showList);
+  $('sort').addEventListener('change', showList);
 
 
   (async () => {
