@@ -270,7 +270,9 @@
     }).join('');
     const counts = Compat.STATUSES.map((s) => [s, entries.filter((e) => e.status === s).length]).filter(([, n]) => n);
     const allVotes = Object.values(votes).reduce((sum, v) => sum + Object.values(v).reduce((a, b) => a + b, 0), 0);
-    const voteCount = entries.reduce((sum, e) => sum + Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0), 0);
+    // Votes on the latest release, for every game (not each game's newest votes).
+    const voteCount = Object.entries(votes).filter(([k]) => k.endsWith(`|${version()}`))
+      .reduce((sum, [, v]) => sum + Object.values(v).reduce((a, b) => a + b, 0), 0);
     $('stats').innerHTML = `<div class="stat"><b>${entries.length}</b><span>games</span></div>` +
       counts.map(([s, n]) => `<div class="stat ${CLASSES[s]}"><b>${n}</b><span>${escape(s)}</span></div>`).join('') +
       `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>` +

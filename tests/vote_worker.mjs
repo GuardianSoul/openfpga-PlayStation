@@ -23,9 +23,10 @@ const statement = (sql, args = []) => ({
 const env = { DB: { prepare: (sql) => statement(sql) }, SALT: 'test' };
 const ctx = { waitUntil() {} };
 // GitHub's releases feed, as the worker reads it.
-const feed = ['v0.5.3', 'v0.5.2'].map((t) => `<link rel="alternate" type="text/html" href="https://github.com/GuardianSoul/openfpga-PlayStation/releases/tag/${t}"/>`).join('\n');
+const tags = ['v0.5.3', 'v0.5.2'];
+const feed = () => tags.map((t) => `<link rel="alternate" type="text/html" href="https://github.com/GuardianSoul/openfpga-PlayStation/releases/tag/${t}"/>`).join('\n');
 let githubDown = false;
-const releases = async () => (githubDown ? new Response('', { status: 503 }) : new Response(`<feed>${feed}</feed>`));
+const releases = async () => (githubDown ? new Response('', { status: 503 }) : new Response(`<feed>${feed()}</feed>`));
 
 async function call(method, route, ip, body) {
   const request = new Request(`https://votes.example${route}`, {
@@ -46,6 +47,13 @@ await call('POST', '/vote', '3.3.3.3', { game: tekken, version: '0.5.2', status:
 await call('POST', '/vote', '3.3.3.3', { game: tekken, version: '0.5.2', status: '' });              // withdraws
 out.badVersion = await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '9.9', status: 'Playable' });
 out.unreleased = await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '0.6.0', status: 'Playable' });
+// A new release takes votes once the feed lists it, without waiting ten minutes.
+tags.unshift('v0.6.0');
+const realNow = Date.now;
+Date.now = () => realNow() + 60000;
+out.newRelease = await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '0.6.0', status: 'Playable' });
+await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '0.6.0', status: '' });
+Date.now = realNow;
 out.badGame = await call('POST', '/vote', '4.4.4.4', { game: '<b>x</b>|USA', version: '0.5.3', status: 'Playable' });
 out.badStatus = await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '0.5.3', status: 'Great' });
 out.votes = await call('GET', '/votes', '9.9.9.9');

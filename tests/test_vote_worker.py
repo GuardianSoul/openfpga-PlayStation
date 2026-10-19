@@ -24,6 +24,7 @@ class VoteWorker(unittest.TestCase):
         self.assertEqual(out['mine']['body'], {'tekken3|USA|0.5.3': 'Minor issues'})
         for refused in ('badVersion', 'unreleased', 'badGame', 'badStatus'):
             self.assertEqual(out[refused]['status'], 400, refused)
+        self.assertEqual(out['newRelease']['status'], 200)
         self.assertEqual(out['limitedAt'], 30)
         self.assertEqual(out['votes']['cors'], 'https://guardiansoul.github.io')
         self.assertEqual(out['missing']['status'], 404)

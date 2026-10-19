@@ -30,13 +30,17 @@ async function voterOf(request, env) {
 }
 
 // Published core versions, from the releases feed (GitHub's API often turns
-// away Cloudflare's shared addresses), checked at most every ten minutes.
+// away Cloudflare's shared addresses), checked at most every ten minutes, or
+// every half minute while someone votes on a version the list doesn't have
+// yet, so a new release takes votes right away.
 // If GitHub can't be reached, any plain version number is taken, so votes
 // don't stop; the page itself only counts released versions.
 let released = { at: 0, versions: null };
 const VERSION = /^\d+\.\d+(\.\d+)?$/;
-async function releasedVersions(fetchImpl) {
-  if (Date.now() - released.at < (released.versions ? 600000 : 60000)) return released.versions;
+async function releasedVersions(fetchImpl, wanted = '') {
+  const age = Date.now() - released.at;
+  const missing = released.versions && VERSION.test(wanted) && !released.versions.has(wanted);
+  if (age < (missing ? 30000 : released.versions ? 600000 : 60000)) return released.versions;
   let versions = null;
   try {
     const response = await fetchImpl(`https://github.com/${REPO}/releases.atom`, { headers: { 'User-Agent': 'playstation-game-list' } });
@@ -50,7 +54,7 @@ async function releasedVersions(fetchImpl) {
 }
 
 async function isReleased(version, fetchImpl) {
-  const versions = await releasedVersions(fetchImpl);
+  const versions = await releasedVersions(fetchImpl, version);
   return versions ? versions.has(version) : VERSION.test(version);
 }
 
