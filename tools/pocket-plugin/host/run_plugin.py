@@ -4,7 +4,7 @@ pupdate do: the SD card folder is the plugin's pocket/, each Choice is
 answered from --answer in order, and the plugin's log goes to stdout.
 Needs the extism Python host (python3 -m pip install extism).
 
-  python3 tools/pocket-plugin/host/run_plugin.py plugin.wasm /path/to/sd-card --answer "Make game files"
+  python3 tools/pocket-plugin/host/run_plugin.py plugin.wasm /path/to/sd-card --answer "Generate game files"
 """
 import argparse
 import json

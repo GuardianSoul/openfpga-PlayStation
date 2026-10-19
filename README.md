@@ -3,8 +3,7 @@
 An FPGA core that runs original PlayStation games on the Analogue Pocket,
 built on the MiSTer PSX core.
 
-> **Status: early.** Most games tried so far play with sound, FMVs and CD
-> music. Some may still glitch or not boot. See the
+> Most games tried so far play with sound, FMVs and CD music. Some may still glitch or not boot. See the
 > [game list](https://guardiansoul.github.io/openfpga-PlayStation/compatibility.html)
 > and vote how your games run.
 
@@ -22,9 +21,9 @@ images. The BIOS and games are not included and cannot be shared.
    do the same with the new zip; saves and settings stay.
 2. **BIOS:** copy it to `Assets/playstation/common/`, for example as
    `scph5501.bin` (USA), `scph5500.bin` (Japan) or `scph5502.bin` (Europe).
-   Other common BIOS names work too (see [GAMES.md](GAMES.md#bios)). The
-   console region follows the BIOS, and any BIOS plays discs from every
-   region.
+   Other common BIOS names work too (see [GAMES.md](GAMES.md#bios)). Any
+   BIOS plays discs from every region; with several on the card, the core
+   uses the one that matches the game's region.
 3. **Games:** give each disc its own folder in `Assets/playstation/common/`,
    for example `Assets/playstation/common/Tekken 3 (USA)/`, holding its
    `.cue` and all its `.bin` files with their names unchanged. Do this for
@@ -79,12 +78,12 @@ Always generate game files when you can. Starting a disc directly is only a
 fallback for a disc that has no game file yet, for example because you
 copied it to the card without generating game files: in the game list press
 Back to reach `Assets/playstation/common/`, open the disc's folder and pick
-its `.cue`. Two things can go wrong:
+its `.cue`. Two things to know:
 
-- Always pick the `.cue` when the disc has one, not a `.bin`. Without the
-  `.cue` the core doesn't know the disc's tracks, so the game plays
-  without CD music and some games stop where the music starts. Pick the
-  `.bin` only for a disc that came without a `.cue`.
+- The list shows `.cue` files, not `.bin` files: without the `.cue` the
+  core doesn't know the disc's tracks, so the game would play without CD
+  music and some games would stop where the music starts. A disc that came
+  without a `.cue` gets one from the plugin.
 - Multi-disc games have no Swap Discs this way, and each disc gets its own
   memory card, so a save made on disc 1 is not there on disc 2.
 
@@ -109,11 +108,10 @@ left analog stick, or A, B, X or Y for the right analog stick (X up, B
 down, Y left, A right). Tap Select on its own for Select, or hold it alone
 for a second. All of this can be changed in [Settings](#settings).
 
-The pad is a DualShock (**Enable DualShock**, on by default); games that
-use the analog sticks switch it to analog mode themselves, or press L3 + R3 +
-Up. Turn it off for a plain digital pad. A change takes effect when the game
-starts, since games check the controller once. Controllers connected to the Dock keep their own
-L2, R2, L3 and R3.
+The pad is a DualShock. **Controller Mode** switches it between Digital
+and Analog at any time, like the controller's Analog button; games that
+use the analog sticks also switch it themselves, and L3 + R3 + Up does too.
+Controllers connected to the Dock keep their own L2, R2, L3 and R3.
 
 ## Settings
 
@@ -123,24 +121,39 @@ remembers your choices.
 | Setting | Choices | What it does |
 | --- | --- | --- |
 | Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
-| Skip BIOS logo | On, **Off** | Starts the game without the PlayStation intro |
-| Enable DualShock | **On**, Off | Makes the pad a DualShock with analog sticks, for games that use them. Takes effect when the game starts: reset or relaunch it after changing |
+| Skip BIOS Logo | On, **Off** | Starts the game without the PlayStation intro |
+| Aspect Ratio | **Original**, Fill Screen | Original shows the console's 4:3 picture; Fill Screen fills the Pocket's whole screen |
+| Hide Overscan | **On**, Off | In Original, blacks out the lines at the top and bottom that a TV hides; Fill Screen always crops them |
+| Controller Mode | **Digital**, Analog | The DualShock's mode, switched at once (see [Controls](#controls)) |
 | L Button | **L1**, L2, L3 | What the Pocket's L sends |
 | R Button | **R1**, R2, R3 | What the Pocket's R sends |
 | D-Pad | **D-Pad**, Face Buttons, Left Analog Stick, Right Analog Stick | What the Pocket's D-Pad sends |
 | A/B/X/Y | **Face Buttons**, D-Pad, Left Analog Stick, Right Analog Stick | What the Pocket's A, B, X and Y send |
 | SELECT + L/R | None, L1/R1, **L2/R2**, L3/R3 | What Select held with L or R sends |
-| SELECT + D-Pad | None, **Left Analog Stick**, Right Analog Stick, D-Pad | What Select held with the D-Pad sends |
-| SELECT + A/B/X/Y | None, Face Buttons, L1/R1, L2/R2, L3/R3, Left Analog Stick, **Right Analog Stick** | What Select held with A, B, X or Y sends (the L and R pairs go on Y and A) |
+| SELECT + D-Pad | None, D-Pad, Face Buttons, **Left Analog Stick**, Right Analog Stick | What Select held with the D-Pad sends |
+| SELECT + A/B/X/Y | None, Face Buttons, D-Pad, L1/R1, L2/R2, L3/R3, Left Analog Stick, **Right Analog Stick** | What Select held with A, B, X or Y sends (the L and R pairs go on Y and A) |
 
 High-resolution (interlaced, 480i) screens are woven into full frames
 automatically; there is no setting for it.
 
+### Other aspect ratios
+
+Aspect Ratio offers Original (4:3) and Fill Screen. For another shape, such
+as 8:7, edit the core's `video.json`:
+
+1. Open `Cores/GuardianSoul.PlayStation/video.json` on the SD card.
+2. In every entry with `"aspect_w": 4` and `"aspect_h": 3`, change the two
+   numbers to the shape you want, for example `8` and `7`. Leave the other
+   entries alone: they are Fill Screen.
+3. In the core, set Aspect Ratio to Original. It now shows your shape.
+
+A core update replaces `video.json`, so make the edit again after updating.
+
 ## Memory cards
 
 Memory card 1 is saved to the SD card, one card per game (multi-disc games
-share one), in `Saves/playstation/`. A new card may show as unformatted the
-first time; format it from the game's save menu.
+share one), in `Saves/playstation/`. A game's first card starts blank and
+formatted.
 
 **Quit through the Pocket menu before you turn the Pocket off.** The card
 is written to the SD card when you quit, so turning off mid-game loses the

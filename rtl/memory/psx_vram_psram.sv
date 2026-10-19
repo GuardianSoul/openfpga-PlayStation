@@ -30,6 +30,9 @@
 //   Every MiSTer window (VRAM 0x0000000, card 1 0x0100000, card 2 0x0200000,
 //   SPU 0x0300000, mirror/24-bit/frames 0x0400000-0x07FFFFF) is on die 0.
 //   aux_addr (32-bit word i of card 1) = DDR word 0x20000 + i/2, beat i[0].
+//   SAVE_AUX: aux_addr[20] set is the save-state buffer instead, word
+//   i = aux_addr[19:0] at DDR word 0x200000 + i/2 (die 1 from byte 0),
+//   beat i[0].
 //
 // Accesses
 //   One chip row is 128 halfwords = 64 DDR words; a read burst is split into
@@ -67,6 +70,18 @@
 //   and read it back at quit with the chips already in their power-on mode.
 //   Released: RCR and BCR are written again and the clock restarts.
 //
+// Full rate (FULL_RATE=1): the chip clock runs at the clk frequency. The top
+//   makes it from a phase-shifted copy of clk through a DDIO output (high
+//   half = cram*_clk, which is then a clock enable, low half = 0), so every
+//   clk edge is an "F" edge for the bursts: pins change at each clk edge and
+//   the chip samples them one phase shift later. The pins are sampled into
+//   dq_r at every clk edge (an input register) and a read word is taken from
+//   dq_r one clk later, two clks after the slot that marks it (the phase
+//   must put the chip's data window around the clk edge after the next one).
+//   Use LATENCY 5 at 67.7 MHz (code * tCLK >= 60 ns). The power-up wait,
+//   asynchronous configuration and parked accesses keep half-rate slots
+//   (every other clk); synchronous configuration runs at full rate.
+//
 // The top must drive cram*_dq from cram*_dq_out when cram*_dq_oe is high.
 // Pin outputs drive both chips from one register; give the cram pins
 // FAST_OUTPUT_REGISTER / FAST_OUTPUT_ENABLE_REGISTER so the fitter
@@ -80,7 +95,9 @@ module psx_vram_psram #(
     parameter int WRITE_ADJ = 0,      // extra chip cycles before the first write beat (bring-up)
     parameter int CLK_KHZ   = 67738,  // clk frequency, for the power-up wait
     parameter int INIT_US   = 150,    // datasheet power-up time
-    parameter int ROW_LOG2  = 6       // DDR words per segment, log2 (row = 64)
+    parameter int ROW_LOG2  = 6,      // DDR words per segment, log2 (row = 64)
+    parameter int SAVE_AUX  = 0,      // aux_addr[20]: the save-state buffer on die 1
+    parameter bit FULL_RATE = 1'b0    // chip clock = clk (see "Full rate" above); cram*_clk is then its enable
 )(
     input  wire        clk,
     input  wire        reset,
@@ -101,7 +118,7 @@ module psx_vram_psram #(
     input  wire        aux_req,
     input  wire        aux_we,
     /* verilator lint_off UNUSEDSIGNAL */
-    input  wire [20:0] aux_addr,          // [20:15] are zero (128 KiB card)
+    input  wire [20:0] aux_addr,          // [20:15] are zero (128 KiB card), or SAVE_AUX
     /* verilator lint_on UNUSEDSIGNAL */
     input  wire [31:0] aux_din,
     output reg  [31:0] aux_dout = 32'd0,
@@ -173,6 +190,8 @@ assign {cram1_ub_n, cram1_lb_n, cram0_ub_n, cram0_lb_n} = p_bm_n;
 // While no read runs, {hi_q, lo_q} hold the write data of the request buffer.
 wire [31:0] dq_in = {cram1_dq_in, cram0_dq_in};
 reg  [31:0] lo_q = 32'd0, hi_q = 32'd0;
+reg  [31:0] dq_r = 32'd0;          // FULL_RATE: input register
+reg         cap = 1'b0, cap_hi = 1'b0;   // FULL_RATE: dq_r holds the word marked by smp
 assign ddr_dout = {hi_q, lo_q};
 
 // ---- control
@@ -203,7 +222,10 @@ reg  [7:0]  b_be = 8'd0;
 
 // ddr_busy from registers only: low whenever the buffer is free and no read
 // owns the capture registers, in any clk cycle
-wire rd_on = (act_busy && !act_we) || (!cur_we && (st == ST_LAT || st == ST_DATA));
+wire rd_on = (act_busy && !act_we) || (!cur_we && (st == ST_LAT || st == ST_DATA)) || (FULL_RATE && (smp || cap));
+// FULL_RATE: these states use every clk edge, the others every other one
+wire fast_st = st == ST_IDLE || st == ST_LAT || st == ST_DATA || st == ST_SCFG;
+wire f_edge = FULL_RATE ? (ph || fast_st) : ph;
 assign ddr_busy = b_v || rd_on || rst_pend || park_s || aux_turn ||
                   !(st == ST_IDLE || st == ST_LAT || st == ST_DATA);
 
@@ -220,7 +242,8 @@ wire        sel_act = !aux_go && act_busy;
 wire        sel_buf = !aux_go && !act_busy && b_v;
 wire        sel_bus = !aux_go && !act_busy && !b_v && take_bus;
 wire        sel_aux = !sel_act && !sel_buf && !sel_bus;
-wire [21:0] l_adr = sel_act ? act_adr : sel_buf ? b_adr : sel_bus ? ddr_addr[21:0] : {8'h08, aux_addr[14:1]};
+wire [21:0] aux_adr = SAVE_AUX != 0 && aux_addr[20] ? {3'b100, aux_addr[19:1]} : {8'h08, aux_addr[14:1]};
+wire [21:0] l_adr = sel_act ? act_adr : sel_buf ? b_adr : sel_bus ? ddr_addr[21:0] : aux_adr;
 wire        l_we  = sel_act ? act_we : sel_buf ? b_we : sel_bus ? ddr_we : aux_we;
 wire        l_beat = sel_aux && aux_addr[0];   // an aux access is one beat
 
@@ -283,13 +306,14 @@ always @(posedge clk) begin
     aux_turn <= aux_req && !aux_rd_done && aux_prio;   // stop filling the buffer: aux goes next
 
     // a request taken in any cycle that does not go to the pins at once
-    if (take_bus && !(ph && st == ST_IDLE && !aux_go)) begin
+    if (take_bus && !(f_edge && st == ST_IDLE && !aux_go)) begin
         b_v <= 1'b1; b_we <= ddr_we; b_adr <= ddr_addr[21:0];
         b_cnt <= ddr_we ? 8'd1 : ddr_burstcnt; b_be <= ddr_be;
         lo_q <= ddr_din[31:0]; hi_q <= ddr_din[63:32];
     end
 
-    if (!ph) begin
+    if (FULL_RATE) smp <= 1'b0;
+    if (!FULL_RATE && !ph) begin
         // ---- R edge: the chip clock rises; read capture
         p_clk <= clk_run;
         smp <= 1'b0;
@@ -303,7 +327,8 @@ always @(posedge clk) begin
                 if (!rst_pend && !reset) ddr_dout_ready <= 1'b1;
             end
         end
-    end else begin
+    end
+    if (f_edge) begin
         // ---- F edge: the chip clock falls; every other pin changes here
         p_clk <= 1'b0;
         aux_rd_done <= 1'b0;
@@ -385,7 +410,9 @@ always @(posedge clk) begin
             3'd3: p_oe_n <= aux_we;
             3'd4: p_we_n <= 1'b1;
             3'd5: begin
-                if (!aux_we) aux_dout <= dq_in;
+                // Full rate: from the input register, so no pin path reaches
+                // aux_dout (dq_r is the pin one clk earlier, 44 ns after OE#).
+                if (!aux_we) aux_dout <= FULL_RATE ? dq_r : dq_in;
                 pins_idle(); aux_done <= !rst_pend; st <= ST_PARKED;
             end
             default: ;
@@ -395,6 +422,7 @@ always @(posedge clk) begin
         ST_IDLE: begin
             if (act_busy && rst_pend && !act_we) act_busy <= 1'b0;   // drop reads under reset
             else if (!act_busy && b_v && rst_pend && !b_we) b_v <= 1'b0;
+            else if (FULL_RATE && (smp || cap)) ;                   // a read's last words are still in the input pipeline
             // one launch site (sel_* picks the source); a waiting aux access
             // also goes before parking
             else if (aux_want && !rst_pend || act_busy || b_v || take_bus) launch();
@@ -451,6 +479,23 @@ always @(posedge clk) begin
 
         default: st <= ST_INIT;
         endcase
+    end
+
+    if (FULL_RATE) begin
+        // input register, then the word smp marked one clk earlier
+        dq_r <= dq_in;
+        cap <= smp; cap_hi <= smp_hi;
+        p_clk <= clk_run;
+        if (cap) begin
+            if (seg_aux) begin
+                if (!rst_pend && !reset) begin aux_dout <= dq_r; aux_done <= 1'b1; end
+                aux_rd_done <= 1'b1;
+            end else if (!cap_hi) lo_q <= dq_r;
+            else begin
+                hi_q <= dq_r;
+                if (!rst_pend && !reset) ddr_dout_ready <= 1'b1;
+            end
+        end
     end
 end
 

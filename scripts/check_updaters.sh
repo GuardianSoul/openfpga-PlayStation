@@ -5,7 +5,8 @@
 #   (cargo build --release in neil-morrison44/openfpga-instance-packager)
 #   PUPDATE_SETTINGS=pupdate_settings.json to copy (credentials are dropped)
 # Builds cue + 1 bin, cue + 4 bins, cue + bin + sbi and cue + 9 bins, then
-# prints each game file's slots (the 9-bin disc must be refused).
+# prints each game file's slots. A --cue-mount core's game files hold the cue
+# (and .sbi) only, so the 9-bin disc gets one too.
 set -u
 SD=$1; CORE=$2; S=$(mktemp -d)
 mk() { # card dir

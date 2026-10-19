@@ -47,8 +47,9 @@
 // * Check/format: load_done counts once clk2x has taken every APF request
 //   issued before it (ready_tgl_74). Word 0's magic is known without an aux
 //   read when APF wrote word 0 during the load (w0_seen / w0_magic, taken
-//   from the write data); otherwise (no file) word 0 is read through aux. If
-//   card bytes 0-1 are not 'M','C' (16'h434D little-endian) the header area
+//   from the write data); otherwise (no file) the card is formatted: PSRAM
+//   keeps the previous game's card across core loads, and a game without a
+//   card file would inherit it. If card bytes 0-1 are not 'M','C' (16'h434D little-endian) the header area
 //   (frames 0-63, words 0..2047) is written as a factory-formatted card
 //   (psx-spx; same image as psx_memcard_blank.sv). Word 0 (the magic) is
 //   written LAST, so a reset during the format leaves the card unformatted
@@ -65,6 +66,14 @@
 //   in PSRAM; it falls on the edge that sees that aux_done (or the last
 //   format write's).
 // * card_write is not needed and is ignored.
+//
+// Save-state window (SAVE_BASE != 0)
+// ----------------------------------
+// A second bridge window, bridge_addr[31:22] == SAVE_BASE[31:22] (4 MiB),
+// shares the request register and the aux port: its word index goes out as
+// aux_addr = {1'b1, bridge_addr[21:2]}, which psx_vram_psram (SAVE_AUX)
+// maps to the save buffer at the start of PSRAM die 1. The card check and
+// format only look at card words (aux_addr[20] low).
 //
 // Reset
 // -----
@@ -85,7 +94,7 @@
 // clk_74a -> clk2x, bundled data (launched on the same clk_74a edge as the
 // toggle, stable until the take toggle returns; used only after s2x_req[1]
 // differs from req_seen_2x, i.e. at least two clk2x edges later):
-//   req_we_74, req_addr_74[14:0], req_data_74[31:0]
+//   req_we_74, req_addr_74[20:0], req_data_74[31:0]
 //     -> w0_seen, w0_magic, and through aux_we/aux_addr/aux_din into the
 //        VRAM controller's clk2x registers (psx_vram_psram act_*, p_a, p_dq*,
 //        p_we_n, p_bm_n, st, tmr, aux_dout ...)
@@ -103,6 +112,7 @@
 module psx_memcard_slot #(
     parameter [31:0] BASE = 32'h2000_0000,
     parameter        BRIDGE_LITTLE = 1,
+    parameter [31:0] SAVE_BASE = 32'h0,   // save-state window (0 = none)
     // Test-only fault injection for the bench's negative controls (0 = none).
     parameter integer FAULT = 0
 ) (
@@ -158,10 +168,11 @@ module psx_memcard_slot #(
     reg [1:0] s74_take = 2'b00;
     reg        req_tgl_74 = 1'b0, ready_tgl_74 = 1'b0, ready_74 = 1'b0, take_seen_74 = 1'b0;
     reg        req_we_74 = 1'b0;
-    reg [14:0] req_addr_74 = 15'd0;
+    reg [20:0] req_addr_74 = 21'd0;   // [20] save window, else card word in [14:0]
     reg [31:0] req_data_74 = 32'd0;
     wire       rst_74 = s74_rst[1];
-    wire       in_window = bridge_addr[31:17] == BASE[31:17];
+    wire       in_save = SAVE_BASE != 0 && bridge_addr[31:22] == SAVE_BASE[31:22];
+    wire       in_window = bridge_addr[31:17] == BASE[31:17] || in_save;
     wire       wr_strobe = bridge_wr && in_window;
     wire       rd_strobe = bridge_rd && in_window;
     wire       pending = req_tgl_74 != s74_take[1];
@@ -180,7 +191,8 @@ module psx_memcard_slot #(
         end else begin
             if ((wr_strobe || rd_strobe) && pending) overflow <= 1'b1;
             if (req_accept) begin
-                req_we_74 <= wr_strobe; req_addr_74 <= bridge_addr[16:2];
+                req_we_74 <= wr_strobe;
+                req_addr_74 <= in_save ? {1'b1, bridge_addr[21:2]} : {6'd0, bridge_addr[16:2]};
                 req_data_74 <= wr_word; req_tgl_74 <= !req_tgl_74;
             end
             // ready_74 carries the request toggle count it covers: clk2x
@@ -215,7 +227,7 @@ module psx_memcard_slot #(
     wire        decide_now = ready_seen && !checked && !fmt_active && w0_seen;
 
     assign aux_we   = own ? fmt_active : req_we_74;
-    assign aux_addr = {6'd0, own ? {4'd0, fmt_idx & {11{fmt_active}}} : req_addr_74};
+    assign aux_addr = own ? {10'd0, fmt_idx & {11{fmt_active}}} : req_addr_74;
     assign aux_din  = own ? blank_word(fmt_idx) : req_data_74;
 
     always @(posedge clk2x) begin
@@ -258,7 +270,7 @@ module psx_memcard_slot #(
             end else if (req_new) begin
                 req_seen_2x <= s2x_req[1]; aux_req <= 1'b1; own <= 1'b0;
                 if (FAULT == 6 && !req_we_74) take_tgl_2x <= s2x_req[1];   // fault: answer before the read
-                if (req_we_74 && req_addr_74 == 15'd0) begin          // word 0 written by APF
+                if (req_we_74 && req_addr_74 == 21'd0) begin          // word 0 written by APF
                     w0_seen <= 1'b1; w0_magic <= req_data_74[15:0] == 16'h434D;
                 end
             end else if (fmt_active) begin
@@ -267,7 +279,10 @@ module psx_memcard_slot #(
                 if (magic_ok) begin checked <= 1'b1; busy <= 1'b0; end
                 else begin fmt_active <= 1'b1; fmt_idx <= fmt_first; end
             end else if (ready_seen && !checked) begin
-                aux_req <= 1'b1; own <= 1'b1;                        // check read of word 0
+                // no card file (APF wrote no word 0): a fresh card. PSRAM keeps
+                // the last game's card across core loads, so never keep it.
+                if (FAULT == 7) begin aux_req <= 1'b1; own <= 1'b1; end   // fault: the old check read
+                else begin fmt_active <= 1'b1; fmt_idx <= fmt_first; end
             end
             if (FAULT == 2) busy <= !ready_seen || (!checked && !fmt_active);
         end

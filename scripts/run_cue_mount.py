@@ -7,6 +7,7 @@ own one_file_plan() and track_table(), then runs sim/pocket/tb_cue_mount.sv
 with Icarus Verilog.
 """
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -56,10 +57,26 @@ def sbi_bytes():
     entries = [LIBCRYPT_MSF[0], 0x012345, LIBCRYPT_MSF[7], LIBCRYPT_MSF[15]]
     return b'SBI\0' + b''.join(m.to_bytes(3, 'big') + b'\x01' + bytes(10) for m in entries)
 
+# A cheat list (slot 98): comments, libretro's form, writes, a condition
+# that holds and one that doesn't, a byte condition, an increment (three
+# frames on) and a serial code. CHEAT_RAM: halfword index, value after.
+CHEATS = ('# Cheats for My Game: 80000000 1111 is a comment\n; 80000002 2222 too\n'
+          'cheat0_desc = "Max HP"\ncheat0_code = "80010000+1234"\n30010003 00AB\n'
+          'D0010000 1234\n80010010 5555\nD0010000 9999\n80010020 6666\nE0010003 00AB\n80010030 7777\n'
+          '10010040 0001\n50000402 0010\n80010050 0100\n')
+# libretro's .cht with enable flags: only cheat 1's two codes apply.
+RETRO = ('cheats = 3\n\ncheat0_desc = "Infinite Lives"\ncheat0_code = "80010060+1111"\ncheat0_enable = false\n\n'
+         'cheat1_desc = "Max Money"\ncheat1_code = "80010062+2222+80010064+3333"\ncheat1_enable = true\n\n'
+         'cheat2_desc = "Moon Jump"\ncheat2_code = "80010066+4444"\ncheat2_enable = false\n')
+RETRO_RAM = [(0x8030, 0), (0x8031, 0x2222), (0x8032, 0x3333), (0x8033, 0)]
+CHEAT_RAM = [(0, 0), (1, 0), (0x8000, 0x1234), (0x8001, 0xAB00), (0x8008, 0x5555), (0x8010, 0), (0x8018, 0x7777),
+             (0x8020, 0x0103), (0x8028, 0x0100), (0x8029, 0x0110), (0x802A, 0x0120), (0x802B, 0x0130), (0x802C, 0)]
+
 # (name, folder, cue name, cue text, {file: sectors}, expectation[, mode[, other files]])
 # Other files are (name, text or bytes); a "(Disc 2)" cue among them is the
 # menu's Disc 2. A picked .m3u's disc 1 is the first cue among them.
-# mode 'lc': a core built with LibCrypt on (prepare --cue-libcrypt).
+# mode 'lc': a core built with LibCrypt on (prepare --cue-libcrypt); 'ch':
+# with the cheat port (prepare --cheats), the list in the game JSON's slot 98.
 # A name with a / is a path under the folder.
 # 'launch': picked from the launch list (slot 0, read before the stream's
 # allcomplete) instead of with Load disc (slot 101). 'json-cue': a game JSON
@@ -120,6 +137,9 @@ CASES = [
     ('json-many', 'Many', 'Many.cue', MANY, {'Many.bin': 800}, 'ok', 'json-cue'),
     ('json-trk', *REDUMP, 'json', 'json-trk'),
     ('launch-bad', 'Cooked', 'Cooked.cue', 'FILE "Cooked.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n', {'Cooked.bin': 3}, 'fail', 'launch'),
+    # A cold card (the first launch after a restart or card writes): the
+    # first two tries' reads fail (TRIES, COLD), the third mounts.
+    ('json-cold', *REDUMP, 'ok', 'json-cue'),
     # A 0.5.2 game JSON for a three-file game: cue in 100, the .bin files in
     # 101-103 (track 2's .bin where 0.5.3 has its track table), read there.
     ('json-052', *REDUMP, 'ok', 'json-052'),
@@ -134,6 +154,10 @@ CASES = [
     # .sbi comes from the JSON's slot 99.
     ('json-sbi99', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-sbi99-lc',
      (('Lc.sbi', sbi_bytes()),)),
+    ('json-cheats', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-ch-lc',
+     (('Lc.sbi', sbi_bytes()), ('Lc.cht', CHEATS))),
+    ('json-cheats-retro', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-ch-lc',
+     (('Lc.cht', RETRO),)),
     ('launch-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'launch-lc',
      (('Lc.sbi', sbi_bytes()),)),
     ('pick-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', '-lc',
@@ -215,6 +239,32 @@ def expected(case, disk, cue, suffix='', mask=0):
     return len(image), sectors
 
 
+# Launch tries (reads of slot 0) a case takes: a failed launch mount is
+# tried three times, the stream's allcomplete held until the last. Other
+# launches take one.
+TRIES = {'launch-bad': 3, 'launch-json': 3, 'launch-none': 3, 'json-cold': 3}
+COLD = {'json-cold': 6}   # commands the host fails first: slot 0, slot 102 and the cue in slot 100, twice
+
+# The pause before a launch retry (start.S retry_wait at 0x10, in wait loop
+# turns of 104 cycles) is shortened for the bench in a copy of the firmware;
+# a retry must still come at least BENCH_WAIT * MIN_TURN cycles after the
+# last command (without the pause launch-bad's retries come after ~169,000).
+RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
+
+
+def bench_firmware(work):
+    """A copy of rtl/pocket/psx_cue_fw0-3.hex with retry_wait set to BENCH_WAIT; its prefix."""
+    lanes = [(ROOT/f'rtl/pocket/psx_cue_fw{k}.hex').read_text().split() for k in range(4)]
+    want = int(re.search(r'^retry_wait:\s*\.word\s+(\w+)', (ROOT/'rtl/pocket/cue_fw/start.S').read_text(), re.M)[1], 0)
+    word = RETRY_WAIT_AT//4
+    got = sum(int(lanes[k][word], 16) << 8*k for k in range(4))
+    if got != want: raise SystemExit(f'firmware word at {RETRY_WAIT_AT:#x} is {got:#x}, not retry_wait {want}: run scripts/build_cue_fw.py')
+    for k in range(4):
+        lanes[k][word] = f'{BENCH_WAIT >> 8*k & 0xff:02x}'
+        (work/f'psx_cue_fw{k}.hex').write_text(''.join(b + '\n' for b in lanes[k]))
+    return work/'psx_cue_fw'
+
+
 def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expect, mode='', other=()):
     case = work/name; case.mkdir()
     disk = case/'disk'; disk.mkdir()
@@ -230,6 +280,7 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     disc1 = next(f for f, _ in other if f.endswith('.cue')) if cue_name.endswith('.m3u') else cue_name
     disc2 = next((f for f, _ in other if '(Disc 2)' in f and f.endswith('.cue')), None)
     lc = mode.endswith('-lc'); mode = mode.removesuffix('-lc')
+    ch = mode.endswith('-ch'); mode = mode.removesuffix('-ch')
     form = mode[-1] if '-of' in mode else ''   # '-ofN': the host takes only open form N
     mode = mode.split('-of')[0]
     if cue_text is not None: put(cue_name, cue_text.encode('utf-8'))
@@ -243,6 +294,10 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
             # pupdate/Pocket Sync (and 0.5.2's layout): the .bin files in 101, 102, ...
             for k, fn in enumerate(sizes):
                 extra.append(f'+slot{101 + k}={next(i for i, (p, _) in enumerate(files) if p.endswith("/" + fn))}')
+        if ch:
+            extra += ['+cheats', '+cheatcheck=1', f'+slot98={next(i for i, (p, _) in enumerate(files) if p.endswith(".cht"))}']
+            ram = RETRO_RAM if 'enable' in next(d for p, d in files if p.endswith('.cht')).decode() else CHEAT_RAM
+            (case/'cheatcheck.hex').write_text(''.join(f'{a:08x}\n{v:08x}\n' for a, v in ram) + 'ffffffff\n')
         files.append((COMMON + folder + '/Game.json', b'{"instance": {}}\n'))
         if mode == 'json-trk':
             extra.append(f'+trk102={len(files)}')
@@ -258,8 +313,11 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     (case/'meta.hex').write_text(''.join(f'{v:08x}\n' for v in meta))
     (case/'paths.hex').write_text(''.join(words_hex(p) for p in paths))
     args = [f'+base={case}', f'+nfiles={len(files)}', f'+picked={picked}'] + (['+launch'] if mode else []) + extra + ([f'+openform={form}'] if form else [])
+    if mode:
+        tries = TRIES.get(name, 1)
+        args += [f'+tries={tries}', f'+cold={COLD.get(name, 0)}'] + ([f'+minpause={BENCH_WAIT*MIN_TURN}'] if tries > 1 else [])
     if expect == 'ok':
-        size, sectors = expected(case, disk, disc1, mask=libcrypt_mask(sbi) if lc else 0)
+        size, sectors = expected(case, disk, disc1, mask=libcrypt_mask(sbi) if lc and sbi else 0)
         args += [f'+size={size}', f'+sectors={sectors}']
         if disc2:
             size, sectors = expected(case, disk, disc2, '2')
@@ -270,10 +328,10 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
         args.append('+bin')
     else:
         args.append('+fail')
-    out = subprocess.run([vvp, str(work/('tb_lc.vvp' if lc else 'tb.vvp')), *args], capture_output=True, text=True, timeout=1800)
+    out = subprocess.run([vvp, str(work/('tb_ch.vvp' if ch else 'tb_lc.vvp' if lc else 'tb.vvp')), *args], capture_output=True, text=True, timeout=1800)
     text = out.stdout + out.stderr
     ok = 'PASS' in text and 'FAIL' not in text
-    print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("mount", "menu", "probe"))), flush=True)
+    print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("launch", "mount", "menu", "probe", "cheats", "stack"))), flush=True)
     if not ok: print(text[-3000:])
     return ok
 
@@ -285,9 +343,10 @@ def main():
     work = Path(tempfile.mkdtemp(prefix='run-', dir=parent)); print(work)
     serv = ROOT/'references/serv/rtl'
     if not (serv/'serv_rf_top.v').is_file(): raise SystemExit('references/serv is missing: git submodule update --init references/serv')
-    for vvp_name, lc in (('tb.vvp', 0), ('tb_lc.vvp', 1)):
-        subprocess.run([iverilog, '-g2012', '-o', str(work/vvp_name), f'-Ptb_cue_mount.FW="{ROOT/"rtl/pocket/psx_cue_fw"}"',
-                        f'-Ptb_cue_mount.LC={lc}', *[str(p) for p in SERV_FILES(serv)], str(ROOT/'rtl/pocket/psx_cue_mount.sv'),
+    fw = bench_firmware(work)
+    for vvp_name, lc, ch in (('tb.vvp', 0, 0), ('tb_lc.vvp', 1, 0), ('tb_ch.vvp', 1, 1)):
+        subprocess.run([iverilog, '-g2012', '-o', str(work/vvp_name), f'-Ptb_cue_mount.FW="{fw}"',
+                        f'-Ptb_cue_mount.LC={lc}', f'-Ptb_cue_mount.CH={ch}', *[str(p) for p in SERV_FILES(serv)], str(ROOT/'rtl/pocket/psx_cue_mount.sv'),
                         str(ROOT/'sim/pocket/tb_cue_mount.sv')], check=True)
     only = sys.argv[1:]   # case names, or all
     results = [run_case(work, iverilog, vvp, *case) for case in CASES if not only or case[0] in only]

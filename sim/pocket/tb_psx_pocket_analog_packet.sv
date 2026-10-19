@@ -34,6 +34,8 @@ module tb;
   // The current face-button selector occupies bits 14:13. Use all four
   // transport values, including the reserved one, to expose truncation.
   if(CONFIG_W==15) cfg=cfg | (CONFIG_W'((seq/17)%4)<<13);
+  // 16 bits: the face selector moves to 15:14 above a third SELECT + D-Pad bit.
+  if(CONFIG_W==16) cfg=cfg | (CONFIG_W'((seq/19)%2)<<13) | (CONFIG_W'((seq/17)%4)<<14);
   setting=(seq/13)%2;
   case(seq%37)
    0:begin kind=1;joy=0;end
@@ -52,7 +54,7 @@ module tb;
   found=actual==={CONFIG_RESET,33'h080808080};
   for(i=0;i<count;i=i+1)if(actual===published[i])found=1;
   if(!found)$fatal(1,"torn config/analog packet %h",actual);
-  if(CONFIG_W==15 && reset_n) mode_seen=mode_seen | (1 << (cfg_out >> 13));
+  if(CONFIG_W>=15 && reset_n) mode_seen=mode_seen | (1 << (cfg_out >> (CONFIG_W-2)));
   if(actual!==previous)deliveries=deliveries+1;
   previous=actual;
  end
@@ -66,7 +68,7 @@ module tb;
   repeat(37)@(negedge src);run_dst=1;
   repeat(2500)@(negedge dst);
   if(deliveries<200||checks<2500||resets!=2)$fatal(1,"coverage missing");
-  if(CONFIG_W==15 && mode_seen!=15)$fatal(1,"face selector coverage missing");
+  if(CONFIG_W>=15 && mode_seen!=15)$fatal(1,"face selector coverage missing");
   $display("PASS atomic pad width=%0d face_modes=%0d checks=%0d deliveries=%0d published=%0d resets=%0d",CONFIG_W,mode_seen,checks,deliveries,count,resets);$finish;
  end
  initial begin #1000000;$fatal(1,"timeout");end

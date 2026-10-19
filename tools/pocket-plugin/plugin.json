@@ -1,6 +1,6 @@
 {
   "name": "PlayStation game files",
-  "description": "Makes the game files for the PlayStation core: one entry per multi-disc game with every disc in it (switch discs in Core Settings > Swap Discs, one shared memory card), cue-only game files for cores from 0.5.3, LibCrypt .sbi files, and CHD images extracted safely.",
+  "description": "Generates the game files for the PlayStation core: one entry per multi-disc game with every disc in it (switch discs in Core Settings > Swap Discs, one shared memory card), cue-only game files for cores from 0.5.3, LibCrypt .sbi files, and CHD images extracted safely.",
   "allowed_hosts": [],
   "logo_url": "https://raw.githubusercontent.com/GuardianSoul/openfpga-PlayStation/main/support/pocket-art/core-icon.png"
 }

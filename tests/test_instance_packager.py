@@ -18,6 +18,7 @@ FOLDERS = {
     'Rayman (USA)': ['Rayman (USA).cue'] + [f'Rayman (USA) (Track {k}).bin' for k in range(1, 5)],
     'Ape Escape (Europe)': ['Ape Escape (Europe).cue', 'Ape Escape (Europe).bin', 'Ape Escape (Europe).sbi'],
     'Wipeout (USA)': ['Wipeout (USA).cue'] + [f'Wipeout (USA) (Track {k:02}).bin' for k in range(1, 10)],
+    'Dead or Alive (USA)': ['Dead or Alive (USA).cue'] + [f'Dead or Alive (USA) (Track {k:02}).bin' for k in range(1, 30)],
 }
 
 
@@ -64,11 +65,10 @@ class InstancePackagerTest(unittest.TestCase):
                 for name, names in FOLDERS.items():
                     with self.subTest(builder=builder.__name__, folder=name):
                         slots = builder(packager, Path(tmp)/name)
-                        if name.startswith('Wipeout'):
-                            self.assertIsNone(slots)  # 9 files: not declared
-                            continue
+                        # the cue (and .sbi) only: the core opens the .bin files
+                        # by the cue's folder, however many there are
                         self.assertIsNotNone(slots)
-                        self.assertEqual(sorted(f for _, f in slots), sorted(names))
+                        self.assertEqual(sorted(f for _, f in slots), sorted(f for f in names if not f.endswith('.bin')))
                         self.assertLessEqual({i for i, _ in slots}, DECLARED)
                         self.assertEqual(dict(slots)[100], names[0])
 
@@ -78,8 +78,10 @@ class InstancePackagerTest(unittest.TestCase):
                 p = instance_packager('psx', 'X', one_file_disc=one_file_disc, cue_mount=cue_mount,
                                       libcrypt=False, multi_track=19)
                 self.assertIn('count', p['slot_limit'])
-                bins = next(s for s in p['data_slots'] if s['id'] == 101)
-                self.assertEqual(bins['sort'], 'ascending')
+                bins = [s for s in p['data_slots'] if s['id'] == 101]
+                self.assertEqual(bool(bins), not cue_mount)  # a cue reader opens the .bin files itself
+                for s in bins:
+                    self.assertEqual(s['sort'], 'ascending')
 
 
 if __name__ == '__main__':

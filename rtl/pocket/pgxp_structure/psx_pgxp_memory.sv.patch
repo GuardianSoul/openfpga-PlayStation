@@ -1,0 +1,23 @@
+--- psx_pgxp_memory.sv
++++ psx_pgxp_memory.sv
+@@ -55,6 +55,7 @@
+     wire mv,mr,mw,mdone,backend_idle;
+     wire [24:0] ma;
+     wire [63:0] md,mq;
++    wire [7:0] mm;
+     psx_pgxp_event_backend backend (
+         .clk(clk1x),.reset(reset || init),.invalidate(invalidate),.enabled(enabled),
+         .event_valid(head_valid),.event_ready(backend_ready),.event_data(head),
+@@ -62,10 +63,10 @@
+         .gpu_valid(gpu_valid),.gpu_ready(gpu_ready),.gpu_record(gpu_record),
+         .idle(backend_idle),.initializing(initializing),
+         .mem_valid(mv),.mem_ready(mr),.mem_write(mw),.mem_address(ma),.mem_data(md),
+-        .mem_done(mdone),.mem_q(mq)
++        .mem_done(mdone),.mem_q(mq),.mem_mask(mm)
+     );
+     psx_pgxp_sdram64 transfer (
+-        .clk(clk1x),.init(init),.valid(mv),.ready(mr),.write_access(mw),.address(ma),.data(md),
++        .clk(clk1x),.init(init),.valid(mv),.ready(mr),.write_access(mw),.address(ma),.data(md),.mask(mm),
+         .done(mdone),.q(mq),.ch_req(ch4_req),.ch_rnw(ch4_rnw),.ch_address(ch4_address),
+         .ch_data(ch4_data),.ch_mask(ch4_mask),.ch_done(ch4_done),.ch_q(ch4_q)
+     );

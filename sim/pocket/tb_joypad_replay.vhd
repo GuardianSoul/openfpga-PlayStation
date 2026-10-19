@@ -12,7 +12,8 @@ use std.textio.all;
 use work.pJoypad.all;
 
 entity tb_joypad_replay is
-   generic (TRACE : string := "pad.txt"; DUALSHOCK : integer := 1; MAX_REPORT : integer := 20);
+   -- GAP: clocks between a new transmitValue (and selection) and actionNext, as the SIO's byte time
+   generic (TRACE : string := "pad.txt"; DUALSHOCK : integer := 1; MAX_REPORT : integer := 20; GAP : integer := 0);
 end entity;
 
 architecture sim of tb_joypad_replay is
@@ -79,7 +80,9 @@ begin
          hread(l, vin); hread(l, vout); hread(l, vack);
          if first then n_tx := n_tx + 1; tx_bad := false; first := false; end if;
          selected <= '1';
-         transmitValue <= vin; actionNext <= '1'; transmitting <= '1';
+         transmitValue <= vin; transmitting <= '1';
+         for t in 1 to GAP loop wait until rising_edge(clk); wait for 1 ns; end loop;
+         actionNext <= '1';
          wait until rising_edge(clk); wait for 1 ns;
          actionNext <= '0';
          got := x"FF"; got_ack := '0';   -- no answer: the line floats high

@@ -20,6 +20,10 @@
 //      bench checks each such write lands before its words are read).
 //   5. park again (APF quit) and a second, parked (asynchronous) readback.
 // Both readbacks are compared byte for byte.
+//   4b. save-state window (SAVE_BASE 0x30000000, SAVE_AUX): APF writes of
+//      words at both ends of the 4 MiB window and in between, with GPU
+//      traffic; each must land at die 1 DDR word 0x200000 + i/2 without
+//      touching the card, and read back over the bridge.
 `timescale 1ps/1ps
 `default_nettype none
 module tb_memcard_slot_vram;
@@ -58,7 +62,7 @@ module tb_memcard_slot_vram;
     wire [31:0] bridge_rd_data, aux_din, aux_dout;
     wire [20:0] aux_addr;
     wire overflow, busy, aux_req, aux_we, aux_done, card_write;
-    psx_memcard_slot slot (
+    psx_memcard_slot #(.SAVE_BASE(32'h3000_0000)) slot (
         .clk_74a(clk_74a), .bridge_addr(bridge_addr), .bridge_wr(bridge_wr),
         .bridge_wr_data(bridge_wr_data), .bridge_rd(bridge_rd), .bridge_rd_data(bridge_rd_data),
         .overflow(overflow), .clk2x(clk2x), .reset_2x(reset), .busy(busy),
@@ -73,7 +77,7 @@ module tb_memcard_slot_vram;
     wire c0_clk, c1_clk, c0_adv_n, c1_adv_n, c0_cre, c1_cre, c0_ce0_n, c1_ce0_n, c0_ce1_n, c1_ce1_n;
     wire c0_oe_n, c1_oe_n, c0_we_n, c1_we_n, c0_ub_n, c1_ub_n, c0_lb_n, c1_lb_n;
     reg  [15:0] c0_dq_in = 16'hzzzz, c1_dq_in = 16'hzzzz;
-    psx_vram_psram vram (
+    psx_vram_psram #(.SAVE_AUX(1)) vram (
         .clk(clk2x), .reset(reset), .park(park),
         .ddr_busy(ddr_busy), .ddr_burstcnt(ddr_burstcnt), .ddr_addr(ddr_addr), .ddr_dout(ddr_dout),
         .ddr_dout_ready(ddr_dout_ready), .ddr_rd(ddr_rd), .ddr_din(ddr_din), .ddr_be(ddr_be), .ddr_we(ddr_we),
@@ -128,6 +132,15 @@ module tb_memcard_slot_vram;
         begin
             k = 2 * vp_index(22'h020000 + i / 2) + (i % 2);
             chip_word = {chip1.mem[k], chip0.mem[k]};
+        end
+    endfunction
+
+    // save-buffer word i in the chips (DDR word 0x200000 + i/2, beat i[0])
+    function [31:0] save_word(input integer i);
+        integer k;
+        begin
+            k = 2 * vp_index(22'h200000 + i / 2) + (i % 2);
+            save_word = {chip1.mem[k], chip0.mem[k]};
         end
     endfunction
 
@@ -313,6 +326,40 @@ module tb_memcard_slot_vram;
         readback(rb1_bad, 1);
         gpu_on = 0;
         if (rb1_bad) errors = errors + 1;
+        // save-state window: ends of the 4 MiB window and spread words
+        begin : save_window
+            integer s, n_save, save_bad; reg [31:0] sw [0:63]; integer sidx [0:63];
+            n_save = 64; save_bad = 0;
+            for (s = 0; s < n_save; s = s + 1) begin
+                sidx[s] = s < 4 ? s : s < 8 ? 32'hFFFFF - (s - 4) : s < 40 ? $urandom % 32'h8000 : 32'hF8000 + $urandom % 32'h8000;
+                sw[s] = $urandom;
+            end
+            gpu_on = 1;
+            for (s = 0; s < n_save; s = s + 1) apf_write(32'h3000_0000 + 4 * sidx[s], sw[s]);
+            repeat (400) @(posedge clk2x);
+            for (s = 0; s < n_save; s = s + 1) begin
+                // a later write to the same word wins
+                for (k = s + 1; k < n_save; k = k + 1) if (sidx[k] == sidx[s]) sw[s] = sw[k];
+                if (save_word(sidx[s]) !== sw[s]) begin
+                    save_bad = save_bad + 1;
+                    if (save_bad < 4) $display("ERROR save word %0d in chips %08x want %08x", sidx[s], save_word(sidx[s]), sw[s]);
+                end
+            end
+            for (s = 0; s <= n_save; s = s + 1) begin
+                apf_read(32'h3000_0000 + 4 * sidx[s < n_save ? s : 0]);
+                if (s > 0 && rd_sampled !== sw[s - 1]) begin
+                    save_bad = save_bad + 1;
+                    if (save_bad < 8) $display("ERROR save readback %0d got %08x want %08x", sidx[s - 1], rd_sampled, sw[s - 1]);
+                end
+            end
+            gpu_on = 0;
+            for (k = 0; k < WORDS; k = k + 1) if (chip_word(k) !== expect_mem[k]) begin
+                save_bad = save_bad + 1;
+                if (save_bad < 10) $display("ERROR card word %0d changed by the save window", k);
+            end
+            if (save_bad) begin $display("ERROR save window: %0d bad", save_bad); errors = errors + 1; end
+            else $display("save window: %0d words written, placed and read back", n_save);
+        end
         repeat (200) @(posedge clk2x);
         // APF quit: park, parked (asynchronous) readback
         park <= 1;

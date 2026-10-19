@@ -43,11 +43,31 @@ REVIEWED_CAS3_CAPTURE_SHA256 = {
     # Frozen CL3/default+SPU_FIRST data and late-DQ controls reviewed.
     # This accepts the capture contract, not routing, warm reset or the board.
     '71f8ebae2beadb49023596f09552142fd84a5aaeb1752fd481c3553fc38427e7',
+    # OPEN_ROW parameter (default 0): PHY cells, forwarded clock, MRS, DQ
+    # capture pipeline and read tags unchanged. With OPEN_ROW=0 the bank map,
+    # auto-precharge and schedule are those of 71f8eb (identical bench
+    # cycles); OPEN_ROW=1 adds open-row READs on the idle edge through the
+    # same q_* tag path. Strict CL3 model (now also tWR, read-burst and bus
+    # checks), default/SPU_FIRST/OPEN_ROW data and late-DQ controls checked.
+    'de2cf47ecfe5b163a5bb34b1b9eeec52bbd399f6933b0009b36c83b8ad603e8b',
+    # Slimmer OPEN_ROW (two main-RAM rows; misses precharge and re-arbitrate);
+    # same PHY/MRS/tags/capture, OPEN_ROW=0 bench cycles unchanged.
+    '8b3bb6655041400411d003151b2771f048559043148fa7192b891710b984269e',
+    # OPEN_ROW map by plain bit selects ({[24],[10]} bank, {[23],[22:11]} row),
+    # registered init/forced refresh for OPEN_ROW; capture contract unchanged.
+    '8c1dab71b1b4e4b03053b572d04fcbdc3c9d37c869f7f673ece1704a8fb7813d',
+    # OPEN_ROW hit column address chosen in the idle edge (open_hit1) to keep
+    # the precharge compare off the a[] pin path; same pins/commands/capture.
+    'c67c8b418bf205de9d6d3f2c6dc2065a5bf4cdf7b094213c72b705e53402bc0c',
 }
 REVIEWED_SPU_FIRST_CAPTURE_SHA256 = {
     'e96f00a8a26ab2c47b77ba6ed8a066f7653e1215e83872b2aa1d417a83753adf',
     '79c0209ac2230aa39c3b69e3aa617e236a1c80aa8036fae1e6a24ac0fa49202d',
     '71f8ebae2beadb49023596f09552142fd84a5aaeb1752fd481c3553fc38427e7',
+    'de2cf47ecfe5b163a5bb34b1b9eeec52bbd399f6933b0009b36c83b8ad603e8b',
+    '8b3bb6655041400411d003151b2771f048559043148fa7192b891710b984269e',
+    '8c1dab71b1b4e4b03053b572d04fcbdc3c9d37c869f7f673ece1704a8fb7813d',
+    'c67c8b418bf205de9d6d3f2c6dc2065a5bf4cdf7b094213c72b705e53402bc0c',
 }
 
 
@@ -109,9 +129,10 @@ def wrapper_parameters(text):
     instances=re.findall(r'psx_sdram_ctrl\s*#\(([^\n]+)\)\s+controller\s*\(',text)
     if len(instances)!=1 or text.count('.clk(clk3x), .clk_base(clk1x)')!=1:
         raise ValueError('Unknown single-chip Native clock/instance wiring')
-    parameters=re.fullmatch(r'\s*\.SINGLE_CHIP\(1\)(?:,\s*\.CAS_LATENCY\(([23])\))?(?:,\s*\.SPU_FIRST\(([01])\))?\s*',instances[0])
+    parameters=re.fullmatch(r'\s*\.SINGLE_CHIP\(1\)(?:,\s*\.CAS_LATENCY\(([23])\))?(?:,\s*\.SPU_FIRST\(([01])\))?(?:,\s*\.OPEN_ROW\(([01])\))?\s*',instances[0])
     if not parameters:raise ValueError('Unknown Native SDRAM parameter override')
-    return tuple(int(x) if x is not None else None for x in parameters.groups())
+    # OPEN_ROW keeps the per-READ capture contract (same tags and pipeline)
+    return tuple(int(x) if x is not None else None for x in parameters.groups()[:2])
 
 
 def wrapper_contract(text):

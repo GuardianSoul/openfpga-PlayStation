@@ -86,9 +86,10 @@ def make_card(card):
     (saves/'Legend (USA) (Disc 1).sav').write_bytes(b'not copied')
 
 
-# A --cue-mount core's data.json (0.5.3): the launch slot takes .cue, the core
-# opens track files (103) and other discs' cues (104) itself.
-CUE_READER = ([{'id': 0, 'extensions': ['json', 'cue', 'bin', 'm3u']}, {'id': 16}, {'id': 100, 'extensions': ['cue']},
+# A --cue-mount core's data.json: the launch slot takes .cue (0.5.3 and 0.5.4
+# listed .bin there too), the core opens track files (103) and other discs'
+# cues (104) itself.
+CUE_READER = ([{'id': 0, 'extensions': ['json', 'cue', 'm3u']}, {'id': 16}, {'id': 100, 'extensions': ['cue']},
                {'id': 101, 'extensions': ['cue', 'bin', 'm3u']}, {'id': 102, 'extensions': ['trk']},
                {'id': 103, 'extensions': ['bin']}, {'id': 104, 'extensions': ['cue']}]
               + [{'id': 100*n + k, 'extensions': ['bin' if k == 1 else 'trk']} for n in (2, 3, 4) for k in (1, 2)])
@@ -223,6 +224,29 @@ class SdCardPage(unittest.TestCase):
             self.assertIn('LibCrypt Ape Escape (Europe).sbi', js.stdout)
             self.assertTrue((page/'Assets/playstation/common/Rayman/Rayman (USA) (one file).trk').is_file())
             self.assertFalse((page/'Assets/playstation/common/Merged/Game').exists())   # nothing split
+
+    def test_cheat_slot_names_the_cht(self):
+        # A core declaring slot 98 (--cheats): <cue name>.cht, or the game's name without its disc tag.
+        with TemporaryDirectory() as tmp:
+            script, page = Path(tmp)/'script', Path(tmp)/'page'
+            cue_reader_card(script)
+            (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': CUE_READER + [{'id': 98}, {'id': 99}]}}))
+            common = script/'Assets/playstation/common'
+            (common/'Ape Escape (Europe)/Ape Escape (Europe).cht').write_text('80012345 0063\n')
+            (common/'Legend (Disc 1)/Legend (USA).cht').write_text('80012345 0063\n')
+            shutil.copytree(script, page)
+            py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                 '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+            js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                check=True, capture_output=True, text=True)
+            self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+            self.assertEqual(tree(script), tree(page))
+            out = page/'Assets/playstation'/CORE
+            self.assertIn('wrote Ape Escape (Europe).json (1 track, cue, LibCrypt Ape Escape (Europe).sbi, cheats Ape Escape (Europe).cht)', js.stdout)
+            ape = json.loads((out/'Ape Escape (Europe).json').read_text())['instance']['data_slots']
+            self.assertIn({'id': 98, 'filename': 'Ape Escape (Europe).cht'}, ape)
+            legend = json.loads((out/'Legend (USA).json').read_text())['instance']['data_slots']
+            self.assertIn({'id': 98, 'filename': 'Legend (Disc 1)/Legend (USA).cht'}, legend)
 
     def test_cue_reader_core_matches_the_script(self):
         # --cue-mount core: game files name the cue and disc 1's files; nothing is joined.

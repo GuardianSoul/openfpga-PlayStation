@@ -21,6 +21,9 @@ module tb_psx_vram_psram;
     parameter integer RESETS = 3;
     parameter integer PARKS = 3;
     parameter integer LATENCY = 3;
+    parameter integer FULL_RATE = 0;          // chip clock = clk through a DDIO stage PHASE ns after each clk edge
+    parameter real PHASE = 8.0;
+    parameter real T_CLK_MIN = 15.0;          // FULL_RATE runs 14.76 ns (other Pocket cores run these chips at 104 MHz)
     parameter integer ROW_LOG2 = 6;
     parameter integer AUX = 1;
     parameter integer AUX_MAX = 60;          // aux request -> done bound while the core runs (clk2x)               // aux traffic during the random phase
@@ -49,7 +52,7 @@ module tb_psx_vram_psram;
     wire c0_oe_n, c1_oe_n, c0_we_n, c1_we_n, c0_ub_n, c1_ub_n, c0_lb_n, c1_lb_n;
     reg  [15:0] c0_dq_in = 16'hzzzz, c1_dq_in = 16'hzzzz;
 
-    psx_vram_psram #(.LATENCY(LATENCY), .ROW_LOG2(ROW_LOG2)) dut (
+    psx_vram_psram #(.LATENCY(LATENCY), .ROW_LOG2(ROW_LOG2), .FULL_RATE(FULL_RATE != 0)) dut (
         .clk(clk), .reset(reset), .park(park),
         .ddr_busy(ddr_busy), .ddr_burstcnt(ddr_burstcnt), .ddr_addr(ddr_addr), .ddr_dout(ddr_dout),
         .ddr_dout_ready(ddr_dout_ready), .ddr_rd(ddr_rd), .ddr_din(ddr_din), .ddr_be(ddr_be), .ddr_we(ddr_we),
@@ -66,7 +69,15 @@ module tb_psx_vram_psram;
     reg [5:0] d0_a = 0, d1_a = 0; reg [15:0] d0_dq = 0, d1_dq = 0; reg d0_oe = 0, d1_oe = 0;
     reg d0_clk = 0, d1_clk = 0, d0_adv = 1, d1_adv = 1, d0_cre = 0, d1_cre = 0, d0_ce0 = 1, d1_ce0 = 1;
     reg d0_ce1 = 1, d1_ce1 = 1, d0_oen = 1, d1_oen = 1, d0_wen = 1, d1_wen = 1, d0_ub = 1, d1_ub = 1, d0_lb = 1, d1_lb = 1;
-    always @(c0_clk) d0_clk <= #(CLK_DLY) c0_clk;        always @(c1_clk) d1_clk <= #(CLK_DLY) c1_clk;
+    // FULL_RATE: cram*_clk is a clock enable; a DDIO output clocked PHASE ns
+    // after clk sends a high half-period when it was set at that clk edge
+    reg  ddio0 = 0, ddio1 = 0;
+    always @(posedge clk) if (FULL_RATE != 0) fork
+        begin #(PHASE) ddio0 = c0_clk; ddio1 = c1_clk; end
+        begin #(PHASE + PERIOD/2) ddio0 = 0; ddio1 = 0; end
+    join_none
+    wire pin0_clk = FULL_RATE != 0 ? ddio0 : c0_clk, pin1_clk = FULL_RATE != 0 ? ddio1 : c1_clk;
+    always @(pin0_clk) d0_clk <= #(CLK_DLY) pin0_clk;    always @(pin1_clk) d1_clk <= #(CLK_DLY) pin1_clk;
     always @(c0_a) d0_a <= #(CTL_DLY) c0_a;              always @(c1_a) d1_a <= #(CTL_DLY) c1_a;
     always @(c0_adv_n) d0_adv <= #(CTL_DLY) c0_adv_n;    always @(c1_adv_n) d1_adv <= #(CTL_DLY) c1_adv_n;
     always @(c0_cre) d0_cre <= #(CTL_DLY) c0_cre;        always @(c1_cre) d1_cre <= #(CTL_DLY) c1_cre;
@@ -83,9 +94,9 @@ module tb_psx_vram_psram;
     always @(bus0) c0_dq_in <= #(RET_DLY) bus0;
     always @(bus1) c1_dq_in <= #(RET_DLY) bus1;
 
-    psx_cram_model #(.CHIP(0), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip0 (.clk(d0_clk), .host_oe(d0_oe), .a(d0_a), .dq(bus0),
+    psx_cram_model #(.CHIP(0), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .T_CLK_MIN(T_CLK_MIN), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip0 (.clk(d0_clk), .host_oe(d0_oe), .a(d0_a), .dq(bus0),
         .ce0_n(d0_ce0), .ce1_n(d0_ce1), .adv_n(d0_adv), .oe_n(d0_oen), .we_n(d0_wen), .ub_n(d0_ub), .lb_n(d0_lb), .cre(d0_cre));
-    psx_cram_model #(.CHIP(1), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip1 (.clk(d1_clk), .host_oe(d1_oe), .a(d1_a), .dq(bus1),
+    psx_cram_model #(.CHIP(1), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .T_CLK_MIN(T_CLK_MIN), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip1 (.clk(d1_clk), .host_oe(d1_oe), .a(d1_a), .dq(bus1),
         .ce0_n(d1_ce0), .ce1_n(d1_ce1), .adv_n(d1_adv), .oe_n(d1_oen), .we_n(d1_wen), .ub_n(d1_ub), .lb_n(d1_lb), .cre(d1_cre));
 
     // ---- golden memory

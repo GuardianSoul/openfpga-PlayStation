@@ -1,0 +1,28 @@
+--- a/GTERegs.sv
++++ b/GTERegs.sv
+@@ -16,6 +16,11 @@
+ `include "GTEDefine.hv"
+ 
+ module PocketGTERegs (
++    input wire pgxp_enable,
++    input wire [3:0] pgxp_fraction,
++    input wire pgxp_clipped,
++    input wire [9:0] pgxp_write_meta,
++    output wire [9:0] pgxp_read_meta,
+ 	input         i_clk,
+     input i_ce,
+ 	input         i_nRst,
+@@ -245,6 +250,13 @@
+ wire [3:0] cpuWrtSZ		= {4{i_WritReg}} & {  accSZP,  accSZ2,  accSZ1,  accSZ0 };
+ 
+ // FIFO Write, by CPU or GPU.
++psx_pgxp_gte_fifo pgxp_fifo (
++    .clk(i_clk), .reset(!i_nRst), .ce(i_ce), .enabled(pgxp_enable),
++    .push_x(p_wb.pushX), .push_y(p_wb.pushY),
++    .projection_fraction(pgxp_fraction), .projection_clipped(pgxp_clipped),
++    .cpu_write(i_WritReg), .write_address(i_regID), .read_address(i_readRegID),
++    .cpu_metadata(pgxp_write_meta), .read_metadata(pgxp_read_meta)
++);
+ wire       wrtFSPX      = cpuWrtSXY[3] | p_wb.pushX;	// Write FIFO from CPU or GTE.
+ wire       wrtFSPY      = cpuWrtSXY[3] | p_wb.pushY;	// Write FIFO from CPU or GTE.
+ wire       wrtFSPZ      = p_wb.pushZ;					// Write FIFO from GTE ONLY.

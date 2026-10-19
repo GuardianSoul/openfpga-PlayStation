@@ -1,0 +1,51 @@
+--- gpu.vhd
++++ gpu.vhd
+@@ -237,7 +237,10 @@
+    signal pixel64timeout            : integer range 0 to 15;
+       
+    -- workers  
+-   type t_div_array is array(0 to 5) of pgxp_div_type;
++   subtype t_div_array is pgxp_div_array;
++   signal div_response:t_div_array;
++   signal divider_boundary:std_logic;
++   signal poly_denominator:signed(32 downto 0);
+    type t_native_div_array is array(0 to 5) of div_type;
+    signal div_array                 : t_div_array;
+    
+@@ -1311,6 +1314,7 @@
+       drawModeNew          => poly_drawModeNew,
+       drawmode_dithering   => drawMode(9),
+       
++      shared_denominator=>poly_denominator,
+       div1                 => poly_div(0), 
+       div2                 => poly_div(1), 
+       div3                 => poly_div(2), 
+@@ -1464,19 +1468,16 @@
+       poly_div(i).quotient  <= div_array(i).quotient; 
+       poly_div(i).remainder <= div_array(i).remainder;
+       
+-      idivider : entity work.psx_pgxp_divider
+-      port map
+-      (
+-         native_width=>line_div(i).start or not pgxp_enable,
+-         clk       => clk2x,      
+-         start     => div_array(i).start,
+-         done      => div_array(i).done,          
+-         dividend  => div_array(i).dividend, 
+-         divisor   => div_array(i).divisor,  
+-         quotient  => div_array(i).quotient, 
+-         remainder => div_array(i).remainder
+-      );
++      div_array(i).done<=div_response(i).done;
++      div_array(i).quotient<=div_response(i).quotient;
++      div_array(i).remainder<=div_response(i).remainder;
+    end generate;
++   divider_boundary<=poly_div(0).start and not poly_div(3).start;
++   divider_bank:entity work.psx_pgxp_divider_bank port map(
++      clk=>clk2x,native_width=>line_div(0).start or not pgxp_enable,
++      boundary_batch=>divider_boundary,line_batch=>line_div(0).start,
++      common_denominator=>poly_denominator,request=>div_array,response=>div_response);
++
+    
+    pixelColor  <= cpu2vram_pixelColor or vram2vram_pixelColor or pipeline_pixelColor;
+    pixelColor2 <=                                                pipeline_pixelColor2;

@@ -1,0 +1,1233 @@
+{
+  "schema": 1,
+  "normalized_project_token": "@PGXP_PROJECT@",
+  "scope": "Functional L3 geometry F4, runtimeOff default, source-bound integration experiment. Physical capacity fails; no production bitstream. L4 arithmetic and L5 perspective are separate roadmap work.",
+  "base": "Selected 0.5.5-test4 reset-only source closure,45b519d. Other composition changes require a new source/functional qualification.",
+  "hooks": [
+    {
+      "name": "core_top.sv",
+      "input_sha256": "17796569c54795acb9fa26fa2123328c58f5de0275daba03c98857e1a35aa397",
+      "output_sha256": "2131fba04365821a3b8a56c79cd76c7888c51913332a1ce9a99897441216349d",
+      "patch": "core_top.sv.patch",
+      "patch_sha256": "eafb6e50d3630377d6b2e1a4866144bad7b6590f7fe8b8732fba8b832a9febdf"
+    },
+    {
+      "name": "gpu_poly.vhd",
+      "input_sha256": "b9873962f71dfb78522a39079025800c5a982eb8c4f51bb5f6884ba59aa88796",
+      "output_sha256": "c99bc38f70574efc5a688ac452fec3b64cd85b56ad0d43d1eb702e10819d70b0",
+      "patch": "gpu_poly.vhd.patch",
+      "patch_sha256": "8347ff1ef0bc56d025e8fcd33fff6cd6efee0e8fcec7e47cbcc1df9fff2b78bf"
+    },
+    {
+      "name": "gpu.vhd",
+      "input_sha256": "3698f4747ed3836832d84bb96fec57fc17e582a67c26899b9ec6338c80377a96",
+      "output_sha256": "77f741f4cc6b5fdce78b106c4dff04e4e3090572f42c66afefb56d33e4a7009d",
+      "patch": "gpu.vhd.patch",
+      "patch_sha256": "70d86a6a80afc97887f6f32a282d9622d2a8f0dfde05fa701dfccad0481cf0b6"
+    },
+    {
+      "name": "dma.vhd",
+      "input_sha256": "091d5267cd99d62882671fa2c70692d9fe46ceadfb7d0fbee6e2ba0dd167937a",
+      "output_sha256": "ad0d42e65ef0dc9c080184beff7f1f586fddb05c8c574c928523fde88698cd3f",
+      "patch": "dma.vhd.patch",
+      "patch_sha256": "6b5e31bbc4a167e4aeacbf368b689a0b8fae85404c8098de301e1fd150e0537c"
+    },
+    {
+      "name": "gte.vhd",
+      "input_sha256": "da678199cf74257665173345abcffc092d67dedccf84fa379f0024ea6c69300e",
+      "output_sha256": "ab71dcc6ecabb8cabcd07600fc075f58fbaf1aad908020f6520fcd4524fcc31b",
+      "patch": "gte.vhd.patch",
+      "patch_sha256": "45597e6622874e624cdcc9c133853f15a284f580cca83345974bc1c0f19eb7ea"
+    },
+    {
+      "name": "cpu.vhd",
+      "input_sha256": "79924b13b8407acc54b9a3c6cf1b62d718d02fee46c659b48e983ec86e94d67c",
+      "output_sha256": "02bce1e60123010e73e1fc475a3a48b1a0905d59b240ed1fada60040363a3e1e",
+      "patch": "cpu.vhd.patch",
+      "patch_sha256": "afcbe672987cf6b0c4f085f135d08e03d202223bfcc485ad387e2dc1aa26db76"
+    },
+    {
+      "name": "memorymux.vhd",
+      "input_sha256": "221d60d1e92fe0aaaff5a33b09049dc90114631777d00b53916af1c33a55ef7e",
+      "output_sha256": "9e56430fad75a1a5dd02893bfeb8f4d2e10f4fd8949787c6b0f7c628f42aa5e5",
+      "patch": "memorymux.vhd.patch",
+      "patch_sha256": "413f308b506bd3c710d2ee7dd972d0f717ae142ac6198215072122fb12d7e5f8"
+    },
+    {
+      "name": "psx_top.vhd",
+      "input_sha256": "8f827d28e7c3349ace77e21204d3ca27acfcb4daeffd28066de41955d07ae6a9",
+      "output_sha256": "34819ae82c57ced8344a7e5118f0ad0ec788ec9485e38c86f53f031e164ff23f",
+      "patch": "psx_top.vhd.patch",
+      "patch_sha256": "fb2ba5da8275fde211f3014823b37658507374c857e229bb83175334fad3e7e8"
+    },
+    {
+      "name": "psx_mister_psx_top_resource.vhd",
+      "input_sha256": "80b50286dfdba7925068fd015af994255d8c70330b8eb9be469ccc1788a738e1",
+      "output_sha256": "bf12c11de1e9e69a7f6e9c63bd8f034b50e672faf865957e6ede70d3db88bfad",
+      "patch": "psx_mister_psx_top_resource.vhd.patch",
+      "patch_sha256": "7e7310941d724d6bf0324975a6f365bf5beed25f37a265684adbba47f1a39bc3"
+    },
+    {
+      "name": "GTEComputePath.sv",
+      "input_sha256": "cff2a2d32659f337aec1ccc5ded2bc4543e4b5808bc51451800c4f55e5793dc7",
+      "output_sha256": "732cedc65263eac14291ebed3476e379a2b232620627d50ab2448021f62d2d49",
+      "patch": "GTEComputePath.sv.patch",
+      "patch_sha256": "b06539bbd81eef8b6b65ca76f32c4fa2cad5573a25664836f7d6207e235dc280"
+    },
+    {
+      "name": "GTEEngine.sv",
+      "input_sha256": "ac2278947a83968dc4dcd4abb97de565af2ae78f4ee05af37181e79039a090b9",
+      "output_sha256": "56b23b733d2816e1e2c63404a605520f554be1678c36d897e127acad9564fea5",
+      "patch": "GTEEngine.sv.patch",
+      "patch_sha256": "d8123f12a3a032434a9f1a0eb7c4b5d97a44717f05bb8fa9eb2a6a15cedeb1fe"
+    },
+    {
+      "name": "GTERegs.sv",
+      "input_sha256": "f20d67cfa3beac7d2904fc137be41665354650d7d35d2bf306719a2295b38f9e",
+      "output_sha256": "4713e22ae4f234c2e5ae09ea936ccf603264e6ad9d1ada112fd4152c54fbc730",
+      "patch": "GTERegs.sv.patch",
+      "patch_sha256": "55b1d0bbb1f8c06f2156b5f26cb211407e49914ce48762f16105461cc414d7f2"
+    },
+    {
+      "name": "laxer_mister_adapter.sv",
+      "input_sha256": "493073c26f4554f113394cf7c8832b02a7eb8af9782e29c4c5aff34dc7b63b69",
+      "output_sha256": "263903e9978c234a789d542df7b08e9d45b6d7edd9f850732cad9110f79db211",
+      "patch": "laxer_mister_adapter.sv.patch",
+      "patch_sha256": "ba9fc14b9c8ab81835ad0d3b55a4989b0c401911b9252a917aad4f805d4daa8d"
+    },
+    {
+      "name": "psx_sdram_ctrl.sv",
+      "input_sha256": "71f8ebae2beadb49023596f09552142fd84a5aaeb1752fd481c3553fc38427e7",
+      "output_sha256": "533eb24e9ea80699810a0bb07dd30214b7048bfa2867be629dec54952509b470",
+      "patch": "psx_sdram_ctrl.sv.patch",
+      "patch_sha256": "55d9764c8d73fffa8d678b638f81953b0d87f4c4b5221fa0d23f307c4fb6f71c"
+    },
+    {
+      "name": "psx_native_memory.sv",
+      "input_sha256": "446fe8b3ca280961e991b1c76ed0eff32b25b87f8c01969bc252917d6131a5aa",
+      "output_sha256": "e14d6a9527bf8eaefa6048857577a6b109752c15ac91599008ac9123cfd74db1",
+      "patch": "psx_native_memory.sv.patch",
+      "patch_sha256": "f5dd42a1ecbbbb476f530b076674f0bbbcbf00e3607aba0462e9a5832c094b57"
+    }
+  ],
+  "cells": [
+    {
+      "name": "psx_pgxp_gpu_pkg.vhd",
+      "sha256": "6a8c9218e306a6c9c52948b025cc92c87f9bb7073fe0a6eb6d0c5b07b5b24ffb",
+      "assignment": "VHDL_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_divider.vhd",
+      "sha256": "c4f101687eae29a700f26c5acbb1aee4261d8e589c366a1f7faef0adea0a1b43",
+      "assignment": "VHDL_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_pkg.vhd",
+      "sha256": "133962c63863d34d7da497bd448e073ab7839ff0f3ceeb90a0d2cc4f46645bc8",
+      "assignment": "VHDL_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_gte_fifo.sv",
+      "sha256": "77be55c2efed0570f9d50eac704a06b76e3786be28db7ab8c9c29bea097791ee",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_shadow.sv",
+      "sha256": "dc0b356d4cbc9cbf81bc393161017f3567fd240cd7a047e9cd83af06e9680482",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_event_backend.sv",
+      "sha256": "583653b5b0dc73202383fccc28a69315c8bbd17890239791eb7c4bd0d357e8be",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_event_fifo.sv",
+      "sha256": "878bc6132d1dff33f130f07710ccf49a17ecc7a3bbe7042d4fa098d1c956a563",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_sdram64.sv",
+      "sha256": "5dae74250a792ba464e65364dfb456c7ae53d3984b71ee535c32139719010b14",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_memory.sv",
+      "sha256": "9d52bd3ed222c3975dcc56a3dc917ca4c37337f56980b2540d297fc305e85b9e",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_cpu_return.sv",
+      "sha256": "bda96b3b70d547253465ec463921f995c20094703d97037b3af3145edd75a54f",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    },
+    {
+      "name": "psx_pgxp_mode.sv",
+      "sha256": "450abba08480835dbe1c416e85f0d1045a9b98e34b04137ab917eaa19aaf1d97",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work"
+    }
+  ],
+  "baseline_inputs": [
+    {
+      "name": "FlagsS32.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "cdd9c1860a5689c1898142e71976f94c9587e01c7013f863fb1047148cc6db04"
+    },
+    {
+      "name": "FlagsS44.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "33e675ee491df8416b389d616eeec9fab71120a8789f0fdad61911f2b5e7b041"
+    },
+    {
+      "name": "GTEComputePath.sv",
+      "assignment": "INCLUDE_SEARCH",
+      "library": "work",
+      "sha256": "ba07d2f5303439c06d6faa60a5a77b5789407baae27d9e4d7dd641197cc317b2"
+    },
+    {
+      "name": "GTEComputePath.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "cff2a2d32659f337aec1ccc5ded2bc4543e4b5808bc51451800c4f55e5793dc7"
+    },
+    {
+      "name": "GTEDefine.hv",
+      "assignment": "MISC_FILE",
+      "library": "work",
+      "sha256": "05f3a8fb321c261fa992686e7b9ca24c4908a074733ea4ecfeb5030c52cb9450"
+    },
+    {
+      "name": "GTEEngine.sv",
+      "assignment": "INCLUDE_SEARCH",
+      "library": "work",
+      "sha256": "e552dca0ba57e307f4935ec8784a1d101e99405abf560bca2c95fc9b627df6d0"
+    },
+    {
+      "name": "GTEEngine.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "ac2278947a83968dc4dcd4abb97de565af2ae78f4ee05af37181e79039a090b9"
+    },
+    {
+      "name": "GTEFastDiv.v",
+      "assignment": "INCLUDE_SEARCH",
+      "library": "work",
+      "sha256": "67a33a1da9eaf473c47b62e4b0af76010f90c3e3cdd536772af77d680933176b"
+    },
+    {
+      "name": "GTEFastDiv.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "4b5786a699231ac9d5f04b83d99c79de6c0d02e7d2de08c03a20ff6b1f0156b1"
+    },
+    {
+      "name": "GTEMicroCode.sv",
+      "assignment": "INCLUDE_SEARCH",
+      "library": "work",
+      "sha256": "7ab66b69605b485c24c1818c0dc00728c4b2b29a13a6fb80a4d73b1858e0309c"
+    },
+    {
+      "name": "GTEMicroCode.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "438fe801f3970aa2ff4f8e2da5a4a09a14456983b8395d91c77033f27e19da4f"
+    },
+    {
+      "name": "GTEMicrocodeStart.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "ed9c9e705b33688d35bf96103d1f388ae30de209b37271fee58da1de8fce9483"
+    },
+    {
+      "name": "GTEOverflowFLAGS.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "6186aa18360ccb4d8ba07e2e9a401d1d9dca68e8fc6fee6fa79d9b3e3552e563"
+    },
+    {
+      "name": "GTERegs.sv",
+      "assignment": "INCLUDE_SEARCH",
+      "library": "work",
+      "sha256": "300a0441f5ff424bcee791afc905b59da77638c77729064f3559ee4b23981cf6"
+    },
+    {
+      "name": "GTERegs.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "f20d67cfa3beac7d2904fc137be41665354650d7d35d2bf306719a2295b38f9e"
+    },
+    {
+      "name": "GTESelAddPath.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "42bf525f55c38d69ed7c44cc6406c48a33811c9188ffbfa380aec5935713a74a"
+    },
+    {
+      "name": "GTESelPath.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "6d88b45d23e1fba034ccb6b01e6c6fcb7276ebe36356e6abd22e47b5f10a6bb4"
+    },
+    {
+      "name": "LeadCountS32.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "e1267edfd553045e733b200f8f644cebfadb5f1b3317b08e916fa1ebc00aa895"
+    },
+    {
+      "name": "M16TO5.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "4a42d5533fd889b2215ca7cc3fd49870fc1667fc34e754a132fcbc0a3bd9e14e"
+    },
+    {
+      "name": "MicroCode.inl",
+      "assignment": "MISC_FILE",
+      "library": "work",
+      "sha256": "c8e3a5b69af411901d10ad37c80ce88632fafa90dfc87a4212afe1364083f382"
+    },
+    {
+      "name": "MicroCodeStart.inl",
+      "assignment": "MISC_FILE",
+      "library": "work",
+      "sha256": "f628655fdaf8c285b0c7ef91a2242803b328ad1b78134e544a8bcd13c38ced1b"
+    },
+    {
+      "name": "MicroCodeTiming.inl",
+      "assignment": "MISC_FILE",
+      "library": "work",
+      "sha256": "757b251bcd74603979a9ba8338f396ad4a5d3a1301988f790626b31b30b9716e"
+    },
+    {
+      "name": "RamMLAB.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "93f4c5981e6a9134788c907c14ffa12f01696587fafbe5b0ff45d4e0995634d7"
+    },
+    {
+      "name": "SyncFifo.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "f4f1dac0f9f6055e57236778383d33015bccd8ac28f761930316a53094fee552"
+    },
+    {
+      "name": "SyncFifoFallThrough.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "c2c8196199de1c8a46ca2020aef00bbbd94728071da21fe77c1ace822335d02f"
+    },
+    {
+      "name": "SyncFifoFallThroughMLAB.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "bd41c83dc3294e1634520656fcb6055117a35a5b6eeea020ed81b16fb32a97b0"
+    },
+    {
+      "name": "apf_constraints.sdc",
+      "assignment": "SDC_SOURCE",
+      "library": "work",
+      "sha256": "2c6fb9d8e395dd5575913eef16cb80dec05e43ac81537e7ee5e314cbcc7b86dd"
+    },
+    {
+      "name": "apf_top.qpf",
+      "assignment": "PROJECT",
+      "library": "work",
+      "sha256": "78de2ff0d168bb5af99d82c776a00fcc44efaffcefbe2622eb6eea3c264ca4f7"
+    },
+    {
+      "name": "apf_top.qsf",
+      "assignment": "PROJECT",
+      "library": "work",
+      "sha256": "f1b949ba8c9d3088291c735c6d849b1535a8b8ba4f71fc241a3acefa490cd976"
+    },
+    {
+      "name": "apf_top.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "2f59cbb21973b9820f9e25ff95e521fc63334b489c9ec0df2383149dc2a85842"
+    },
+    {
+      "name": "audio-sinc-mirror.hex18",
+      "assignment": "ROM",
+      "library": "work",
+      "sha256": "b3787edf1c4ebb8ceae7e329d554b6ed60509912bfc01dfb664b19f1516c08ba"
+    },
+    {
+      "name": "blank.sdc",
+      "assignment": "SDC_FILE",
+      "library": "work",
+      "sha256": "b59ffc95257cd28a779c57b6fccb11257bf37f5273963c0cfcbc70e6e847a9e5"
+    },
+    {
+      "name": "build_id.mif",
+      "assignment": "ROM",
+      "library": "work",
+      "sha256": "8fe33c3de7e4405a8391510ceb07310094a6f103ba470dbfbdceb43bc101d6fb"
+    },
+    {
+      "name": "cd_top.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "3a9c9af92b546c7e3103e3b6ac7c475dd6d732569f6e925dcf29a708452748c8"
+    },
+    {
+      "name": "cd_xa.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "d36eec143248cddd1f57c840678fd3254df6a5bb61fd5a20c68ebf2d968c93f7"
+    },
+    {
+      "name": "cd_xa_zigzag.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "7dd71e7eea217098cb1566e5cca7161bd438eca2425cbda7d8dcf6ac2a28f3c9"
+    },
+    {
+      "name": "cheats.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "cf9b50a4f414cd25fe35e60af8427c47397b0055038b8519165f749238a7bc3a"
+    },
+    {
+      "name": "clampSPositive.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "00d5e0c8906e1d5a5766ff2de1df94aa0d10527f7f1cc277bd909cd58a2cb670"
+    },
+    {
+      "name": "clampSRange.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "2f68cc09ab14c8c20aeb6e8b4b125f137dc259c477aa8762677b0a04f335f2ea"
+    },
+    {
+      "name": "clampUPositive.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "c6ddeb2c3e75f3060afa802273e2cf61ec88c330bd46e7c935fa56c20ad08333"
+    },
+    {
+      "name": "common.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "310156368dc697b4caa44239bf5a7b49c6eacb5e78db7411f8471c75676ba26e"
+    },
+    {
+      "name": "core_bridge_cmd.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "4f558ed91203ce733187bc9c3d72cf6450102e08f25da83a927a7a59e001fcc5"
+    },
+    {
+      "name": "core_top.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "17796569c54795acb9fa26fa2123328c58f5de0275daba03c98857e1a35aa397"
+    },
+    {
+      "name": "cpu.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "79924b13b8407acc54b9a3c6cf1b62d718d02fee46c659b48e983ec86e94d67c"
+    },
+    {
+      "name": "datacache.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "7a6560960eb6bd75e9d68aa290c87dec33ea617d2f821d7a7ceee2b6e80bc764"
+    },
+    {
+      "name": "divider.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "13edea47cc1d5460bf4b155e7304c0806ac096c741a5cd493ed5f285e4f173b4"
+    },
+    {
+      "name": "dma.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "091d5267cd99d62882671fa2c70692d9fe46ceadfb7d0fbee6e2ba0dd167937a"
+    },
+    {
+      "name": "dpram.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "14d2d8f630f9903981ed2d1d235151b56c1a9477ef461b2dbd929537a22a482d"
+    },
+    {
+      "name": "dual_clock_fifo.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "261bc6ffee26002e8cef41719078c54c3660245d139c9951a2cf2ae8ac15d26a"
+    },
+    {
+      "name": "exp2.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "250abfa08c80870a545a8585818ec324598518f0bf437beee25da71f33ed8be9"
+    },
+    {
+      "name": "export.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "c3986157ca02d6ba480b30e760fc7ea5a871db80b4dbcf6403b90de2ac835b19"
+    },
+    {
+      "name": "gpu.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "3698f4747ed3836832d84bb96fec57fc17e582a67c26899b9ec6338c80377a96"
+    },
+    {
+      "name": "gpu_cpu2vram.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "1e38e72015c431077dd9dcbbd344fc01565fede286d19a98022fec57993362f8"
+    },
+    {
+      "name": "gpu_crosshair.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "76d89789323e7dc9b890eaa0e4d3593867281240a5fde57b44d0d81516a0f4a3"
+    },
+    {
+      "name": "gpu_dither.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "2f9c8981c1869445600cb3e56aaa36e73b845bcc0d496421f5e9b5968f687ee0"
+    },
+    {
+      "name": "gpu_fillVram.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "7ec26744be482a46ce28312aef4434a6f5d998c74ae0451c5e5610ffbd56f720"
+    },
+    {
+      "name": "gpu_line.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "0d43702adadceef2ce77ee01e7e222ba434622228e032cb8d71d3ee891d79254"
+    },
+    {
+      "name": "gpu_overlay.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "83578a7a39e674ea4f27a99d3e54a94d8d6e6da968e3ff038eeb0d4cd69799ad"
+    },
+    {
+      "name": "gpu_pixelpipeline.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "5a54e80fffd05dfcd2553a0f78691fe8c730d5f37f16054ecbf75d54e28dbe2d"
+    },
+    {
+      "name": "gpu_poly.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "b9873962f71dfb78522a39079025800c5a982eb8c4f51bb5f6884ba59aa88796"
+    },
+    {
+      "name": "gpu_rect.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "9599ff5d04fb3da736c52e5b34e959535188eab4f9ec85db21b193939f74e93e"
+    },
+    {
+      "name": "gpu_videoout.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "5eb2088ff58617a53224a58b094249b6cacaeb03192cc8a50a6d3b08260bd1b5"
+    },
+    {
+      "name": "gpu_videoout_async.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "cdcaca757665fa67070ec07c1a73f1ff361057aa49cd87d5cd8a954555a2013d"
+    },
+    {
+      "name": "gpu_videoout_sync.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "c58b5c98a294109dbda1eaa8303749d5b07b8704dc1af5bb0892d6147be45f9a"
+    },
+    {
+      "name": "gpu_vram2cpu.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "e4a03f0d5455e0de7416a82198c72b48748f623ff636840be333ae2933a8c18c"
+    },
+    {
+      "name": "gpu_vram2vram.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "e04fd8bf84be0c713b4d9a6fcd131c58d93bcb0118a38ac40d4cc44f6e01518b"
+    },
+    {
+      "name": "gte.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "da678199cf74257665173345abcffc092d67dedccf84fa379f0024ea6c69300e"
+    },
+    {
+      "name": "gte_UNRDivide.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "3ce26ac725d7b9df356c2996c00b912d23f54d53c8dc3f2b835db3baefc74250"
+    },
+    {
+      "name": "gte_mac0.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "3f447d264dfcb202fa209b909480707915478902db965e938ee496c7da69657d"
+    },
+    {
+      "name": "gte_mac123.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "d3fb38146b53d08b123881ba773f374eb9f32edf162bda4854020df5bf5b9063"
+    },
+    {
+      "name": "host.sdc",
+      "assignment": "SDC_FILE",
+      "library": "work",
+      "sha256": "d1e01643b2b21db10d4c652948f2d9c9e13d01023c4633dce8bf26b86c7e9856"
+    },
+    {
+      "name": "io_bridge_peripheral.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "35cc7d0464b2d0130955155eab442aa462c9e80c6982d101dbc3318c6aabb98d"
+    },
+    {
+      "name": "io_pad_controller.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "7e642096b1d9678cff2e55d6f47c7c7d3b5be8ecba9ae5ee8a1e38490806369a"
+    },
+    {
+      "name": "irq.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "e56545b7a513bbddbc850c787eef582a8e35c54500167e37f986711a6a6cae38"
+    },
+    {
+      "name": "joypad_card1.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "7781625c62c517918576a6e48133988a216c174dd50603dd36dc64ed49758c3d"
+    },
+    {
+      "name": "joypad_mem.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "d45062c6ff2be98c1f6f92822cf172d5351691d5d377d4b2aaf5ebe26280aee1"
+    },
+    {
+      "name": "joypad_pad_dualshock_analog.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "cd8801c6d8acf34037edf2746f062e4ed06bd119f84540093189e9568ea90352"
+    },
+    {
+      "name": "justifier_sensor.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "88a6a7340e6af444a076007e53e3772517710c0363191657412f5772485b67e6"
+    },
+    {
+      "name": "laxer_mister_adapter.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "493073c26f4554f113394cf7c8832b02a7eb8af9782e29c4c5aff34dc7b63b69"
+    },
+    {
+      "name": "leadZeroCounter16.v",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "73aaf871c644ee28b2ff844e55d2de59dd54c4d5e33ca413e6e4f46de9ac41df"
+    },
+    {
+      "name": "mdec.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "e6a662e56d02d1212cfbda997a84e237cb8105a4cbae224d8c5a62dde0b552f2"
+    },
+    {
+      "name": "memcard.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "d74e6ecc0fe52e70dac968e161333842e255f978b662aa65616da4bc2afb3b8c"
+    },
+    {
+      "name": "memctrl_lean.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "05f87dad669bb673da3c2c806061c0b4b0951c2fe587776da94765e578e44591"
+    },
+    {
+      "name": "memorymux.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "221d60d1e92fe0aaaff5a33b09049dc90114631777d00b53916af1c33a55ef7e"
+    },
+    {
+      "name": "mf_audio_pll.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "6ac4b3bd1f5fc604961f9ee3e86cc9ec9c94d53101c1cd0121e0223be4591d1c"
+    },
+    {
+      "name": "mf_audio_pll_0002.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "94df902acb41f1349bf6d4777a2c42ca0191d3b664850beb2937b6869fa6f400"
+    },
+    {
+      "name": "mf_datatable.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "626002917f9928ee50277d51493c376d00102ac1b0b6996aeabc0102a598ec96"
+    },
+    {
+      "name": "mf_ddio_bidir_12.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "73674edb40a6314f9b00829942bedcad9e183515bcdbb327095f96401799c536"
+    },
+    {
+      "name": "mul32u.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "bcd72f1e3a9d444d115740f67bb8b7845a0df8acec4e2dccc8e3f937946cd67e"
+    },
+    {
+      "name": "mul9s.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "acdb97c04cc606d06ee1b02a42c3fa11e47ce12ddc5ef483392a1bced902573f"
+    },
+    {
+      "name": "pGPU.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "0ac89f49231daeef448d66f4458f76ad41ebf5c683a06695a4738b1b77b1f577"
+    },
+    {
+      "name": "pGTE.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "ed1163bf5ee62694f6e0f031b39c4edee618bf0fa5e7091f705b42cf4229da93"
+    },
+    {
+      "name": "pJoypad.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "9bb7ca1505071ced4b09ddd5b644cb1070c3e184877b74a628f8513450f6d98a"
+    },
+    {
+      "name": "pocket.sdc",
+      "assignment": "PROJECT",
+      "library": "work",
+      "sha256": "004ef55e4af611cda3e0c15b6e73a625cd22fd4159a5a6168e3bd71af590c193"
+    },
+    {
+      "name": "pocket_cpu_hold.sdc",
+      "assignment": "SDC_FILE",
+      "library": "work",
+      "sha256": "8eba314e96dba1afcf2ab4cd067d9f90f71f330c5f548a0f7a70a4aee44c3713"
+    },
+    {
+      "name": "pocket_dpram_sdp.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "b826fea79bbb6194664f52c9aa5c881240a98ac99e9dd0013237a92e793a9ee3"
+    },
+    {
+      "name": "pocket_dpram_sdp_reverse.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "28606dd293af4dd03e9f316eb9443b29352ce0d2b882501c5c1004770626d713"
+    },
+    {
+      "name": "psx_apf_video.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "e0adee03c973ad6e030ed9303c72b53efc14528b83776672cbdaf6ad5395725b"
+    },
+    {
+      "name": "psx_apf_video_wide.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "df4f89b7399120b78d3c72b37882e8fcab3bf112fa73c78f440b01ffa9fe81d7"
+    },
+    {
+      "name": "psx_audio_bridge.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "c2d8ce98b0badc49b9d4d4933d8a8f353dfa45f66615f8a08be890ade88ba3bc"
+    },
+    {
+      "name": "psx_audio_i2s.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "2fba56c3973c412593e9a5c701ae01a14c3098be07601d4aaa26d249467b1540"
+    },
+    {
+      "name": "psx_audio_rate.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "e12c3ea13edf90c308843ad1152cc5518b92a49bcab219435f60c0dd6ebec3af"
+    },
+    {
+      "name": "psx_audio_sinc.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "c14b1a1d5074ca931bdbb78566a730489eacbae92f544bd47319a9fb5d4e10b6"
+    },
+    {
+      "name": "psx_bios_loader.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "10f942dbf5b40f063fb5a756a5e449e37a4ff735140b4fcad04b07a9cb42777e"
+    },
+    {
+      "name": "psx_bios_patch.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "dd1df6f2afcdcbf584fac78577f22c51c55f822d178c8271bb953c4a045083c2"
+    },
+    {
+      "name": "psx_boot_gate.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "729f90b2ea18d31f14fc00e46174a8f0c3dff1a34b51c63b73571b6f487e8ee7"
+    },
+    {
+      "name": "psx_cd_stream.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "fba50c640276dd73a7d096a28fecdae3b6ec6200d530ae493f1d79eb357d1a84"
+    },
+    {
+      "name": "psx_config_cdc.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "4c4f67ad4d128a2767d9bcefbb334d52262cfccf95d83934679530f08e8bd309"
+    },
+    {
+      "name": "psx_cue_fw0.hex",
+      "assignment": "ROM",
+      "library": "work",
+      "sha256": "575654923e7304d86e0dd7ed1f4879823291d2686ebf3d1a8bd6dc00a1db4637"
+    },
+    {
+      "name": "psx_cue_fw1.hex",
+      "assignment": "ROM",
+      "library": "work",
+      "sha256": "2f4af3f3f726b31790102edb33633ab24aaac7bbd5c46ba4ede9d1ebb4a117ee"
+    },
+    {
+      "name": "psx_cue_fw2.hex",
+      "assignment": "ROM",
+      "library": "work",
+      "sha256": "7b58e1353e6e415dc16d13e80d1269e2460fdc91bd4b9270c7b105652ce6e81c"
+    },
+    {
+      "name": "psx_cue_fw3.hex",
+      "assignment": "ROM",
+      "library": "work",
+      "sha256": "9cce99d7821f975f8ea61f7e31b7d1cfb06c4bd156089440cd9d8bab1b1c36ae"
+    },
+    {
+      "name": "psx_cue_mount.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "bc0f9fc812ae4143316ded8296d77e273da25ec7ca8cdce4795901af0dd28d28"
+    },
+    {
+      "name": "psx_disc_menu.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "d5115fc7f0e6e73b4e1820271744e8d2a668ce273884405cddd91826c0140b22"
+    },
+    {
+      "name": "psx_disc_swap.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "a81899cb61fde35da7077daf9deb296f9066fc3edda8fe8d6d3a469a0f80c56d"
+    },
+    {
+      "name": "psx_gpu_read_math.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "124f512796769f770b0a8e7a9fe2559efe91ebfaff3bdaef147030401c2a2b1d"
+    },
+    {
+      "name": "psx_m10k_sdp.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "0e59f13747ce65e854283277739c0908e8d3c436f8ef362628991c18afacac09"
+    },
+    {
+      "name": "psx_mem_arb.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "6081c22f2fe1009401014ee0986bf4d2efde3d3b20637cbb4e2672adb66ce56e"
+    },
+    {
+      "name": "psx_mem_bridge.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "ecd4c5f2f4ad96b60f32a1fef2339091eff8c6d64eec3f136c31b1f41862873a"
+    },
+    {
+      "name": "psx_mem_cdc.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "92948dfb6db7802e09d1313c8bf9658815b030113fe38053cb314507e1bcab62"
+    },
+    {
+      "name": "psx_mem_cdc_response_enable.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "5233799cf0eb28ea739d104d870e9637111dd88a99177a15b1413d3b484fd34e"
+    },
+    {
+      "name": "psx_mem_clocks.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "3b59a4c0b54a742194f996b2ea30491075f301e2265db06be6892d8d3375fe98"
+    },
+    {
+      "name": "psx_mem_pocket.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "64465309872d6911b15b67d3bc5a1a08b67f6269253915e16b34cae59b440743"
+    },
+    {
+      "name": "psx_memcard_slot.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "fb24b53ee6bc752aa9aae4c3d2f87a22144bd9f7e98fee9a440f7d3669c78550"
+    },
+    {
+      "name": "psx_mister_main_adapter.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "e8e3145be4426f7cf9d3ffc4a2e2b1cfbcc03263a47dfdf0394bb1ed487c8901"
+    },
+    {
+      "name": "psx_mister_psx_top_resource.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "80b50286dfdba7925068fd015af994255d8c70330b8eb9be469ccc1788a738e1"
+    },
+    {
+      "name": "psx_native_memory.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "446fe8b3ca280961e991b1c76ed0eff32b25b87f8c01969bc252917d6131a5aa"
+    },
+    {
+      "name": "psx_pocket_analog.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033"
+    },
+    {
+      "name": "psx_pocket_pad_combo.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "924a41f7501c301705a9cffe140e7ef94540c5a36a28a0da9d63c70dc3d462d2"
+    },
+    {
+      "name": "psx_pocket_stick_map.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "43b7463f581da2184f168ede3735d3dac52af5d754db4ffb7561a4583d0d290f"
+    },
+    {
+      "name": "psx_probe_sdram_adapter.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "b3eecb6b7d1ba5033d00a1829db5cb4e04c2c6c208cdea719802d1b19ba54374"
+    },
+    {
+      "name": "psx_psram_endpoint.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "a99b39e26eec0e2cf6c5c7008fe49c95c6bb656dd452d7bf9b776ca44d798b30"
+    },
+    {
+      "name": "psx_sdr_phy.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "c842cd2ec3afc9e1f6f9b26c237e952e700a5af1b3915929e754a49b117f22ab"
+    },
+    {
+      "name": "psx_sdr_phy_status.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "676ea22efcc21bf0b18dc94cc532e26ccb7d70ebb86799a44e34fa355e4f2697"
+    },
+    {
+      "name": "psx_sdram.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "32b2ff9c46cbe83522ad160b6f641d13507c5f3887669566b7877a25c11bf7b5"
+    },
+    {
+      "name": "psx_sdram_ctrl.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "71f8ebae2beadb49023596f09552142fd84a5aaeb1752fd481c3553fc38427e7"
+    },
+    {
+      "name": "psx_sdram_pins.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "5a7fb75c345fa477a464d88844768363b1cb9b3a0a29e21bf31249e61f154411"
+    },
+    {
+      "name": "psx_sdram_shared.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "a6e22d44e9cef423e440475f01cf62aa711dd5722b067a59060e6978b749e56b"
+    },
+    {
+      "name": "psx_spu_ch3_cache.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "b81de5f149563ddd9f4ac1c7364e90bfe7be390214af1b8d7683718eeba965c2"
+    },
+    {
+      "name": "psx_spu_scalar_bridge.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "d1f05c9fabc086e4d7b26c4caeb32dd14e7a4b2568bfd996ae040f89e726b278"
+    },
+    {
+      "name": "psx_spu_sdram_adapter.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "21ab219d713753140f75529f509e3fc4d624e294721bd0a44ab2b0cce769f3ec"
+    },
+    {
+      "name": "psx_test_pattern.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "75f58e6fc4233d749815038dfeb4839b76db1dadfb9dd728ddbece1aa102ded0"
+    },
+    {
+      "name": "psx_top.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "8f827d28e7c3349ace77e21204d3ca27acfcb4daeffd28066de41955d07ae6a9"
+    },
+    {
+      "name": "psx_video_blank_cdc.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "8030bab0dc874c9bb26744dc6b15bfac1e2338828d043d64d3d1044addc8849e"
+    },
+    {
+      "name": "psx_video_config_cdc.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "38fac41c2069822e4f571c7e697f1a058af4d088b171f980e88eb0d3582c76de"
+    },
+    {
+      "name": "psx_vram_psram.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "abed0cd22f6372f81081ab7ef7868e1dbe407f02d8dda2bc09acda515ba78ebb"
+    },
+    {
+      "name": "psx_vram_response_adapter.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "e16fdbf73f7ecbad2e50ce669bf23d83a0f8c82609b7782383db82057cb19ac9"
+    },
+    {
+      "name": "psx_vram_stream.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "a7647272dbe3375889c249ccd725de3f7ea2f51fdf0f43a322176a1105445a63"
+    },
+    {
+      "name": "psx_wfifo_m10k.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "9b2cd2f643ebdf91e752bd307a978ea9b675063917c3e74da4d071dabeae919c"
+    },
+    {
+      "name": "savestates.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "d6ed2c12c4fa326a92eba2e3f8e9f77dc574e0d5623d9ef1b22b9f3730e03ef7"
+    },
+    {
+      "name": "scope.tcl",
+      "assignment": "SDC_SOURCE",
+      "library": "work",
+      "sha256": "90ae3ebe6be262a6198e2f9200e73a5d0806a8bbaacfdfa1cdf2a7be936636df"
+    },
+    {
+      "name": "serv_aligner.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "adeff8f442db6c93f48e551721146b40c398ab14dcb5b22339746329e7a24f3b"
+    },
+    {
+      "name": "serv_alu.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "2e0c31b5b992618e514083aacf10cb38c2229b68b3b1e93d6663104f32143332"
+    },
+    {
+      "name": "serv_bufreg.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "76404174ec92c6cf68e0042798dede84d77c5e454c7f428afc7b9f612a3c52d4"
+    },
+    {
+      "name": "serv_bufreg2.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "6586c95a64a064ff6f4d001996d33f15e0f6d452e01ebb4da6120db06ddd0a51"
+    },
+    {
+      "name": "serv_csr.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "2dd7167ed44817d921318a5d463281b43820c25e476039a604e95948be567e62"
+    },
+    {
+      "name": "serv_ctrl.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "eb198ba7594f918da2784f9b6f8c82de1b95e3ffdd3383f2f533872999e9dab5"
+    },
+    {
+      "name": "serv_debug.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "815a6b0da1a49d41faa72edd8f397f89ec79334b292b94991f60002b0776082f"
+    },
+    {
+      "name": "serv_decode.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "eac5b2097ebd1f4587d2aa27aba130897d057dd8a28ba678edce0f2a3c9f640a"
+    },
+    {
+      "name": "serv_immdec.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "80ec5a265194eb40f3413742fc9da0a23ed78f8bdf5add3e58b45fa1850b2bd5"
+    },
+    {
+      "name": "serv_mem_if.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "a4fbd74579447710ed43e81dd80b4ea9415da0a3425a447f29446f9bd7a9aa6f"
+    },
+    {
+      "name": "serv_rf_if.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "63fd0d2ec2f89201b20690c467ebbcae964a85b4570254a95154f832cf0dcb2e"
+    },
+    {
+      "name": "serv_rf_ram.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "779ad3243dfa648f276240d260ff4ac1a1e83cc1364afb93d40c586905ce4338"
+    },
+    {
+      "name": "serv_rf_ram_if.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "abb39b6bdf4d335bd2f90f75ddb1a410500a1a51a3e9f170453cb491d98d8697"
+    },
+    {
+      "name": "serv_rf_top.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "89faedf7530c34305bfbffd261732d95016bf5627f10b7bbafaa8e1fd6cd49c9"
+    },
+    {
+      "name": "serv_state.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "f7f981a28ed92243d812b3e6d723a77ec9278c7690eb4a530edc136aed5319b3"
+    },
+    {
+      "name": "serv_top.v",
+      "assignment": "VERILOG_FILE",
+      "library": "work",
+      "sha256": "c35b88bed5732309069203b2d04421622eaae108d5bf5daef3de273daf43388e"
+    },
+    {
+      "name": "sio_fixed.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "1d1892d5b079c448a52fab54184851b874d5b3a924ac6d6cf44c79eafb1f4882"
+    },
+    {
+      "name": "sound_i2s.sv",
+      "assignment": "SYSTEMVERILOG_FILE",
+      "library": "work",
+      "sha256": "2d619fc60374b25243b0f3fec7ced9b497260238567257afed21fe320c7761ec"
+    },
+    {
+      "name": "spu.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "169813eeab5a521bc897cc7a5c64923571a4fd52f2454ab49758ce27d11361be"
+    },
+    {
+      "name": "spu_gauss.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "882a584646b82962c249593199058c30e3137aee7f8c4b743e56b379483969e8"
+    },
+    {
+      "name": "spu_ram.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "563197cd299ffe64cceb05b758e0aca8f14514f7288dfe08e1f1b5de154d1607"
+    },
+    {
+      "name": "statemanager.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "3b87c36343f6cfad586ee8ea4ea88f242b5f90a1d814b147ef6575c2f9a69046"
+    },
+    {
+      "name": "timer.vhd",
+      "assignment": "VHDL_FILE",
+      "library": "work",
+      "sha256": "06ec3d44ca7a02e9773e4a7a72541b35123c521f1a1113e75b19cec297a1c8b1"
+    },
+    {
+      "name": "video.sdc",
+      "assignment": "SDC_FILE",
+      "library": "work",
+      "sha256": "f1896bd9a5a07a103a4eb9b46a1978cdd53d3a48018ed6eae1e0c7904af21802"
+    }
+  ]
+}

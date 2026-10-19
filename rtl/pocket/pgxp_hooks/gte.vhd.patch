@@ -1,0 +1,30 @@
+--- a/gte.vhd
++++ b/gte.vhd
+@@ -8,6 +8,9 @@
+ entity gte is
+    port 
+    (
++      pgxp_enable          : in std_logic;
++      pgxp_read_meta       : out std_logic_vector(9 downto 0);
++      pgxp_write_meta      : in std_logic_vector(9 downto 0);
+       clk1x                : in  std_logic;
+       clk2x                : in  std_logic;
+       clk2xIndex           : in  std_logic;
+@@ -43,6 +46,9 @@
+ architecture pocket_candidate of gte is
+     component psx_laxer_mister_adapter is
+         port (
++            pgxp_enable : in std_logic;
++            gte_readMeta : out std_logic_vector(9 downto 0);
++            gte_writeMeta_in : in std_logic_vector(9 downto 0);
+             clk2x, clk2xIndex, ce, reset : in std_logic;
+             gte_busy : out std_logic;
+             gte_readAddr : in std_logic_vector(5 downto 0);
+@@ -59,6 +65,7 @@
+     signal busy, first_seen : std_logic;
+ begin
+     engine : psx_laxer_mister_adapter port map (
++        pgxp_enable=>pgxp_enable, gte_readMeta=>pgxp_read_meta, gte_writeMeta_in=>pgxp_write_meta,
+         clk2x=>clk2x, clk2xIndex=>clk2xIndex, ce=>ce, reset=>reset,
+         gte_busy=>busy, gte_readAddr=>std_logic_vector(gte_readAddr),
+         gte_readData=>read_data, gte_readEna=>gte_readEna,

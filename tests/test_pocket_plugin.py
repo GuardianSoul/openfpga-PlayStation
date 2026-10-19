@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT/'tools/pocket-plugin'
 WASM = CRATE/'target/wasm32-wasip1/release/plugin.wasm'
 HOST = CRATE/'host/run_plugin.py'
-MAKE = 'Make game files'
+MAKE = 'Generate game files'
 KEEP = 'Convert them, keep the originals'
 REPLACE = 'Convert them, replace the originals'
 SKIP = 'Skip them'
@@ -173,7 +173,7 @@ class PocketPlugin(unittest.TestCase):
             # Nothing is left to convert: the menu goes straight to the game files.
             before = tree(plugin)
             again = self.plugin(plugin, MAKE)
-            self.assertIn('[Game files for GuardianSoul.PlayStation: Make game files]', again)
+            self.assertIn('[Game files for GuardianSoul.PlayStation: Generate game files]', again)
             self.assertEqual(tree(plugin), before)
 
     def test_leftovers_of_a_stopped_run_go(self):
@@ -224,6 +224,18 @@ class PocketPlugin(unittest.TestCase):
             self.compare(script, plugin, MAKE)
             ape = json.loads((plugin/'Assets/playstation'/CORE/'Ape Escape (Europe).json').read_text())['instance']
             self.assertIn({'id': 99, 'filename': 'Ape Escape (Europe).sbi'}, ape['data_slots'])
+        # Declaring slot 98 (--cheats): the game's .cht goes there.
+        with TemporaryDirectory() as tmp:
+            script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
+            cue_reader_card(script)
+            (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': CUE_READER + [{'id': 98}, {'id': 99}]}}))
+            common = script/'Assets/playstation/common'
+            (common/'Ape Escape (Europe)/Ape Escape (Europe).cht').write_text('80012345 0063\n')
+            (common/'Legend (Disc 1)/Legend (USA).cht').write_text('80012345 0063\n')
+            out = self.compare(script, plugin, MAKE)
+            self.assertIn('cheats Ape Escape (Europe).cht)', out)
+            legend = json.loads((plugin/'Assets/playstation'/CORE/'Legend (USA).json').read_text())['instance']
+            self.assertIn({'id': 98, 'filename': 'Legend (Disc 1)/Legend (USA).cht'}, legend['data_slots'])
 
     @unittest.skipUnless(CHDMAN, 'chdman (MAME tools) not installed')
     def test_chd_keep_matches_chdman(self):
@@ -266,7 +278,7 @@ class PocketPlugin(unittest.TestCase):
                 self.assertEqual((plugin/'Assets/playstation'/CORE/name).read_bytes(),
                                  (script/'Assets/playstation'/CORE/name).read_bytes(), name)
             before = tree(plugin)
-            self.assertIn('Make game files]', self.plugin(plugin, MAKE))
+            self.assertIn('Generate game files]', self.plugin(plugin, MAKE))
             self.assertEqual(tree(plugin), before)
 
     def test_full_card(self):
@@ -332,7 +344,7 @@ class PocketPlugin(unittest.TestCase):
             out = self.plugin(card, CORE, 'Exit')
             self.assertIn('[1 disc needs converting first', out)
             self.assertIn('choices: Convert them, keep the originals (adds 2 MB to the SD card) | '
-                          'Convert them, replace the originals (adds 1 MB) | Skip them, make the other game files | Exit', out)
+                          'Convert them, replace the originals (adds 1 MB) | Skip them, generate the other game files | Exit', out)
             self.plugin(card, CORE, SKIP)
             self.assertTrue((card/'Assets/playstation'/CORE/'Tekken 3 (USA).json').is_file())
             self.assertFalse((card/'Assets/playstation/common/Merged/Game').exists())

@@ -1,0 +1,163 @@
+--- a/psx_top.vhd
++++ b/psx_top.vhd
+@@ -5,6 +5,7 @@
+ library MEM;
+ use work.pexport.all;
+ use work.pJoypad.all;
++use work.psx_pgxp_pkg.all;
+ 
+ entity psx_top is
+    generic
+@@ -13,6 +14,22 @@
+    );
+    port 
+    (
++      pgxp_requested : in std_logic;
++      pgxp_enabled : out std_logic;
++      pgxp_clear : out std_logic;
++      pgxp_cpu_read : out std_logic;
++      pgxp_gpu_read : out std_logic;
++      pgxp_cpu_tag : out std_logic_vector(7 downto 0);
++      pgxp_store_meta : out std_logic_vector(9 downto 0);
++      pgxp_cpu_valid : in std_logic;
++      pgxp_cpu_ready : out std_logic;
++      pgxp_return_tag : in std_logic_vector(7 downto 0);
++      pgxp_cpu_record : in std_logic_vector(63 downto 0);
++      pgxp_gpu_valid : in std_logic;
++      pgxp_gpu_ready : out std_logic;
++      pgxp_gpu_record : in std_logic_vector(63 downto 0);
++      pgxp_memory_idle : in std_logic;
++      pgxp_initializing : in std_logic;
+       clk1x                 : in  std_logic;  
+       clk2x                 : in  std_logic;   
+       clk3x                 : in  std_logic;   
+@@ -244,6 +261,7 @@
+ end entity;
+ 
+ architecture arch of psx_top is
++   signal pgxp_active,pgxp_invalidate:std_logic;
+ 
+    signal reset_in               : std_logic := '0';
+    signal reset_intern           : std_logic := '0';
+@@ -423,6 +441,22 @@
+    -- Memory mux
+    signal memMuxIdle             : std_logic;
+    
++   signal pgxp_store,pgxp_gte_read,pgxp_gte_write,pgxp_cpu_meta,pgxp_gpu_store,pgxp_dma_meta:pgxp_meta:=PGXP_NONE;
++   signal pgxp_mux_cpu_read,pgxp_dma_read,pgxp_gpu_idle,pgxp_dma_idle,pgxp_cpu_idle,pgxp_quiet:std_logic;
++   signal pgxp_cpu_done:std_logic;
++   signal pgxp_cpu_data:std_logic_vector(31 downto 0);
++   signal pgxp_request_tag,pgxp_mux_tag:std_logic_vector(7 downto 0);
++   component psx_pgxp_cpu_return is
++      port(clk,reset,enabled,ce,request,read_not_write,is_data:in std_logic;
++           request_address:in std_logic_vector(31 downto 0);request_size:in std_logic_vector(1 downto 0);
++           request_tag:out std_logic_vector(7 downto 0);raw_done:in std_logic;raw_data:in std_logic_vector(31 downto 0);
++           cpu_done:out std_logic;cpu_data:out std_logic_vector(31 downto 0);cpu_metadata:out std_logic_vector(9 downto 0);
++           snapshot_valid:in std_logic;snapshot_tag:in std_logic_vector(7 downto 0);snapshot_record:in std_logic_vector(63 downto 0);
++           snapshot_ready,idle:out std_logic);
++   end component;
++   component psx_pgxp_mode is
++      port(clk,reset,requested,quiescent,initializing:in std_logic;enabled,clear:out std_logic);
++   end component;
+    signal mem_request            : std_logic;
+    signal mem_rnw                : std_logic; 
+    signal mem_isData             : std_logic; 
+@@ -682,7 +716,8 @@
+    
+    signal debug_firstGTE         : std_logic;
+    
+-begin 
++begin
++   pgxp_enabled<=pgxp_active;pgxp_clear<=pgxp_invalidate;
+    process (clk1x)
+    begin
+       if rising_edge(clk1x) then
+@@ -753,7 +788,7 @@
+    Pause_Idle <= SS_Idle_gpu and SS_Idle_mdec and Pause_idle_cd and SS_idle_spu and SS_idle_pad and SS_idle_irq and SS_idle_cpu and SS_idle_gte and SS_idle_dma; 
+    
+    -- ce generation
+-   canDMA <= memMuxIdle;
++   canDMA<=memMuxIdle and pgxp_cpu_idle;
+    
+    isPaused <= pausing;
+    memory_service_ce <= ce or savestate_busy;
+@@ -1247,6 +1282,9 @@
+    idma : entity work.dma
+    port map
+    (
++      pgxp_enable=>pgxp_active,pgxp_gpu_valid=>pgxp_gpu_valid,pgxp_gpu_record=>pgxp_gpu_record,
++      pgxp_gpu_ready=>pgxp_gpu_ready,pgxp_gpu_read=>pgxp_dma_read,pgxp_gpu_meta=>pgxp_dma_meta,pgxp_idle=>pgxp_dma_idle,
++
+       clk1x                => clk1x,
+       clk3x                => clk3x,
+       clk3xIndex           => clk3xIndex,
+@@ -1464,6 +1502,8 @@
+    igpu : entity work.gpu
+    port map
+    (
++      pgxp_enable=>pgxp_active,pgxp_bus_meta=>pgxp_gpu_store,pgxp_dma_meta=>pgxp_dma_meta,pgxp_idle=>pgxp_gpu_idle,
++
+       clk1x                => clk1x,
+       clk2x                => clk2x,
+       clk2xIndex           => clk2xIndex,
+@@ -1723,9 +1763,30 @@
+       bus_dataRead         => bus_exp2_dataRead
+    );
+ 
++   pgxp_cpu_read<=pgxp_mux_cpu_read and not cpuPaused;
++   pgxp_cpu_tag<=pgxp_mux_tag;
++   pgxp_gpu_read<=pgxp_dma_read and cpuPaused;
++   pgxp_quiet<=pgxp_gpu_idle and pgxp_dma_idle and pgxp_cpu_idle and pgxp_memory_idle and
++               not gte_busy and not dmaOn and not dmaRequest and memMuxIdle and not mem_request;
++   precision_mode:psx_pgxp_mode port map(
++      clk=>clk1x,reset=>reset_intern,requested=>pgxp_requested,quiescent=>pgxp_quiet,
++      initializing=>pgxp_initializing,enabled=>pgxp_active,clear=>pgxp_invalidate);
++   precision_return:psx_pgxp_cpu_return port map(
++      clk=>clk1x,reset=>reset_intern,enabled=>pgxp_active,ce=>ce,
++      request=>mem_request,read_not_write=>mem_rnw,is_data=>mem_isData,
++      request_address=>std_logic_vector(mem_addressData),request_size=>std_logic_vector(mem_reqsize),
++      request_tag=>pgxp_request_tag,raw_done=>mem_done,raw_data=>mem_dataRead,
++      cpu_done=>pgxp_cpu_done,cpu_data=>pgxp_cpu_data,cpu_metadata=>pgxp_cpu_meta,
++      snapshot_valid=>pgxp_cpu_valid,snapshot_tag=>pgxp_return_tag,snapshot_record=>pgxp_cpu_record,
++      snapshot_ready=>pgxp_cpu_ready,idle=>pgxp_cpu_idle);
++
+    imemorymux : entity work.memorymux
+    port map
+    (
++      pgxp_enable=>pgxp_active,pgxp_store_meta=>pgxp_store,pgxp_cpu_tag=>pgxp_request_tag,
++      pgxp_ram_store_meta=>pgxp_store_meta,pgxp_ram_cpu_read=>pgxp_mux_cpu_read,
++      pgxp_ram_cpu_tag=>pgxp_mux_tag,pgxp_gpu_store_meta=>pgxp_gpu_store,
++
+       clk1x                => clk1x,
+       clk2x                => clk2x,
+       ce                   => ce,   
+@@ -1880,6 +1941,9 @@
+    icpu : entity work.cpu
+    port map
+    (
++      pgxp_enable=>pgxp_active,pgxp_clear=>pgxp_invalidate,pgxp_mem_meta=>pgxp_cpu_meta,
++      pgxp_gte_read_meta=>pgxp_gte_read,pgxp_mem_write_meta=>pgxp_store,pgxp_gte_write_meta=>pgxp_gte_write,
++
+       clk1x             => clk1x,
+       clk2x             => clk2x,
+       clk3x             => clk3x,
+@@ -1907,8 +1971,8 @@
+       mem_reqsize       => mem_reqsize,  
+       mem_writeMask     => mem_writeMask,
+       mem_dataWrite     => mem_dataWrite,
+-      mem_dataRead      => mem_dataRead, 
+-      mem_done          => mem_done,
++      mem_dataRead=>pgxp_cpu_data, 
++      mem_done=>pgxp_cpu_done,
+       mem_fifofull      => mem_fifofull,
+       mem_tagvalids     => mem_tagvalids,
+       
+@@ -1958,6 +2022,8 @@
+    igte : entity work.gte
+    port map
+    (
++      pgxp_enable=>pgxp_active,pgxp_read_meta=>pgxp_gte_read,pgxp_write_meta=>pgxp_gte_write,
++
+       clk1x                => clk1x,     
+       clk2x                => clk2x,     
+       clk2xIndex           => clk2xIndex,

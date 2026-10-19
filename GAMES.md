@@ -75,7 +75,7 @@ yet are skipped with a message.
 
 Always make game files with the plugin. Pocket Sync's own *Games →
 Instance JSON* button and pupdate's core updates also write game files, one
-per disc: they work for single-disc games with up to four `.bin` files, but
+per disc: they work for single-disc games, but
 a multi-disc game gets one entry and one memory card per disc. After
 updating cores with pupdate, generate game files with the plugin again: it
 replaces them with one entry per game.
@@ -90,11 +90,11 @@ nothing is uploaded. It can't read `.chd` images.
 
 Game files are the way to play. Starting a disc directly is a fallback for
 a disc that has no game file yet: in the game list press Back to reach the
-files in `Assets/playstation/common/` and pick the disc's `.cue`. Always
-pick the `.cue` when there is one: without it the core doesn't know the
-disc's tracks, so CD music is missing and some games stop where it starts.
-Pick the `.bin` only for a disc that came without a `.cue`. A
-disc started this way gets its own memory card and has no disc swapping,
+files in `Assets/playstation/common/` and pick the disc's `.cue`. The list
+doesn't show `.bin` files: without the `.cue` the core doesn't know the
+disc's tracks, so CD music would be missing and some games would stop
+where it starts. A disc that came without a `.cue` gets one from the
+plugin. A disc started this way gets its own memory card and has no disc swapping,
 so a multi-disc game's discs don't share saves. If a disc doesn't start
 this way, generate its game file.
 

@@ -221,10 +221,10 @@ module tb_memcard_slot;
         end
         if (image == "real" || image == "mc_zero") file_word[0] = {file_word[0][31:16], 8'h43, 8'h4D}; // bytes 'M','C'
         else if (file_word[0][15:0] == 16'h434D) file_word[0][0] = !file_word[0][0];
-        if (!has_file && mem[0][15:0] == 16'h434D) mem[0][0] = !mem[0][0];
+        if (!has_file) mem[0][15:0] = 16'h434D;     // the last game's card, still in PSRAM
         // Byte-order trap for "real": 'C','M' (swapped magic) must not count as magic.
         for (i = 0; i < WORDS; i = i + 1) expect_mem[i] = has_file ? file_word[i] : mem[i];
-        if (expect_mem[0][15:0] != 16'h434D) begin
+        if (!has_file || expect_mem[0][15:0] != 16'h434D) begin
             for (i = 0; i < 2048; i = i + 1) begin
                 blank_index = i >> 1; #1;
                 expect_mem[i] = i[0] ? blank_word64[63:32] : blank_word64[31:0];

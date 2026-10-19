@@ -65,9 +65,11 @@ def main():
     parser.add_argument('--toh', type=float, default=2.5, help='ns: chip data hold min')
     parser.add_argument('--compare-cl2', action='store_true', help='with --cas 3: also run CL2 on the same traffic and fail if any access kind idle latency grows by more than one clk1x (mean: 1.5, queueing)')
     parser.add_argument('--spu-first', action='store_true', help='SPU_FIRST=1: also run SPU_FIRST=0 on the same traffic; ch3 worst-case latency must drop and no access kind may lose correctness')
+    parser.add_argument('--open-row', action='store_true', help='OPEN_ROW=1 (CL3): rows stay open; main RAM bit 10 selects bank 3')
     parser.add_argument('--spu-first-param', type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument('--expect-fail', action='store_true', help='control: pass only if the controller misreads (delays outside its capture window)')
     args = parser.parse_args()
+    if args.open_row and args.cas != 3: parser.error('--open-row needs --cas 3')
     iverilog, vvp = find_tool('iverilog'), find_tool('vvp')
     if not iverilog or not vvp: sys.exit('Icarus Verilog not found (scripts/setup_iverilog.sh)')
     parent = ROOT/'build/sim/sdram-ctrl'; parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +83,7 @@ def main():
     defines = ['-DWITH_REFERENCE'] if reference else []
     params = [f'-Ptb_psx_sdram_ctrl.OPS={args.ops}', f'-Ptb_psx_sdram_ctrl.SEED={args.seed}',
               f'-Ptb_psx_sdram_ctrl.CAS={args.cas}', f'-Ptb_psx_sdram_ctrl.SPU_FIRST={args.spu_first_param}',
+              f'-Ptb_psx_sdram_ctrl.OPEN_ROW={int(args.open_row)}',
               f'-Ptb_psx_sdram_ctrl.DCLK={args.dclk}',
               f'-Ptb_psx_sdram_ctrl.TAC={tac}', f'-Ptb_psx_sdram_ctrl.TOH={args.toh}', f'-Ptb_psx_sdram_ctrl.TRET={args.tret}']
     subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *defines, *params,
@@ -133,7 +136,8 @@ def main():
     if args.spu_first:
         # Same traffic with the default order: SPU accesses must wait less.
         base = subprocess.run([sys.executable, __file__, '--ops', str(args.ops), '--seed', str(args.seed), '--cas', str(args.cas),
-                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh), '--no-reference'],
+                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh), '--no-reference']
+                              + (['--open-row'] if args.open_row else []),
                               capture_output=True, text=True, timeout=3600)
         if base.returncode: sys.exit('SPU_FIRST=0 comparison run failed:\n' + base.stdout[-2000:])
         old = json.loads((Path(re.search(r'"work": "([^"]+)"', base.stdout).group(1))/'report.json').read_text())['latency']

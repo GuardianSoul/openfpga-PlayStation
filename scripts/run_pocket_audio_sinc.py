@@ -4,6 +4,7 @@
 No guest software/data required. Does not validate a clock-crossing bridge,
 physical timing, resource fit or Pocket sound output.
 """
+import argparse
 import json
 import math
 from pathlib import Path
@@ -129,7 +130,9 @@ def main():
     rows = load_coefficients(coefficient_path)
     spectral = quality(rows)
     vectors = work/'vectors.txt'; expected_outputs = write_vectors(vectors,rows)
-    rtl = ROOT/'rtl/audio/psx_audio_sinc.sv'; bench = ROOT/'sim/pocket/tb_audio_sinc.sv'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--rtl', type=Path, default=ROOT/'rtl/audio/psx_audio_sinc.sv', help='converter source (e.g. rtl/audio/psx_audio_sinc_mac.sv)')
+    rtl = parser.parse_args().rtl.resolve(); bench = ROOT/'sim/pocket/tb_audio_sinc.sv'
     protected = {str(path):digest(path) for path in (rtl,bench,Path(__file__),ROOT/'scripts/generate_pocket_audio_coeffs.py')}
     def run(name,source):
         binary = work/(name+'.vvp')

@@ -49,22 +49,29 @@ def sector_pack_text(text):
                                            + to_unsigned(copyReadAddr, 13));
 
    sectorPackRam : block
-      type tPacked is array(0 to 5119) of std_logic_vector(31 downto 0);
-      signal packed : tPacked;
+      -- Bits 29:0 in 2,048 x 5 slices (six wide, three deep: 18 M10K) and
+      -- bits 31:30 in 8,192 x 1 slices (2 M10K): 20 M10K with a 3:1 read
+      -- mux. (One 5,120 x 32 RAM in 512 x 20 slices is also 20 M10K, but
+      -- ten deep: its 10:1 read mux cost about 100 ALMs.)
+      type tPackedLo is array(0 to 5119) of std_logic_vector(29 downto 0);
+      type tPackedHi is array(0 to 5119) of std_logic_vector(1 downto 0);
+      signal packedLo : tPackedLo;
+      signal packedHi : tPackedHi;
       attribute ramstyle : string;
-      attribute ramstyle of packed : signal is "M10K, no_rw_check";
-      -- 512 x 20 slices: ten deep and two wide, 20 M10K (Quartus otherwise
-      -- slices the 5,120 words as if they were 8,192)
+      attribute ramstyle of packedLo : signal is "M10K, no_rw_check";
+      attribute ramstyle of packedHi : signal is "M10K, no_rw_check";
       attribute max_depth : integer;
-      attribute max_depth of packed : signal is 512;
+      attribute max_depth of packedLo : signal is 2048;
+      attribute max_depth of packedHi : signal is 8192;
    begin
       process (clk1x)
       begin
          if rising_edge(clk1x) then
             if (sectorBuffers_wrenA = '1') then
-               packed(to_integer(unsigned(sectorBuffers_addrA))) <= sectorBuffers_DataA;
+               packedLo(to_integer(unsigned(sectorBuffers_addrA))) <= sectorBuffers_DataA(29 downto 0);
+               packedHi(to_integer(unsigned(sectorBuffers_addrA))) <= sectorBuffers_DataA(31 downto 30);
             end if;
-            sectorBuffers_DataB <= packed(to_integer(unsigned(sectorBuffers_addrB)));
+            sectorBuffers_DataB <= packedHi(to_integer(unsigned(sectorBuffers_addrB))) & packedLo(to_integer(unsigned(sectorBuffers_addrB)));
          end if;
       end process;
    end block;

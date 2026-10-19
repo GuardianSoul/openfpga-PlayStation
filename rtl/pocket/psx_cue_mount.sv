@@ -28,6 +28,14 @@
 //     loads the disc the menu asks for.
 //   - Firmware stores to 0xC0000000+n become bridge writes into the stream's
 //     window (the generated track table), in clocks APF isn't writing.
+//   - CHEATS: a main RAM port for the cheat codes (cue_mount.c cheats). The
+//     firmware puts the access in the command registers (fw_id: address
+//     bits 8:0; fw_len: bits 20:9 and read in bit 12; fw_off: the value and
+//     a byte flag in bit 16; ch_* below) and flips ch_tgl; the clk1x side
+//     (psx_spu_ch3_cache CHEAT on SDRAM ch3) answers by matching ch_ack to
+//     it, with a read's halfword held in ch_q. The registers hold until then
+//     (the firmware runs no APF command meanwhile). Also the Cheats setting
+//     and vbl_tgl, which flips once per frame.
 //
 // Byte order: bridge words carry file bytes little-endian (byte 0 in bits
 // 7:0; the top's bridge_endian_little), which is also RISC-V's order.
@@ -35,6 +43,7 @@ module psx_cue_mount #(
     parameter [31:0] STRUCT_BRIDGE=32'h2C000000,   // 8 KiB aligned: path struct here, read window at +0x1000
     parameter LIBCRYPT=0,                          // the firmware reads a cue's .sbi into the table's LibCrypt mask
     parameter DEBUG=0,                             // keep the firmware's probe words (dbg_words) for a readout
+    parameter CHEATS=0,                            // the cheat codes' main RAM port
     // Firmware byte lanes, whole file names (Quartus ignores a $readmemh
     // name built by concatenation).
     // (each with its own keyword: Quartus sizes a bare follower by its
@@ -84,6 +93,15 @@ module psx_cue_mount #(
     output wire [31:0] param_struct, resp_struct,
     output reg cue_mounted=0,                     // a cue is the mounted disc
     output reg mount_failed=0,                    // the last cue did not mount
+    // CHEATS: the Cheats setting; frame and answer toggles and the read
+    // halfword from other clocks (synchronised here)
+    input wire cheats_on,
+    input wire vbl_tgl, ch_ack,
+    input wire [15:0] ch_q,
+    output reg ch_tgl=0,
+    output wire ch_rnw, ch_byte,
+    output wire [20:0] ch_addr,
+    output wire [15:0] ch_data,
     // DEBUG: word 0 {s_allcomplete, cue_mounted, mount_failed, boot_pending,
     // fw_idle, W_DBG+7 (open forms tried 26:16, LibCrypt mask 15:0)}, words 1-7 the firmware's probe words (cue_mount.c W_DBG)
     output wire [255:0] dbg_words
@@ -169,7 +187,11 @@ module psx_cue_mount #(
     // I/O reads: SERV holds the address until ack, so the value can be
     // combinational in the ack clock.
     // Slots are below 512 and the stream's reads at most 2,352 bytes.
-    wire [31:0] io_q=adr[2] ? u_offset : {LIBCRYPT!=0,u_length[11:0],u_id[8:0],disc_setting,menu_hold,boot_pending,upd_pending,u_busy,cmd_busy,cmd_err};
+    (* async_reg="true" *) reg [1:0] ch_ack_s=0, vbl_s=0;
+    always @(posedge clk) begin ch_ack_s<={ch_ack_s[0],ch_ack}; vbl_s<={vbl_s[0],vbl_tgl}; end
+    wire [31:0] cheat_q={ch_tgl!=ch_ack_s[1],vbl_s[1],cheats_on,13'd0,ch_q};
+    assign ch_rnw=fw_len[12], ch_byte=fw_off[16], ch_addr={fw_len[11:0],fw_id}, ch_data=fw_off[15:0];
+    wire [31:0] io_q=CHEATS!=0 && adr[3] ? cheat_q : adr[2] ? u_offset : {LIBCRYPT!=0,u_length[11:0],u_id[8:0],disc_setting,menu_hold,boot_pending,upd_pending,u_busy,cmd_busy,cmd_err};
     assign db_rdt=io ? io_q : a_q;
     assign d_id={7'd0,fw_id};
     assign d_offset=fw_off;
@@ -242,6 +264,7 @@ module psx_cue_mount #(
                 end
                 3'd6: disc_bytes<=db_dat;
                 default: begin
+                    if(CHEATS!=0 && db_dat[31]) ch_tgl<=~ch_tgl;
                     if(db_dat[5]) upd_pending<=0;
                     if(db_dat[6]) boot_pending<=0;
                     if(db_dat[7] && !in_menu) menu_seen<=0;

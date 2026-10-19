@@ -228,6 +228,8 @@ def main():
     parser.add_argument('--blank-reset', action='store_true', help='Use psx_apf_video (blank while the CPU is held in reset) without the 480i filter')
     parser.add_argument('--steady-interlace', action='store_true', help='Drop the second field of 480i modes (rtl/pocket/psx_apf_video.sv) so the picture does not bob')
     parser.add_argument('--refresh-audio-bridge', action='store_true', help="Use the repository's current rtl/audio/psx_audio_bridge.sv in the copy")
+    parser.add_argument('--audio-sinc-mac', action='store_true', help='The audio converter with each channel\'s product and running sum in one multiply-accumulate (DSP accumulator; rtl/audio/psx_audio_sinc_mac.sv, equal to psx_audio_sinc.sv on every clock, scripts/run_pocket_audio_sinc_mac.py)')
+    parser.add_argument('--audio-rate-lean', action='store_true', help='The audio rate servo with its position step on the top bits only (rtl/audio/psx_audio_rate_lean.sv; equal to psx_audio_rate.sv on every clock, scripts/run_pocket_audio_rate_lean.py)')
     parser.add_argument('--spu-cached', action='store_true', help="Test builds: SPUSDRAM=0, MiSTer's cached SPU path over the DDR port (Codex cf22730)")
     parser.add_argument('--stub-memcard-copy', action='store_true', help="Drop MiSTer's memory-card copy engines only (APF slots persist cards); keep the card protocol devices")
     parser.add_argument('--stub-memcards', action='store_true', help='Test builds only: no memory-card devices (saves area)')
@@ -236,7 +238,7 @@ def main():
     parser.add_argument('--scaler-slots', action='store_true', help='Select the APF scaler slot by line width (psx_apf_video SLOT_SELECT; package_pocket_early.py writes the five slots)')
     parser.add_argument('--sio-fixed', action='store_true', help='SIO registers fixed at reset values (rtl/pocket/sio_fixed.vhd; FFVII never uses SIO)')
     parser.add_argument('--no-field-hold', action='store_true', help="Generated tops: psx_apf_video STEADY_INTERLACE(0) (the skip-hold filter flashes old frames on the Pocket's double-buffered scaler)")
-    parser.add_argument('--logo-skip-setting', action='store_true', help='Pocket menu checkbox "Skip BIOS logo" (bridge 0x50000004): psx_bios_patch makes the shell return at once (package --logo-skip-setting)')
+    parser.add_argument('--logo-skip-setting', action='store_true', help='Pocket menu checkbox "Skip BIOS Logo" (bridge 0x50000004): psx_bios_patch makes the shell return at once (package --logo-skip-setting)')
     parser.add_argument('--shoulder-setting', action='store_true', help='Pocket menu lists: whether the Pocket\'s L and R press L1/L2/L3 and R1/R2/R3 (bridge 0x5000000C/0x50000010; package --shoulder-setting)')
     parser.add_argument('--weave-setting', action='store_true', help='With --interlace-feature: Pocket menu checkbox "480i weave" (bridge 0x50000000; package --weave-setting)')
     parser.add_argument('--interlace-feature', action='store_true', help='Send APF frame feature bits (interlaced, field) on VS in 480i (needs --scaler-slots)')
@@ -253,6 +255,11 @@ def main():
     parser.add_argument('--video-test-setting', action='store_true', help='Diagnostic builds only, with --scaler-slots: Settings list "Video test" (bridge 0x5000004C) switching the APF frame start (VS at vblank or PSX vsync, with or without a black lead line; psx_apf_video VIDEO_TEST; package --video-test-setting)')
     parser.add_argument('--wide-lines', action='store_true', help='With --scaler-slots: stretch every line to 640 pixels (rtl/pocket/psx_apf_video_wide.sv) so scaler slots only differ by height: 640x240, 640x480, 640x288 (package --wide-lines)')
     parser.add_argument('--hybrid-slots', action='store_true', help='With --wide-lines: keep native 320/256 (and 512 at 240 lines) slots and stretch only other widths (psx_apf_video_wide HYBRID; package --hybrid-slots)')
+    parser.add_argument('--aspect-setting', action='store_true', help='With --hybrid-slots: Core Settings "Aspect Ratio" list, Fit / 4:3 (4:3, default) or Stretch / Fill Screen (whole 10:9 screen), bridge 0x50000048 (psx_apf_video_wide ASPECT; package --aspect-setting writes its 8 slots)')
+    parser.add_argument('--fill-detect', action='store_true', help='With --aspect-setting: Stretch (Fill Screen) crops the overscan as DuckStation does, sending lines 8-231 of 240 (also per 480i field) and 10-277 of PAL 288 to 640x224/448/268 slots (package --fill-detect); Fit unchanged (psx_apf_video_wide FILL_DETECT)')
+    parser.add_argument('--overscan-setting', action='store_true', help='With --wide-lines: Core Settings "Hide Overscan" checkbox (bridge 0x5000005C, on by default): on sends the lines --fill-detect crops (0-7 and 232-239 of 240, 0-9 and 278-287 of PAL 288) black in Fit, so it hides the same overscan; frames keep 240/288 lines (psx_apf_video_wide OVERSCAN_BLANK; package --overscan-setting)')
+    parser.add_argument('--dbl-320', action='store_true', help='With --fit-368: Fit sends 320 lines doubled in the 640 slots; slot 1 is 640x480 at 10:9 for Stretch 480i (psx_apf_video_wide DBL320; package --dbl-320)')
+    parser.add_argument('--fit-368', action='store_true', help='With --aspect-setting: slot 6 is 368x240 at 4:3 for native 368-clock Fit lines (FFVII menus); Stretch 480i uses the 4:3 640x480 slot (psx_apf_video_wide SLOT368; package --fit-368)')
     parser.add_argument('--video-probe', action='store_true', help='Diagnostic builds only, with --scaler-slots: psx_apf_video VIDEO_PROBE colours what the core writes (line count and width as bit blocks, last line red, padding magenta)')
     parser.add_argument('--field-invert', action='store_true', help='Flip the APF odd/even field bit (psx_apf_video FIELD_INVERT)')
     parser.add_argument('--slots480', action='store_true', help='480i lines use 480-tall scaler slots 5-7 (package with --slots480)')
@@ -262,6 +269,7 @@ def main():
     parser.add_argument('--spu-cache-slim', action='store_true', help='With --spu-cache: the slim word-granular cache (rtl/pocket/psx_spu_ch3_cache_slim.sv, a fraction of the area; make test-spu-ch3-cache)')
     parser.add_argument('--spu-cache', action='store_true', help='With --sdram-ctrl clean: SPU RAM reads through a 64-line clk1x read cache (rtl/pocket/psx_spu_ch3_cache.sv), so most SPU accesses skip SDRAM and its latency spikes (FFVII FMV crackle: AudioProbe SPU deadline misses)')
     parser.add_argument('--sdram-spu-first', action='store_true', help='With --sdram-ctrl clean: serve SPU RAM (ch3) right after refresh, ahead of DMA and CPU, so the SPU keeps its sample deadline (audio underflow on WipEout CD music)')
+    parser.add_argument('--sdram-open-row', action='store_true', help='With --sdram-ctrl clean --sdram-cas 3: keep SDRAM rows open (main RAM bit 10 in bank 3), so a CPU read to an open row issues its READ at once and returns one clk1x sooner, like CL2 (Bloody Roar II frame skipping: CPU main-RAM latency)')
     parser.add_argument('--sdram-cas', type=int, choices=(2, 3), default=2, help='With --sdram-ctrl clean: CAS latency (the Pocket SDRAM datasheet needs CL3 at 101.6 MHz; same capture window one clk later)')
     parser.add_argument('--sdram-ctrl', choices=('sotn', 'clean'), default='sotn', help="With --sotn-memory: pocket_sotn's sdram.sv (GPL-3.0-or-later) or the MIT clean-room rtl/memory/psx_sdram_ctrl.sv")
     parser.add_argument('--psram-main', action='store_true', help='Main RAM, BIOS and SPU RAM on both PSRAM chips (rtl/pocket/psx_psram_clients.sv, PocketQuake recipe at 104.17 MHz); VRAM alone on SDRAM')
@@ -283,6 +291,7 @@ def main():
     parser.add_argument('--cd-buffers', type=int, choices=(2, 4, 8), default=2, help='psx_cd_stream sector buffers (NBUF): NBUF-1 sectors prefetched ahead of the drive, to ride out slow SD reads')
     parser.add_argument('--cd-xa-ring-norw', action='store_true', help='cd_xa ring buffers without read-during-write pass-through logic: written only in RESAMPLE_CLEAR/WRITERING, read only in RESAMPLE_READRING')
     parser.add_argument('--spu-cd-queue', action='store_true', help='SPU mixes and captures the CD/XA sample of the tick it is processing, even when it runs late (scripts/prepare_spu_cd_queue.py; identical when on time; FMV crackle)')
+    parser.add_argument('--measure-ablate', action='append', default=[], choices=('spu-reverb',), help='MEASUREMENT ONLY, breaks the core: remove a block to measure its fitted size (spu-reverb: the reverb engine is never entered). Writes ABLATED, which package_pocket_early.py refuses')
     parser.add_argument('--spu-adsr-lean', action='store_true', help='SPU ADSR tables computed from a registered setting instead of 275 flip-flops (scripts/prepare_spu_adsr_lean.py; cycle-identical)')
     parser.add_argument('--spu-engine-m10k', action='store_true', help='SPU reverb engine coefficient copy in falling-edge clk1x block RAM instead of an MLAB (scripts/prepare_spu_engine_m10k.py; needs spu-reverb-table and spu-guest-m10k)')
     parser.add_argument('--gte-shadow-m10k', action='store_true', help='GTE CFC2/MFC2 readback shadows in falling-edge clk2x block RAM instead of MLABs (scripts/prepare_gte_shadow_m10k.py; needs gte-control-ram)')
@@ -294,6 +303,8 @@ def main():
     parser.add_argument('--main-lean', action='store_true', help='SDRAM-layout main adapter reads its read_data directly instead of two 128-bit copies (scripts/prepare_main_lean.py; b01d26d for the async adapter)')
     parser.add_argument('--memorymux-fifo-ram', choices=('BYPASS', 'CLK2X'), help='Clean-room memorymux write FIFO in M10K, cycle-identical to MiSTer, no CPU change (scripts/prepare_memorymux_fifo_ram.py); replaces --memorymux-m10k')
     parser.add_argument('--vram-ctrl', choices=('sotn', 'clean'), default='clean', help="With --sotn-memory: the MIT clean-room rtl/memory/psx_vram_psram.sv (default; parks the PSRAMs in their power-on mode while the core is held in reset) or pocket_sotn's vram_psram.vhd (sotn, 0.5.2 and older)")
+    parser.add_argument('--vram-full-rate', action='store_true', help='With --sotn-memory --vram-ctrl clean: PSRAM VRAM chip clock at 67.7 MHz instead of 33.9 MHz (psx_vram_psram FULL_RATE, latency code 5): a fourth CPU PLL output at --vram-phase drives the chip clocks through a DDIO output; about twice the VRAM bandwidth (docs/pocket-vram-full-rate.md)')
+    parser.add_argument('--vram-phase', type=int, default=10047, help='With --vram-full-rate: chip clock phase after clk2x in ps; keep it a multiple of the CPU PLL phase step (VCO 74.25 MHz x 1051/128, step 205.03 ps; 10047 = 49 steps), or Quartus re-solves the PLL and every CPU clock moves (+130 ppm at 10000)')
     parser.add_argument('--memcard-ctrl', choices=('sotn', 'clean'), help="With --memcard-slot: the MIT clean-room rtl/pocket/psx_memcard_slot.sv (default with --memcard-format; always formats a card without the MC magic) or pocket_sotn's card slot (default without --memcard-format) or its --memcard-format copy (sotn, 0.5.2 and older)")
     parser.add_argument('--memorymux-m10k', action='store_true', help='Opt-in pinned SOTN falling-edge M10K write FIFO plus short CPU write-request path (scripts/prepare_memorymux_m10k.py)')
     parser.add_argument('--host-config-cdc', action='store_true', help='Coherent region/BIOS-region bridge; replace inherited known family hold cuts with scoped constraints')
@@ -320,6 +331,11 @@ def main():
     parser.add_argument('--trigger-buttons', action='store_true', help='A docked analog controller\'s triggers past 25%% also press L2/R2 (cont1_trig), for pads whose L2/R2 are analog triggers')
     parser.add_argument('--ntsc-fixed-vblank', action='store_true', help='NTSC pictures always span the fixed 240-line TV window (MiSTer "Fixed VBlank" for NTSC only): a game with a shorter display range gets black lines instead of fewer lines, which the APF scaler left stale (CTR logo)')
     parser.add_argument('--dualshock', action='store_true', help='Pad 1 is a DualShock (rtl/pocket/joypad_pad_dualshock.vhd, lockstep-equal to the pinned MiSTer joypad_pad) with a docked controller\'s sticks; menu checkbox "DualShock" (bridge 0x50000040, on by default) falls back to a digital pad (package --dualshock)')
+    parser.add_argument('--pad-table', action='store_true', help='With --dualshock: the DualShock protocol decoding in one M10K ROM (rtl/pocket/joypad_pad_table.vhd, lockstep-equal to joypad_pad_dualshock under the SIO timing; make test-joypad-pad-table), about half the pad logic')
+    parser.add_argument('--analog-setting', action='store_true', help='With --dualshock: pad 1 is always a DualShock and the bridge 0x50000040 setting becomes Digital (default) / Analog, switched at run time like the Analog button (joypad_pad_dualshock ANALOG_LEVEL; package --analog-setting)')
+    parser.add_argument('--cheats', action='store_true', help='With --cue-mount --spu-cache-slim: GameShark cheats from a game JSON\'s slot 98, applied by the cue reader\'s firmware once per frame through a main RAM port on SDRAM ch3 (psx_cue_mount CHEATS, psx_spu_ch3_cache CHEAT); Cheats setting at bridge 0x50000054 (package --cheats)')
+    parser.add_argument('--true-color', action='store_true', help='Core Settings "True Color" checkbox (bridge 0x50000058, off by default): on sets MiSTer\'s render24, so the GPU also keeps the low 3 bits of each colour in a second VRAM plane at 0x400000 and the picture shows 24-bit colour (package --true-color)')
+    parser.add_argument('--dither-setting', action='store_true', help='Core Settings "Dithering" checkbox (bridge 0x50000050, on by default): off sets the GPU\'s ditherOff (package --dither-setting)')
     parser.add_argument('--stick-settings', action='store_true', help='With --dualshock --pad-combos --shoulder-setting: menu lists "D-pad" and "SELECT + D-pad" (D-pad, left or right stick) and stick options for "SELECT + A/B/X/Y" (scripts/prepare_pocket_stick_settings.py, rtl/pocket/psx_pocket_stick_map.sv; package --stick-settings)')
     parser.add_argument('--digital-pad', action='store_true', help='Digital-pad-only controller port (rtl/pocket/joypad_pad_digital.vhd, lockstep-equal to MiSTer for the Pocket tie-offs)')
     parser.add_argument('--vram-credit-timing', action='store_true', help="Codex's 4ea39ea VRAM BUSY timing repair (scripts/prepare_vram_credit_timing.py)")
@@ -338,6 +354,7 @@ def main():
     parser.add_argument('--boot-trace', action='store_true', help='Expose a main-RAM request trace at bridge 0x40000000 (needs --debug-overlay)')
     args = parser.parse_args()
     if args.spu_cache and not (args.sotn_memory and args.sdram_ctrl == 'clean'): parser.error('--spu-cache needs --sotn-memory --sdram-ctrl clean')
+    if args.sdram_open_row and not args.sotn_memory: parser.error('--sdram-open-row needs --sotn-memory')
     if args.spu_cache_slim and not args.spu_cache: parser.error('--spu-cache-slim needs --spu-cache')
     if args.async_hold_cut and (args.host_config_cdc or args.video_config_cdc or args.apf_blank_cdc or args.video_return_ff or args.video_request_cdc):
         parser.error('Configuration CDC requires scoped timing/skew checks; cannot request --async-hold-cut')
@@ -377,6 +394,14 @@ def main():
         bridge = out/'pocket-audio/psx_audio_bridge.sv'
         if not bridge.is_file(): parser.error('Run has no copied audio bridge')
         shutil.copyfile(Path(__file__).resolve().parents[1]/'rtl/audio/psx_audio_bridge.sv', bridge)
+    if args.audio_rate_lean:
+        rate = out/'pocket-audio/psx_audio_rate.sv'
+        if not rate.is_file(): parser.error('--audio-rate-lean: run has no copied audio rate servo')
+        shutil.copyfile(Path(__file__).resolve().parents[1]/'rtl/audio/psx_audio_rate_lean.sv', rate)
+    if args.audio_sinc_mac:
+        sinc = out/'pocket-audio/psx_audio_sinc.sv'
+        if not sinc.is_file(): parser.error('--audio-sinc-mac: run has no copied audio converter')
+        shutil.copyfile(Path(__file__).resolve().parents[1]/'rtl/audio/psx_audio_sinc_mac.sv', sinc)
     core = out/'core_top.sv'; text = core.read_text()
     # Generators from 2026-10-14 already emit the APF video registers.
     if text.count(OLD) != 1 and text.count('assign video_skip=apf_skip, video_rgb=apf_rgb;') != 1:
@@ -630,6 +655,17 @@ def main():
         copy = out/'spu-adsr-lean'/'spu.vhd'; copy.parent.mkdir(exist_ok=True)
         copy.write_text(adsr_lean_text(Path(spus[0]).read_text()))
         qsf_path.write_text(q.replace(f'"{spus[0]}"', f'"{copy}"'))
+    if 'spu-reverb' in args.measure_ablate:
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        spus = re.findall(r'"([^"]*/spu\.vhd)"', q)
+        if len(spus) != 1: parser.error('--measure-ablate spu-reverb: expected one spu.vhd in the project')
+        s = Path(spus[0]).read_text()
+        s, n = re.subn(r'(ram_ReverbIndex <= [06];\s*state\s*)<= REVERB_READ[12];', r'\1<= REVERB_END;', s)
+        if n != 2: parser.error(f'--measure-ablate spu-reverb: expected 2 reverb entries, found {n}')
+        copy = out/'ablate-spu-reverb'/'spu.vhd'; copy.parent.mkdir(exist_ok=True); copy.write_text(s)
+        qsf_path.write_text(q.replace(f'"{spus[0]}"', f'"{copy}"'))
+    if args.measure_ablate:
+        (out/'ABLATED').write_text('Measurement build: ' + ', '.join(args.measure_ablate) + ' removed. Not a working core.\n')
     if args.spu_engine_m10k:
         from prepare_spu_engine_m10k import engine_m10k_text
         qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
@@ -726,7 +762,7 @@ def main():
         copy = out/'ntsc-fixed-vblank'/'gpu.vhd'; copy.parent.mkdir(exist_ok=True)
         copy.write_text(gpu_text.replace(anchor, '   videoout_settings.fixedVBlank             <= fixedVBlank and not GPUSTAT_PalVideoMode;  -- PSXEarly --ntsc-fixed-vblank'))
         qsf_path.write_text(q.replace(f'"{gpus[0]}"', f'"{copy}"'))
-    if args.dualshock or args.cd_slow_pause or args.ntsc_fixed_vblank:
+    if args.dualshock or args.cd_slow_pause or args.ntsc_fixed_vblank or args.dither_setting or args.true_color:
         # Edits to the PSX wrapper go into one copy in the output directory.
         qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
         wrappers = re.findall(r'"([^"]*/psx_mister_psx_top_resource\.vhd)"', qsf_text)
@@ -735,6 +771,44 @@ def main():
         if args.ntsc_fixed_vblank:
             if wrapper.count("fixedVBlank => '0',") != 1: parser.error('--ntsc-fixed-vblank: fixedVBlank tie-off not found')
             wrapper = wrapper.replace("fixedVBlank => '0',", "fixedVBlank => '1',  -- PSXEarly --ntsc-fixed-vblank (NTSC only, gpu.vhd)")
+        if args.dither_setting:
+            # "Dithering" (MiSTer's ditherOff): a quasi-static level from core_top.
+            port = '    joypad1_KeyL3 : in std_logic;\n'
+            if wrapper.count("ditherOff => '0',") != 1 or wrapper.count(port) != 1: parser.error('--dither-setting: ditherOff tie-off or wrapper port not found')
+            wrapper = wrapper.replace("ditherOff => '0',", "ditherOff => gpu_dither_off,  -- PSXEarly --dither-setting")
+            wrapper = wrapper.replace(port, port + '    gpu_dither_off : in std_logic;\n')
+            anchor = '.joypad1_KeyL3(joypad1_KeyL3),'
+            inst = '    psx_mister_psx_top_resource psx ('
+            if text.count(anchor) != 1 or text.count(inst) != 1: parser.error('--dither-setting: PSX instance not found')
+            text = text.replace(anchor, anchor + '\n.gpu_dither_off(dither_off_sync[1]),', 1)
+            text = text.replace(inst, """    // "Dithering" checkbox (interact.json, bridge 0x50000050; on by default
+    // and until the Pocket writes the saved value). Off sets MiSTer's ditherOff.
+    reg dither_setting=1'b1;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000050) dither_setting<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] dither_off_sync=2'b00;
+    always @(posedge clk1x) dither_off_sync<={dither_off_sync[0],!dither_setting};
+""" + inst, 1)
+            sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + '# The Dithering setting crosses into clk1x through two flops.\nset_false_path -to [get_registers {*|dither_off_sync[0]}]\n')
+        if args.true_color:
+            # "True Color" (MiSTer's render24): a quasi-static level from core_top.
+            # The second plane is at DDR 0x400000, on PSRAM die 0 (psx_vram_psram).
+            if args.vram_ctrl != 'clean': parser.error('--true-color needs the clean VRAM controller (its 0x400000 window)')
+            port = '    joypad1_KeyL3 : in std_logic;\n'
+            if wrapper.count("render24 => '0',") != 1 or wrapper.count(port) != 1: parser.error('--true-color: render24 tie-off or wrapper port not found')
+            wrapper = wrapper.replace("render24 => '0',", "render24 => gpu_render24,  -- PSXEarly --true-color")
+            wrapper = wrapper.replace(port, port + '    gpu_render24 : in std_logic;\n')
+            anchor = '.joypad1_KeyL3(joypad1_KeyL3),'
+            inst = '    psx_mister_psx_top_resource psx ('
+            if text.count(anchor) != 1 or text.count(inst) != 1: parser.error('--true-color: PSX instance not found')
+            text = text.replace(anchor, anchor + '\n.gpu_render24(render24_sync[1]),', 1)
+            text = text.replace(inst, """    // "True Color" checkbox (interact.json, bridge 0x50000058; off by default).
+    // On sets MiSTer's render24.
+    reg true_color_setting=1'b0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000058) true_color_setting<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] render24_sync=2'b00;
+    always @(posedge clk1x) render24_sync<={render24_sync[0],true_color_setting};
+""" + inst, 1)
+            sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + '# The True Color setting crosses into clk1x through two flops.\nset_false_path -to [get_registers {*|render24_sync[0]}]\n')
         if args.cd_slow_pause:
             if wrapper.count("pauseOnCDSlow => '0',") != 1: parser.error('--cd-slow-pause: pauseOnCDSlow tie-off not found')
             wrapper = wrapper.replace("pauseOnCDSlow => '0',", "pauseOnCDSlow => '1',  -- PSXEarly --cd-slow-pause (MiSTer default)")
@@ -944,6 +1018,7 @@ def main():
         if len(old_sdram) != 1: parser.error('--sotn-memory: expected one sdram.sv in the project')
         if args.sdram_cas != 2 and args.sdram_ctrl != 'clean': parser.error('--sdram-cas needs --sdram-ctrl clean')
         if args.sdram_spu_first and args.sdram_ctrl != 'clean': parser.error('--sdram-spu-first needs --sdram-ctrl clean')
+        if args.sdram_open_row and (args.sdram_ctrl != 'clean' or args.sdram_cas != 3): parser.error('--sdram-open-row needs --sdram-ctrl clean --sdram-cas 3')
         if args.spu_cache and args.sdram_ctrl != 'clean': parser.error('--spu-cache needs --sdram-ctrl clean')
         if args.sdram_ctrl == 'clean':
             # MIT clean-room controller (rtl/memory/psx_sdram_ctrl.sv), same
@@ -953,10 +1028,32 @@ def main():
             if glue_text.count('    sdram #(.SINGLE_CHIP(1)) controller (') != 1: parser.error('--sdram-ctrl clean: glue instance not found')
             glue = out/'psx_native_memory.sv'
             glue_text = glue_text.replace('    sdram #(.SINGLE_CHIP(1)) controller (',
-                f'    psx_sdram_ctrl #(.SINGLE_CHIP(1), .CAS_LATENCY({args.sdram_cas}){", .SPU_FIRST(1)" if args.sdram_spu_first else ""}) controller (')
+                f'    psx_sdram_ctrl #(.SINGLE_CHIP(1), .CAS_LATENCY({args.sdram_cas}){", .SPU_FIRST(1)" if args.sdram_spu_first else ""}{", .OPEN_ROW(1)" if args.sdram_open_row else ""}) controller (')
             if args.spu_cache:
                 if glue_text.count(SPU_CH3_DIRECT) != 1: parser.error('--spu-cache: SPU ch3 wiring not found')
                 glue_text = glue_text.replace(SPU_CH3_DIRECT, SPU_CH3_CACHE)
+                if args.cheats:
+                    # The cheat firmware's main RAM accesses (psx_cue_mount
+                    # CHEATS, clk_74a): a request toggle, fields held until
+                    # the answer toggle, a read's halfword held in cheat_q.
+                    for o, n in (('    output wire dram_we_n, dram_ras_n, dram_cas_n, dram_cke, dram_clk\n);',
+                                  '    output wire dram_we_n, dram_ras_n, dram_cas_n, dram_cke, dram_clk,\n'
+                                  '    // --cheats: the cue reader\'s main RAM port (clk_74a fields, held)\n'
+                                  '    input wire cheat_req_tgl, cheat_rnw, cheat_byte, input wire [20:0] cheat_addr, input wire [15:0] cheat_data,\n'
+                                  '    output reg cheat_ack_tgl=0, output wire [15:0] cheat_q\n);'),
+                                 ('    psx_spu_ch3_cache spu_cache (', '''    (* async_reg="true" *) reg [2:0] cheat_req_s=0;
+    wire cheat_done;
+    always @(posedge clk1x) begin
+        cheat_req_s<={cheat_req_s[1:0],cheat_req_tgl};
+        if (cheat_done) cheat_ack_tgl<=cheat_req_s[2];
+    end
+    psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
+                                 ('.ch3_ready(ch3_ready && !cpu_reset), .ch3_dout(ch3_dout));',
+                                  '.ch3_ready(ch3_ready && !cpu_reset), .ch3_dout(ch3_dout),\n'
+                                  '        .ch_req(cheat_req_s[2]^cheat_req_s[1]), .ch_rnw(cheat_rnw), .ch_byte(cheat_byte), .ch_addr(cheat_addr),\n'
+                                  '        .ch_data(cheat_data), .ch_done(cheat_done), .ch_q(cheat_q));')):
+                        if glue_text.count(o) != 1: parser.error('--cheats: native memory wiring not found: ' + o.strip()[:60])
+                        glue_text = glue_text.replace(o, n)
                 cache_source = root/'rtl/pocket/psx_spu_ch3_cache.sv'
                 if args.spu_cache_slim:
                     # Same module name and file name, so audits find one psx_spu_ch3_cache.sv.
@@ -1063,6 +1160,54 @@ def main():
             # --memcard-format: the boot gate's ready level enters clk2x through done_s.
             + ('set_false_path -to [get_registers {*|pocket_memcard:*|done_s[0]}]\n' if args.memcard_format else ''))
             .replace('pocket_memcard:', entity + ':'))
+    if args.vram_full_rate:
+        if not args.sotn_memory or args.vram_ctrl != 'clean': parser.error('--vram-full-rate needs --sotn-memory with --vram-ctrl clean')
+        if args.sdram_clock_ps is not None or args.psram_main: parser.error('--vram-full-rate uses the fourth CPU PLL output (not with --sdram-clock-ps/--psram-main)')
+        if not 0 <= args.vram_phase < 14763: parser.error('--vram-phase must be within one clk2x period (0-14762 ps)')
+        pll_old = '''.output_clock_frequency2("101.606400 MHz"), .phase_shift2("0 ps"), .duty_cycle2(50)) cpu_pll ('''
+        count_old = '.number_of_clocks(3), .pll_type("General"), .pll_subtype("General"),\n        .output_clock_frequency0("33.868800 MHz")'
+        inst = '    psx_vram_psram vram ('
+        pins = '.cram0_clk(cram0_clk),'
+        for o in (pll_old, count_old, '.outclk({clk3x,clk2x,clk1x}));', '    wire cpu_locked;', inst, pins, '.cram1_clk(cram1_clk),'):
+            if text.count(o) != 1: parser.error('--vram-full-rate anchor not found: ' + o[:60])
+        text = text.replace(pll_old, f'''.output_clock_frequency2("101.606400 MHz"), .phase_shift2("0 ps"), .duty_cycle2(50),
+        .output_clock_frequency3("67.737600 MHz"), .phase_shift3("{args.vram_phase} ps"), .duty_cycle3(50)) cpu_pll (''')
+        text = text.replace(count_old, count_old.replace('(3)', '(4)'))
+        text = text.replace('.outclk({clk3x,clk2x,clk1x}));', '.outclk({vram_chip_clk,clk3x,clk2x,clk1x}));')
+        text = text.replace('    wire cpu_locked;', '    wire cpu_locked;\n    wire vram_chip_clk;   // --vram-full-rate: PSRAM chip clock source, clk2x shifted', 1)
+        text = text.replace(pins, '.cram0_clk(cram0_clk_en),').replace('.cram1_clk(cram1_clk),', '.cram1_clk(cram1_clk_en),')
+        text = text.replace(inst, '''    // --vram-full-rate: the chip clocks are vram_chip_clk gated by the
+    // controller's enables (high half from the DDIO, low half 0).
+    wire cram0_clk_en, cram1_clk_en;
+    altddio_out #(.extend_oe_disable("OFF"), .intended_device_family("Cyclone V"), .invert_output("OFF"),
+        .lpm_hint("UNUSED"), .lpm_type("altddio_out"), .oe_reg("UNREGISTERED"), .power_up_high("OFF"), .width(2))
+        vram_clk_ddio (.datain_h({cram1_clk_en,cram0_clk_en}), .datain_l(2'b00), .outclock(vram_chip_clk),
+        .dataout({cram1_clk,cram0_clk}), .aclr(1'b0), .aset(1'b0), .oe(1'b1), .outclocken(1'b1), .sclr(1'b0), .sset(1'b0));
+    psx_vram_psram #(.FULL_RATE(1'b1), .LATENCY(5)) vram (''')
+        qsf = out/'apf_top.qsf'
+        qsf.write_text(qsf.read_text() + ''.join(
+            f'set_instance_assignment -name FAST_INPUT_REGISTER ON -to {c}_dq[{i}]\n' for c in ('cram0', 'cram1') for i in range(16))
+            # Pin registers in the IOEs (as the controller header asks): the
+            # fitter otherwise duplicates them into LABs beside each pin.
+            + ''.join(f'set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to {c}_{p}\n' for c in ('cram0', 'cram1')
+                      for p in ('a[*]', 'dq[*]', 'adv_n', 'cre', 'ce0_n', 'ce1_n', 'oe_n', 'we_n', 'ub_n', 'lb_n'))
+            + ''.join(f'set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to {c}_dq[*]\n' for c in ('cram0', 'cram1')))
+        # Chip timing (AS1C8M16PL): inputs set up 3 ns / held 2 ns around the
+        # chip clock; read data valid 9 ns after a chip edge (tACLK) until 2 ns
+        # after the next one (tKOH). A word is registered in dq_r at the second
+        # clk2x edge after the edge that launched it (setup multicycle 2).
+        lines = ['set vram_chip {ic|cpu_pll|general[3].gpll~PLL_OUTPUT_COUNTER|divclk}']
+        for c in ('cram0', 'cram1'):
+            outs = f'{{{c}_a[*] {c}_dq[*] {c}_adv_n {c}_cre {c}_ce0_n {c}_ce1_n {c}_oe_n {c}_we_n {c}_ub_n {c}_lb_n}}'
+            lines += [f'create_generated_clock -name {c}_clk_out -source [get_pins $vram_chip] [get_ports {{{c}_clk}}]',
+                      f'set_output_delay -clock {c}_clk_out -max 3.0 -add_delay [get_ports {outs}]',
+                      f'set_output_delay -clock {c}_clk_out -min -2.0 -add_delay [get_ports {outs}]',
+                      f'set_input_delay -clock {c}_clk_out -max 9.0 -add_delay [get_ports {{{c}_dq[*]}}]',
+                      f'set_input_delay -clock {c}_clk_out -min 2.0 -add_delay [get_ports {{{c}_dq[*]}}]',
+                      f'set_multicycle_path -setup 2 -from [get_clocks {c}_clk_out] -to [get_registers {{*|psx_vram_psram:vram|dq_r[*]}}]',
+                      f'set_multicycle_path -hold 1 -from [get_clocks {c}_clk_out] -to [get_registers {{*|psx_vram_psram:vram|dq_r[*]}}]']
+        sdc = out/'pocket.sdc'
+        sdc.write_text(sdc.read_text() + '\n# --vram-full-rate PSRAM VRAM pins\n' + '\n'.join(lines) + '\n')
     if args.static_host_cuts:
         # gpu_videoout_async's _s1/_s2 synchronizers stay in flip-flops:
         # Quartus otherwise maps videoout_request_s1 into an altshift_taps
@@ -1350,8 +1495,20 @@ CHIP_CLOCK_PINS""" + text[end:]
         parser.error('--mid-slot-384 needs --scaler-slots, without --wide-lines')
     if args.blank_top and (args.wide_lines or not args.scaler_slots):
         parser.error('--blank-top needs --scaler-slots, without --wide-lines')
-    if args.crop_lines and (args.wide_lines or not args.scaler_slots):
-        parser.error('--crop-lines needs --scaler-slots, without --wide-lines')
+    if args.crop_lines and not args.scaler_slots:
+        parser.error('--crop-lines needs --scaler-slots')
+    if args.aspect_setting and not (args.wide_lines and args.hybrid_slots):
+        parser.error('--aspect-setting needs --wide-lines --hybrid-slots')
+    if args.fit_368 and not args.aspect_setting:
+        parser.error('--fit-368 needs --aspect-setting')
+    if args.dbl_320 and not args.fit_368:
+        parser.error('--dbl-320 needs --fit-368')
+    if args.fill_detect and not args.aspect_setting:
+        parser.error('--fill-detect needs --aspect-setting')
+    if args.fill_detect and args.fit_368 and not args.dbl_320:
+        parser.error('--fill-detect needs --dbl-320 with --fit-368 (Stretch 480i then shares the Fit 640x480 slot)')
+    if args.overscan_setting and not args.wide_lines:
+        parser.error('--overscan-setting needs --wide-lines')
     if args.vs_on_hs and (args.vs_at_vblank or not args.scaler_slots):
         parser.error('--vs-on-hs needs --scaler-slots, without --vs-at-vblank')
     if args.slot6_368 and not (args.pal288 and args.slots480 and args.scaler_slots and not args.wide_lines):
@@ -1415,6 +1572,45 @@ CHIP_CLOCK_PINS""" + text[end:]
         (out/'joypad_pad_dualshock.vhd').write_text(pad_text.replace('STICK_DPAD : boolean := false;', 'STICK_DPAD : boolean := true;'))
         qsf_path.write_text(qsf_text.replace(lean, f'"{out/"joypad_pad_dualshock.vhd"}"')
                             + f'set_global_assignment -name SYSTEMVERILOG_FILE "{root}/rtl/pocket/psx_pocket_stick_map.sv" -library work\n')
+    if args.analog_setting:
+        # Pad 1 is always a DualShock; the 0x50000040 setting is the
+        # Digital / Analog level, applied at run time (ANALOG_LEVEL).
+        if not args.dualshock: parser.error('--analog-setting needs --dualshock')
+        old = "    reg dualshock_setting=1'b1;\n"
+        if text.count(old) != 1: parser.error('--analog-setting: DualShock setting register not found')
+        text = text.replace(old, "    reg dualshock_setting=1'b0;   // --analog-setting: Digital (0) / Analog (1), Digital by default\n")
+        wrap = out/'psx_mister_psx_top_resource.vhd'; w = wrap.read_text()
+        for o, n in (("    joypad1.PadPortDigital <= not pad_dualshock;\n", "    joypad1.PadPortDigital <= '0';\n"),
+                     ("    joypad1.PadPortDS <= pad_dualshock;\n", "    joypad1.PadPortDS <= '1';\n"),
+                     ("    joypad1.ToggleDS <= '0';\n", "    joypad1.ToggleDS <= pad_dualshock;   -- --analog-setting: Digital / Analog level\n")):
+            if w.count(o) != 1: parser.error('--analog-setting: wrapper anchor not found: ' + o.strip())
+            w = w.replace(o, n)
+        wrap.write_text(w)
+        qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
+        pads = re.findall(r'"([^"]*/joypad_pad_dualshock\.vhd)"', qsf_text)
+        if len(pads) != 1: parser.error('--analog-setting: joypad_pad_dualshock.vhd not in project')
+        pad_text = Path(pads[0]).read_text()
+        if pad_text.count('ANALOG_LEVEL : boolean := false') != 1: parser.error('--analog-setting: ANALOG_LEVEL generic not found')
+        (out/'joypad_pad_dualshock_analog.vhd').write_text(pad_text.replace('ANALOG_LEVEL : boolean := false', 'ANALOG_LEVEL : boolean := true'))
+        qsf_path.write_text(qsf_text.replace(f'"{pads[0]}"', f'"{out/"joypad_pad_dualshock_analog.vhd"}"'))
+    if args.pad_table:
+        # The same pad with its command decoding in a ROM; it keeps the
+        # STICK_DPAD and ANALOG_LEVEL defaults of the pad it replaces.
+        if not args.dualshock: parser.error('--pad-table needs --dualshock')
+        root = Path(__file__).resolve().parents[1]
+        qsf_path = out/'apf_top.qsf'; qsf_text = qsf_path.read_text()
+        pads = re.findall(r'"([^"]*/joypad_pad_dualshock(?:_analog)?\.vhd)"', qsf_text)
+        if len(pads) != 1: parser.error('--pad-table: joypad_pad_dualshock.vhd not in project')
+        pad_text = Path(pads[0]).read_text()
+        table_text = (root/'rtl/pocket/joypad_pad_table.vhd').read_text()
+        for generic in ('STICK_DPAD', 'ANALOG_LEVEL'):
+            found = re.findall(generic + r' : boolean := (true|false)', pad_text)
+            if len(found) != 1 or table_text.count(f'{generic} : boolean := false') != 1:
+                parser.error(f'--pad-table: {generic} generic not found')
+            table_text = table_text.replace(f'{generic} : boolean := false', f'{generic} : boolean := {found[0]}')
+        if 'RUMBLE_ECHO : boolean := false' not in pad_text: parser.error('--pad-table: the pad must answer 0x4D with 0xFF (RUMBLE_ECHO false)')
+        (out/'joypad_pad_table.vhd').write_text(table_text)
+        qsf_path.write_text(qsf_text.replace(f'"{pads[0]}"', f'"{out/"joypad_pad_table.vhd"}"'))
     if args.logo_skip_setting:
         # Single-word loaders (no --psram-main batching): give the loader a
         # halfword count of 2 so psx_bios_patch can sit in front of its CDC.
@@ -1441,7 +1637,7 @@ CHIP_CLOCK_PINS""" + text[end:]
             text = text.replace(o, n)
         inst = '    psx_boot_gate boot_gate ('
         if text.count(inst) != 1: parser.error('--logo-skip-setting: boot gate not found')
-        text = text.replace(inst, """    // "Skip BIOS logo" (interact.json, bridge 0x50000004 bit 0, written before
+        text = text.replace(inst, """    // "Skip BIOS Logo" (interact.json, bridge 0x50000004 bit 0, written before
     // Reset Exit): patch the shell entry after loading, before the CPU runs.
     reg logo_skip=1'b0;
     always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000004) logo_skip<=|bridge_wr_data;   // any nonzero word: the Pocket may not put a check value in bit 0
@@ -1586,6 +1782,8 @@ CHIP_CLOCK_PINS""" + text[end:]
         # port and psx_cd_stream (docs/pocket-cue-loading.md).
         if not args.one_file_disc: parser.error('--cue-mount needs --one-file-disc')
     if args.cue_libcrypt and not args.cue_mount: parser.error('--cue-libcrypt needs --cue-mount')
+    if args.cheats and not (args.cue_mount and args.spu_cache_slim and args.sdram_ctrl == 'clean'):
+        parser.error('--cheats needs --cue-mount --spu-cache --spu-cache-slim --sdram-ctrl clean')
     if args.cue_debug and not (args.cue_mount and args.debug_overlay): parser.error('--cue-debug needs --cue-mount --debug-overlay')
     if args.cue_mount:
         def cue_once(old, new):
@@ -1659,6 +1857,41 @@ CHIP_CLOCK_PINS""" + text[end:]
         for lane in range(4):
             shutil.copyfile(repo/f'rtl/pocket/psx_cue_fw{lane}.hex', out/f'psx_cue_fw{lane}.hex')
             text = text.replace(f'"CUE_FIRMWARE{lane}"', f'"psx_cue_fw{lane}.hex"', 1)
+        if args.cheats:
+            # The firmware's cheat list (slot 98) applied once per frame
+            # while the Cheats setting (bridge 0x50000054) is on.
+            for o, n in (('psx_cue_mount #(', 'psx_cue_mount #(.CHEATS(1), '),
+                         ('.cue_mounted(cue_mounted), .mount_failed(cue_mount_failed)',
+                          '.cue_mounted(cue_mounted), .mount_failed(cue_mount_failed),\n'
+                          '        .cheats_on(cheats_set), .vbl_tgl(cheat_vbl_tgl), .ch_ack(cheat_ack_tgl), .ch_q(cheat_q), .ch_tgl(cheat_req_tgl),\n'
+                          '        .ch_rnw(cheat_rnw), .ch_byte(cheat_byte), .ch_addr(cheat_addr), .ch_data(cheat_data)'),
+                         ('.load_rsp(c_rsp),.load_rsp_ready(c_rsp_ready),',
+                          '.load_rsp(c_rsp),.load_rsp_ready(c_rsp_ready),\n'
+                          '        .cheat_req_tgl(cheat_req_tgl),.cheat_rnw(cheat_rnw),.cheat_byte(cheat_byte),.cheat_addr(cheat_addr),\n'
+                          '        .cheat_data(cheat_data),.cheat_ack_tgl(cheat_ack_tgl),.cheat_q(cheat_q),'),
+                         ('    // --cue-mount: a .cue or .bin picked from the launch list (slot 0) or\n',
+                          '''    // --cheats: the cue reader's main RAM port, the Cheats setting and a
+    // toggle per frame at the start of vblank, made in psx_vblank's own
+    // video clock (psx_cue_mount synchronizes it into clk_74a).
+    wire cheat_req_tgl, cheat_ack_tgl, cheat_rnw, cheat_byte; wire [20:0] cheat_addr; wire [15:0] cheat_data, cheat_q;
+    reg cheats_set=1'b0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000054) cheats_set<=|bridge_wr_data;
+    reg cheat_vbl_d=1'b0, cheat_vbl_tgl=1'b0;
+    always @(posedge video_rgb_clock) begin cheat_vbl_d<=psx_vblank; if (psx_vblank && !cheat_vbl_d) cheat_vbl_tgl<=!cheat_vbl_tgl; end
+    // --cue-mount: a .cue or .bin picked from the launch list (slot 0) or\n''')):
+                if text.count(o) != 1: parser.error('--cheats: core wiring not found: ' + o.strip()[:60])
+                text = text.replace(o, n)
+            # psx_cue_mount's command registers hold a cheat access's fields
+            # from before its toggle until the answer; cheat_q holds a read
+            # from before its answer toggle. Toggles and the frame toggle
+            # cross through synchronizers.
+            sdc = out/'pocket.sdc'
+            sdc.write_text(sdc.read_text() + '\n# --cheats: the cue reader\'s main RAM port.\n'
+                'set_false_path -to [get_registers {*|native_memory|cheat_req_s[0] *|cue_mount|ch_ack_s[0] *|cue_mount|vbl_s[0]}]\n'
+                'set_max_delay 13 -from [get_registers {*|cue_mount|fw_id[*] *|cue_mount|fw_len[*] *|cue_mount|fw_off[*]}] -to [get_registers {*|native_memory|spu_cache|*}]\n'
+                'set_min_delay -13 -from [get_registers {*|cue_mount|fw_id[*] *|cue_mount|fw_len[*] *|cue_mount|fw_off[*]}] -to [get_registers {*|native_memory|spu_cache|*}]\n'
+                'set_max_delay 13 -from [get_registers {*|native_memory|spu_cache|ch_q[*]}] -to [get_registers {*|cue_mount|*}]\n'
+                'set_min_delay -13 -from [get_registers {*|native_memory|spu_cache|ch_q[*]}] -to [get_registers {*|cue_mount|*}]\n')
         qsf_path = out/'apf_top.qsf'
         qsf_path.write_text(qsf_path.read_text() + ''.join(f'set_global_assignment -name VERILOG_FILE "{p}" -library work\n'
             for p in sorted(serv.glob('serv_*.v')) if p.name not in ('serv_compdec.v', 'serv_synth_wrapper.v'))
@@ -1669,10 +1902,38 @@ CHIP_CLOCK_PINS""" + text[end:]
         # Every line stretched to 640 pixels (psx_apf_video_wide): the scaler
         # slots only differ by height (package --wide-lines writes them).
         if not args.scaler_slots: parser.error('--wide-lines needs --scaler-slots')
+        # psx_apf_video_wide has no equivalent for these: refuse them rather than drop them silently.
+        for flag, used in (('--video-test-setting', args.video_test_setting), ('--vs-at-vblank', args.vs_at_vblank),
+                           ('--slot6-368', args.slot6_368)):
+            if used: parser.error(f'{flag} has no effect with --wide-lines (psx_apf_video_wide)')
         start = text.find('psx_apf_video #('); end = text.find(') apf_video (', start)
         if start < 0 or end < 0 or text.count('psx_apf_video #(') != 1: parser.error('--wide-lines: psx_apf_video instance not found')
-        params = (['.INTERLACE_FEATURE(1)'] if args.interlace_feature else []) + (['.FIELD_INVERT(1)'] if args.field_invert else []) + (['.PAL288(1)'] if args.pal288 else []) + (['.HYBRID(1)'] if args.hybrid_slots else []) + (['.LEAD_LINE(1)'] if args.lead_line else []) + (['.VS_ON_HS(1)'] if args.vs_on_hs else [])
+        params = (['.INTERLACE_FEATURE(1)'] if args.interlace_feature else []) + (['.FIELD_INVERT(1)'] if args.field_invert else []) + (['.PAL288(1)'] if args.pal288 else []) + (['.HYBRID(1)'] if args.hybrid_slots else []) + (['.LEAD_LINE(1)'] if args.lead_line else []) + (['.VS_ON_HS(1)'] if args.vs_on_hs else []) + (['.ASPECT(1)', '.PAL_TIMING(1)'] if args.aspect_setting else []) + (['.CROP_LINES(1)'] if args.crop_lines else []) + (['.VIDEO_PROBE(1)'] if args.video_probe else []) + (['.SLOT368(1)'] if args.fit_368 else []) + (['.DBL320(1)'] if args.dbl_320 else []) + (['.FILL_DETECT(1)'] if args.fill_detect else []) + (['.OVERSCAN_BLANK(1)'] if args.overscan_setting else [])
         text = text[:start] + 'psx_apf_video_wide #(' + ', '.join(params or ['.PAL288(0)']) + text[end:]
+        if args.aspect_setting:
+            # "Aspect Ratio" list (interact.json, bridge 0x50000048, value from any
+            # byte): 0 Fit, 1 Stretch. Fit until the Pocket writes the saved value.
+            if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
+                parser.error('--aspect-setting: video setting wiring not found')
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg stretch_set=1'b0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000048) stretch_set<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] stretch_sync=2'b00;
+    always @(posedge video_rgb_clock) stretch_sync<={stretch_sync[0],stretch_set};
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .stretch(stretch_sync[1]),', 1)
+        if args.overscan_setting:
+            # "Hide Overscan" checkbox (interact.json, bridge 0x5000005C, value
+            # from any byte; on until the Pocket writes the saved value).
+            if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
+                parser.error('--overscan-setting: video setting wiring not found')
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg overscan_set=1'b1;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h5000005C) overscan_set<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] overscan_sync=2'b11;
+    always @(posedge video_rgb_clock) overscan_sync<={overscan_sync[0],overscan_set};
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .hide_overscan(overscan_sync[1]),', 1)
         qsf_path = out/'apf_top.qsf'
         qsf_path.write_text(qsf_path.read_text() + f'set_global_assignment -name SYSTEMVERILOG_FILE "{Path(__file__).resolve().parents[1]}/rtl/pocket/psx_apf_video_wide.sv" -library work\n')
     if args.cd_buffers != 2:
@@ -1738,9 +1999,10 @@ CHIP_CLOCK_PINS""" + text[end:]
     if args.shoulder_setting and not args.stick_settings:
         extra.append('# The shoulder menu settings cross into clk1x through two flops.\n'
                      'set_false_path -to [get_registers {*|shoulder_meta*}]\n')
-    if 'psx_apf_video #(' in text:
-        extra.append('# The 480i menu settings cross into the video clock through two-flop synchronizers.\n'
-                     'set_false_path -to [get_registers {*|weave_sync[0] *|swap_sync[0] *|video_test_meta[*]}]\n')
+    if 'psx_apf_video #(' in text or 'psx_apf_video_wide #(' in text:
+        extra.append('# The 480i and Screen menu settings cross into the video clock through two-flop synchronizers.\n'
+                     'set_false_path -to [get_registers {*|weave_sync[0] *|swap_sync[0] *|video_test_meta[*]'
+                     + (' *|stretch_sync[0]' if args.aspect_setting else '') + (' *|overscan_sync[0]' if args.overscan_setting else '') + '}]\n')
     if args.cd_stream:
         # psx_cd_stream holds every multi-bit value that crosses from before its
         # toggle until the far side answers; the toggles cross through two flops.

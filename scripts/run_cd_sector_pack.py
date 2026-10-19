@@ -33,9 +33,31 @@ def run(directory, bench_text, seeds):
     return results
 
 
+MODEL = '''   process (clk1x) begin
+      if rising_edge(clk1x) then
+         if wren = '1' then packed(to_integer(unsigned(addrA_new))) <= data; end if;
+         q_new <= packed(to_integer(unsigned(addrB_new)));
+      end if;
+   end process;
+'''
+
+
+def bench_with_transform_ram():
+    """The bench with its RAM model replaced by the transform's own
+    sectorPackRam block from the transformed pinned cd_top."""
+    packed = sector_pack_text((UPSTREAM / 'rtl/cd_top.vhd').read_text())   # anchors match the pinned source
+    start = packed.index('   sectorPackRam : block'); end = packed.index('   end block;', start) + len('   end block;\n')
+    block = packed[start:end]
+    for old, new in (('sectorBuffers_wrenA', 'wren'), ('sectorBuffers_addrA', 'addrA_new'), ('sectorBuffers_DataA', 'data'),
+                     ('sectorBuffers_addrB', 'addrB_new'), ('sectorBuffers_DataB', 'q_new')):
+        block = block.replace(old, new)
+    text = BENCH.read_text()
+    if text.count(MODEL) != 1: raise SystemExit('bench RAM model anchor changed')
+    return text.replace(MODEL, block)
+
+
 def main():
-    sector_pack_text((UPSTREAM / 'rtl/cd_top.vhd').read_text())   # anchors match the pinned source
-    directory = ROOT / 'build/sim/cd-sector-pack'; text = BENCH.read_text(); failures = []
+    directory = ROOT / 'build/sim/cd-sector-pack'; text = bench_with_transform_ram(); failures = []
     for ok, line in run(directory / 'pack', text, (1, 2, 3)):
         print('PASS' if ok else 'FAIL', line.strip()[-120:])
         if not ok: failures.append('lockstep')

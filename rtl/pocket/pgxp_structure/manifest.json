@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "scope": "Experimental closed PGXP structural profiles only: one polygonQ4 domain/native-start normalization, six simultaneous divider lanes with common control/captured determinant and split stored D. Optional guarded half-record masked writes preserve full raw16 guards. Exact FIR/ADSR/Gaussian composition is separately selected by the preparer. No production, board, game, fit or timing acceptance.",
+  "baseline_hook_manifest_sha256": "01f68dfab8f197c75da3d5b8aa3589bc47c12910d2d7e041555f98437f080361",
+  "hooks": [
+    {
+      "name": "psx_pgxp_gpu_pkg.vhd",
+      "profile": "gpu",
+      "patch": "psx_pgxp_gpu_pkg.vhd.patch",
+      "patch_sha256": "2aaa875f29d466f547b6180fa88fd08b4ca89030a5a04659595775bf225814ff",
+      "input_sha256": "6a8c9218e306a6c9c52948b025cc92c87f9bb7073fe0a6eb6d0c5b07b5b24ffb",
+      "output_sha256": "50eb445f8675a40228db838cf833dbe4cf7bf7202c6be4d85f5e49966d54ae0f"
+    },
+    {
+      "name": "gpu.vhd",
+      "profile": "gpu",
+      "patch": "gpu.vhd.patch",
+      "patch_sha256": "bd9d28a2157e69f670743464201ac73e6a3b7aecffd465d502217c5ba5220f1a",
+      "input_sha256": "77f741f4cc6b5fdce78b106c4dff04e4e3090572f42c66afefb56d33e4a7009d",
+      "output_sha256": "c64904a26b5f32be71eba98cd53ba93275279913afd43b90e94742afb2f2b237"
+    },
+    {
+      "name": "gpu_poly.vhd",
+      "profile": "gpu",
+      "patch": "gpu_poly.vhd.patch",
+      "patch_sha256": "2be3ea60497448787993e846152c1743cf041563b0eef2b6d74625c8b8f30eac",
+      "input_sha256": "c99bc38f70574efc5a688ac452fec3b64cd85b56ad0d43d1eb702e10819d70b0",
+      "output_sha256": "da291c0c10ba42df0cfc99648d01084c9dd327720961e31d1301a5208550efd6"
+    },
+    {
+      "name": "psx_pgxp_shadow.sv",
+      "profile": "masked-shadow",
+      "patch": "psx_pgxp_shadow.sv.patch",
+      "patch_sha256": "c95f5aa9dffb0b7318985b9b4845f01c8875acfb0e3cf262c1547e93a5de6108",
+      "input_sha256": "dc0b356d4cbc9cbf81bc393161017f3567fd240cd7a047e9cd83af06e9680482",
+      "output_sha256": "49cda16565da00433b8b5bb0c40469a00800cd71d7e1b54bbcebfcbcf5a495af"
+    },
+    {
+      "name": "psx_pgxp_event_backend.sv",
+      "profile": "masked-shadow",
+      "patch": "psx_pgxp_event_backend.sv.patch",
+      "patch_sha256": "65cca58aed403a262e7fbb6cf0f6a9360ec196f7bbc1708ce6b39b4e1e876d8d",
+      "input_sha256": "583653b5b0dc73202383fccc28a69315c8bbd17890239791eb7c4bd0d357e8be",
+      "output_sha256": "b9173895a5b8a3e9592555dcaad1af43a82113c2f8840bfde369d7ced7f019e0"
+    },
+    {
+      "name": "psx_pgxp_memory.sv",
+      "profile": "masked-shadow",
+      "patch": "psx_pgxp_memory.sv.patch",
+      "patch_sha256": "8fcb69beff3c3e217d088d41d928363c858041c3d0a3acb370b4d3d29058d7a7",
+      "input_sha256": "9d52bd3ed222c3975dcc56a3dc917ca4c37337f56980b2540d297fc305e85b9e",
+      "output_sha256": "f8363b2bb99048237013e021ad4d9ca65a4a472461fe5a82d29df43c97733ccd"
+    },
+    {
+      "name": "psx_pgxp_sdram64.sv",
+      "profile": "masked-shadow",
+      "patch": "psx_pgxp_sdram64.sv.patch",
+      "patch_sha256": "bce7bd8ec8d7e44867e72a23bce7b3c3f2cd5c82e2ba7d279dab9580d17d8fda",
+      "input_sha256": "5dae74250a792ba464e65364dfb456c7ae53d3984b71ee535c32139719010b14",
+      "output_sha256": "add930d4da1f5ab5f0689e421ff6c5530310015f06c3fb07383eb53336e14ba8"
+    }
+  ],
+  "bank": {
+    "name": "psx_pgxp_divider_bank.vhd",
+    "sha256": "efeac0a56f1841efdaf5b62b1cd40f39c86bb7ed7123eb0e2a94e28570381a54",
+    "assignment": "VHDL_FILE",
+    "library": "work"
+  }
+}

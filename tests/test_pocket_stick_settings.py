@@ -91,6 +91,11 @@ BENCH = """    integer errors=0;
         write(32'h5000001C, 0); write(32'h50000020, 3);   // Select+D-pad = D-pad
         keys(1<<SELECT|1<<RIGHT); check_out(4'b1000, 32'h80808080, "Select+D-pad as D-pad");
         keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000020, 32'h04000000);   // Select+D-pad = Face Buttons (value in byte 3)
+        keys(1<<SELECT|1<<DOWN|1<<LEFT); check_out(4'b0000, 32'h80808080, "Select+D-pad as Face Buttons");
+        if({joypad1_KeyTriangle,joypad1_KeyCircle,joypad1_KeyCross,joypad1_KeySquare}!==4'b0011) begin errors=errors+1; $display("FAIL Select+Down/Left not Cross/Square"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000020, 1);
         write(32'h50000018, 5);   // Select + A/B/X/Y = right stick
         keys(1<<SELECT|1<<X|1<<A); check_out(4'b0000, 32'h00FF8080, "Select+X/A right stick");
         if(joypad1_KeyL3!==0) begin errors=errors+1; $display("FAIL face stick also pressed L3"); end
@@ -107,6 +112,12 @@ BENCH = """    integer errors=0;
         keys(1<<SELECT|1<<X); if(joypad1_KeyTriangle!==1) begin errors=errors+1; $display("FAIL Select+X not Triangle"); end
         keys(0); repeat(40) @(posedge clk1x);
         keys(1<<SELECT|1<<A); if(joypad1_KeyCircle!==1 || joypad1_KeyR3!==0) begin errors=errors+1; $display("FAIL Select+A not Circle"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        write(32'h50000018, 7);   // Select + A/B/X/Y = D-Pad
+        keys(1<<SELECT|1<<X|1<<A); check_out(4'b1001, 32'h80808080, "Select+X/A as D-Pad: up, right");
+        if({joypad1_KeyTriangle,joypad1_KeyCircle,joypad1_KeyL3,joypad1_KeyR3}!==0) begin errors=errors+1; $display("FAIL Select+X/A as D-Pad pressed a button"); end
+        keys(0); repeat(40) @(posedge clk1x);
+        keys(1<<SELECT|1<<B|1<<Y); check_out(4'b0110, 32'h80808080, "Select+B/Y as D-Pad: down, left");
         keys(0); repeat(40) @(posedge clk1x);
         write(32'h50000018, 3);
         write(32'h50000024, 2);   // A/B/X/Y = right stick
@@ -148,7 +159,8 @@ class StickSettings(unittest.TestCase):
         text = self.edited()
         self.assertIn("reg [2:0] shoulder_set3=3'd5;", text)
         self.assertIn('    wire joypad1_KeyUp;\n', text)
-        self.assertIn("assign pad_dpad_combo_enable=sel_dpad_sel!=2'd0;", text)
+        self.assertIn("assign pad_dpad_combo_enable=sel_dpad_sel!=3'd0;", text)
+        self.assertIn("reg [2:0] sel_dpad_set=3'd1;", text)
         self.assertNotIn("assign pad_combo_enable=6'b001111;", text)
         self.assertIn('.pad_sticks(pad_sticks_mapped),', text)
         self.assertLess(text.index('shoulder_set3<=bridge_wr_data'), text.index('psx_pocket_stick_map stick_map'))

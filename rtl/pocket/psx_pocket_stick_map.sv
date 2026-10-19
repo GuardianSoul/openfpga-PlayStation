@@ -2,10 +2,12 @@
 // prepare --stick-settings: what the handheld's D-pad and Select combos send
 // to a DualShock (2026-10-17). Menu lists, all in clk1x:
 //   dpad_mode     "D-pad":            0 D-pad, 1 left stick, 2 right stick
-//   sel_dpad_mode "SELECT + D-pad":   0 none, 1 left stick, 2 right stick, 3 D-pad
+//   sel_dpad_mode "SELECT + D-pad":   0 none, 1 left stick, 2 right stick, 3 D-pad,
+//                 4 the face buttons (up X, down B, left Y, right A; face_out)
 //   face_mode     "SELECT + A/B/X/Y": 0-3 the shoulder targets (routed in
 //                 core_top), 4 left stick, 5 right stick (X up, B down,
-//                 Y left, A right)
+//                 Y left, A right), 6 the face buttons (core_top),
+//                 7 D-pad (X up, B down, Y left, A right; 2026-10-17)
 //   dpad_mode 3:  the D-pad presses the face buttons (up X, down B, left Y,
 //                 right A; face_out; 2026-10-17)
 //   face_stick    "A/B/X/Y":         0 buttons, 1 left stick, 2 right stick,
@@ -24,11 +26,12 @@
 module psx_pocket_stick_map (
     input wire dualshock,
     input wire l3r3,                // L3 and R3 both held (game-side keys)
-    input wire [1:0] dpad_mode, sel_dpad_mode,
+    input wire [1:0] dpad_mode,
+    input wire [2:0] sel_dpad_mode,
     input wire [2:0] face_mode,
     input wire [1:0] face_stick,
     input wire [3:0] face_dirs,     // plain X, B, Y, A as up, down, left, right
-    output wire [3:0] face_out,     // dpad_mode 3: X, B, Y, A pressed as up, down, left, right
+    output wire [3:0] face_out,     // dpad_mode 3 / sel_dpad_mode 4: X, B, Y, A pressed as up, down, left, right
     input wire [3:0] dpad,          // D-pad not held back by a combo
     input wire [3:0] dpad_combo,    // D-pad with Select held (held back)
     input wire [3:0] face_combo,    // Select + X, B, Y, A as up, down, left, right
@@ -36,13 +39,15 @@ module psx_pocket_stick_map (
     output wire [31:0] sticks_out,
     output wire [3:0] dpad_out
 );
-    wire [1:0] dm=l3r3 ? 2'd0 : dpad_mode, sm=l3r3 ? 2'd3 : sel_dpad_mode;
-    wire [3:0] left=(dm==2'd1 ? dpad : 4'd0) | (sm==2'd1 ? dpad_combo : 4'd0) | (face_mode==3'd4 ? face_combo : 4'd0)
+    wire [1:0] dm=l3r3 ? 2'd0 : dpad_mode;
+    wire [2:0] sm=l3r3 ? 3'd3 : sel_dpad_mode;
+    wire [3:0] left=(dm==2'd1 ? dpad : 4'd0) | (sm==3'd1 ? dpad_combo : 4'd0) | (face_mode==3'd4 ? face_combo : 4'd0)
                      | (face_stick==2'd1 ? face_dirs : 4'd0);
-    wire [3:0] right=(dm==2'd2 ? dpad : 4'd0) | (sm==2'd2 ? dpad_combo : 4'd0) | (face_mode==3'd5 ? face_combo : 4'd0)
+    wire [3:0] right=(dm==2'd2 ? dpad : 4'd0) | (sm==3'd2 ? dpad_combo : 4'd0) | (face_mode==3'd5 ? face_combo : 4'd0)
                       | (face_stick==2'd2 ? face_dirs : 4'd0);
-    wire [3:0] pad=(dm==2'd0 ? dpad : 4'd0) | (sm==2'd3 ? dpad_combo : 4'd0) | (face_stick==2'd3 ? face_dirs : 4'd0);
-    assign face_out=dm==2'd3 ? dpad : 4'd0;
+    wire [3:0] pad=(dm==2'd0 ? dpad : 4'd0) | (sm==3'd3 ? dpad_combo : 4'd0) | (face_mode==3'd7 ? face_combo : 4'd0)
+                    | (face_stick==2'd3 ? face_dirs : 4'd0);
+    assign face_out=(dm==2'd3 ? dpad : 4'd0) | (sm==3'd4 ? dpad_combo : 4'd0);
     function [15:0] axes(input [3:0] dirs, input [15:0] base);
         axes={dirs[0] ? 8'h00 : dirs[1] ? 8'hFF : base[15:8], dirs[2] ? 8'h00 : dirs[3] ? 8'hFF : base[7:0]};
     endfunction

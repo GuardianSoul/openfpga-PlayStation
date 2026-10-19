@@ -1,0 +1,33 @@
+--- a/psx-fit.Jenkinsfile
++++ b/psx-fit.Jenkinsfile
+@@ -10,7 +10,7 @@
+     string(name: 'BUILD_NAME', defaultValue: 'probe', description: 'Short name; the build dir is OWNER_PREFIX-BUILD_NAME-sSEED')
+     string(name: 'SEED', defaultValue: '12')
+     text(name: 'FLAGS', defaultValue: '', description: 'prepare_pocket_early.py flags (empty + DRY_RUN = setup check only)')
+-    string(name: 'HOLD_NS', defaultValue: 'none', description: 'none = DualShock fit helper sets the hold target; otherwise prepare_pocket_cpu_hold.py --margin-ns')
++    string(name: 'HOLD_NS', defaultValue: 'none', description: 'none or 0.15 = DualShock helper installs 150 ps once; other values are rejected')
+     text(name: 'PACKAGE_ARGS', defaultValue: '', description: 'Optional package_pocket_early.py args (without project/--release-timing/--output); packages only if timing passes')
+     booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'Checkout and print tool versions only')
+   }
+@@ -46,8 +46,11 @@
+           P=build/fits/$D
+           python3 scripts/prepare_pocket_early.py "$T" $P $FLAGS
+           sed -i "s/^set_global_assignment -name SEED .*/set_global_assignment -name SEED $SEED/" $P/apf_top.qsf
+-          if [ "$HOLD_NS" != none ]; then python3 scripts/prepare_pocket_cpu_hold.py $P --expected-top-sha256 $(sha256sum $P/core_top.sv | cut -d' ' -f1) --margin-ns $HOLD_NS; fi
++          case "$HOLD_NS" in none|0.15) ;; *) echo "DualShock preparation supports 0.15 ns hold; requested $HOLD_NS" >&2; exit 2;; esac
+           ( cd $P && python3 ../../../scripts/prepare_pocket_dualshock_fit.py . --sort-reread > dsfit.log 2>&1 )
++          # The DualShock helper installs the 150 ps constraint exactly once.
++          grep -Fxq 'set pocket_cpu_hold_ns 0.15' "$P/cpu-hold-margin/pocket_cpu_hold.sdc"
++          test "$(grep -Fc 'cpu-hold-margin/pocket_cpu_hold.sdc' "$P/apf_top.qsf")" -eq 1
+           cd $P; set +e
+           quartus_map apf_top > map.log 2>&1 && quartus_fit apf_top > fit.log 2>&1 && quartus_asm apf_top > asm.log 2>&1 && quartus_sta apf_top > sta.log 2>&1
+           echo $? > chain.rc
+@@ -73,7 +76,7 @@
+   post {
+     always {
+       script { if (fileExists('src/result.txt')) { currentBuild.description = readFile('src/result.txt').trim() } }
+-      archiveArtifacts allowEmptyArchive: true, artifacts: 'src/result.txt, src/timing.json, src/timing.log, src/build/fits/*/*.log, src/build/fits/*/output_files/*.rpt, src/build/fits/*/output_files/*.rbf, src/build/fits/*/manifest.json, pkg/**'
++      archiveArtifacts allowEmptyArchive: true, artifacts: 'src/result.txt, src/timing.json, src/timing.log, src/build/fits/*/*.log, src/build/fits/*/output_files/*.rpt, src/build/fits/*/output_files/*.rbf, src/build/fits/*/manifest.json, src/build/fits/*/chain.rc, src/build/fits/*/apf_top.qsf.fit, src/build/fits/*/apf_top.qpf, src/build/fits/*/cpu-hold-margin/**, src/build/fits/*/dualshock-fit/manifest.json, pkg/**'
+     }
+   }
+ }

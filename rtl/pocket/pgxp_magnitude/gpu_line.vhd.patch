@@ -1,0 +1,78 @@
+--- gpu_line.vhd
++++ gpu_line.vhd
+@@ -28,6 +28,7 @@
+       drawingAreaTop       : in  unsigned(8 downto 0);
+       drawingAreaBottom    : in  unsigned(8 downto 0);
+       
++      dividend_negative    : out std_logic_vector(0 to 5):=(others=>'0');
+       div1                 : inout div_type; 
+       div2                 : inout div_type; 
+       div3                 : inout div_type; 
+@@ -324,6 +325,7 @@
+       variable drawx : signed(10 downto 0);
+       variable drawy : signed(10 downto 0);
+       variable nexty : signed(44 downto 0);
++      variable color_difference:signed(8 downto 0);
+    begin
+       if rising_edge(clk2x) then
+          
+@@ -354,13 +356,6 @@
+             div4.start           <= '0';
+             div5.start           <= '0';
+             div6.start           <= '0';
+-            
+-            div1.dividend        <= (others => '0');
+-            div2.dividend        <= (others => '0');
+-            div3.dividend        <= (others => '0');
+-            div4.dividend        <= (others => '0');
+-            div5.dividend        <= (others => '0');
+-            div6.dividend        <= (others => '0');
+             
+             div1.divisor         <= (others => '0');
+             div2.divisor         <= (others => '0');
+@@ -434,31 +429,38 @@
+                   procstate   <= PROCCALC3;
+                   div1.start     <= '1';
+                   dx := proc_pos2x - proc_pos1x;
+-                  if (dx < 0) then div1.dividend <= (resize(dx, 13) & x"00000000") - to_integer(points - 1);
+-                  else             div1.dividend <= (resize(dx, 13) & x"00000000") + to_integer(points - 1); end if;
++                  div1.dividend<=(signed(resize(unsigned(abs(dx)),13)) & x"00000000")+to_integer(points-1);
++                  dividend_negative(0)<=dx(11);
+                   div1.divisor   <= "000" & x"000" & signed(points);
+                   
+                   div2.start     <= '1';
+                   dy := proc_pos2y - proc_pos1y;
+-                  if (dy < 0) then div2.dividend <= (resize(dy, 13) & x"00000000") - to_integer(points - 1);
+-                  else             div2.dividend <= (resize(dy, 13) & x"00000000") + to_integer(points - 1); end if;
++                  div2.dividend<=(signed(resize(unsigned(abs(dy)),13)) & x"00000000")+to_integer(points-1);
++                  dividend_negative(1)<=dy(11);
+                   div2.divisor   <= "000" & x"000" & signed(points);
+                   
+                   div3.start     <= '1';
+-                  div3.dividend  <= (('0' & x"000000" & signed(proc_color2(7 downto 0))) - (x"000000" & signed(proc_color1(7 downto 0)))) & x"000";
++                  color_difference:=signed('0'&proc_color2(7 downto 0))-signed('0'&proc_color1(7 downto 0));
++                  div3.dividend<=signed(resize(unsigned(abs(color_difference)),33)) & x"000";
++                  dividend_negative(2)<=color_difference(8);
+                   div3.divisor   <= "000" & x"000" & signed(points);
+                   
+                   div4.start     <= '1';
+-                  div4.dividend  <= (('0' & x"000000" & signed(proc_color2(15 downto 8))) - (x"000000" & signed(proc_color1(15 downto 8)))) & x"000";
++                  color_difference:=signed('0'&proc_color2(15 downto 8))-signed('0'&proc_color1(15 downto 8));
++                  div4.dividend<=signed(resize(unsigned(abs(color_difference)),33)) & x"000";
++                  dividend_negative(3)<=color_difference(8);
+                   div4.divisor   <= "000" & x"000" & signed(points);
+                   
+                   div5.start     <= '1';
+-                  div5.dividend  <= (('0' & x"000000" & signed(proc_color2(23 downto 16))) - (x"000000" & signed(proc_color1(23 downto 16)))) & x"000";
++                  color_difference:=signed('0'&proc_color2(23 downto 16))-signed('0'&proc_color1(23 downto 16));
++                  div5.dividend<=signed(resize(unsigned(abs(color_difference)),33)) & x"000";
++                  dividend_negative(4)<=color_difference(8);
+                   div5.divisor   <= "000" & x"000" & signed(points);
+ 
+                   -- calculate pixels per line for transparency readback
+                   div6.start     <= '1';
+                   div6.dividend  <= "000" & x"00000000" & signed(points);
++                  dividend_negative(5)<='0';
+                   if (dy = 0) then  div6.divisor   <= to_signed(1, div6.divisor'length);
+                   else              div6.divisor   <= "0" & x"000" & (abs(proc_pos2y - proc_pos1y)); end if;
+                   

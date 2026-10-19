@@ -27,6 +27,12 @@ Cue-reader cores that declare slot 99 get <cue name>.sbi there too: the
 core reads a .sbi beside a cue opened by its path, but a game JSON's cue
 has no path on the Pocket.
 
+Cheats (cores packaged with --cheats, which declare slot 98): a GameShark
+list next to the cue, <cue name>.cht (or the game's name without its disc
+tag), goes into slot 98: plain "80012345 0063" lines or a libretro .cht,
+whose cheats apply when their cheatN_enable line says true. The core's
+Cheats setting turns them on.
+
 One-file cores (packaged with --one-file-disc, which declare a .trk slot 102):
 each disc is one .bin with all its tracks in slot 100*n+1 and a 1,600-byte
 track table (.trk, the core's 400 track-info words) in slot 100*n+2, so
@@ -83,6 +89,7 @@ SECTOR = 2352
 RESERVE = 256 << 20   # space every write keeps free on the SD card
 PREGAP = 150
 LIBCRYPT_SLOT = 99
+CHEAT_SLOT = 98
 CARD_SLOT = 16
 HELP_ENTRY = '! How to add games (see README).json'   # package_release.py's placeholder
 DISC = re.compile(r' \(Disc \d+\)')
@@ -116,6 +123,14 @@ def seed_shared_card(card, platform, core, stems, name):
 def visible(folder, pattern):
     """Matching files under folder, sorted, without macOS '._' metadata files."""
     return sorted(p for p in folder.rglob(pattern) if not p.name.startswith('._'))
+
+
+def find_cht(cue):
+    """The game's cheat list: <cue name>.cht, <cue file name>.cht, or the
+    name without its "(Disc n)" tag with .cht."""
+    for c in (cue.with_suffix('.cht'), cue.with_name(cue.name + '.cht'), cue.with_name(DISC_N.sub('', cue.stem).strip() + '.cht')):
+        if c.is_file(): return c
+    return None
 
 
 def find_sbi(cue):
@@ -440,6 +455,7 @@ def main():
         args.shared_cards = declared is None or any(s.get('id') == CARD_SLOT for s in declared)
     if args.libcrypt is None:
         args.libcrypt = declared is not None and any(s.get('id') == LIBCRYPT_SLOT for s in declared)
+    cheats = declared is not None and any(s.get('id') == CHEAT_SLOT for s in declared)
     common = args.card/'Assets'/args.platform/'common'
     out = args.card/'Assets'/args.platform/f'GuardianSoul.{args.core}'
     if args.convert:
@@ -464,6 +480,8 @@ def main():
         # cue doesn't have on the Pocket: they take it from slot 99 instead.
         if sbi and (args.cue_reader and args.libcrypt or not (args.one_file or args.cue_reader)):
             slots.append({'id': LIBCRYPT_SLOT, 'filename': sbi.name})
+        cht = find_cht(cue) if cheats else None
+        if cht: slots.append({'id': CHEAT_SLOT, 'filename': cht.name})
         prefix = data_path + '/' if data_path != '.' else ''
         shared = (shared_card or shared_card_name(cue.stem)) if args.shared_cards else None
         if shared:
@@ -476,7 +494,7 @@ def main():
         (out/(cue.stem + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
         count = tracks_n if args.one_file or args.cue_reader else len(files)
         kind = ', one file' if args.one_file else ', cue' if args.cue_reader else ''
-        print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{kind}{", LibCrypt " + sbi.name if sbi else ""})')
+        print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{kind}{", LibCrypt " + sbi.name if sbi else ""}{", cheats " + cht.name if cht else ""})')
 
     for cue in visible(common, '*.cue'):
         folder = cue.parent
@@ -555,6 +573,8 @@ def main():
         if args.cue_reader: sbi = cue1.with_suffix('.sbi') if args.libcrypt and cue1.with_suffix('.sbi').is_file() else None
         else: sbi = find_sbi(cue1) if args.libcrypt else None
         if sbi: slots.append({'id': LIBCRYPT_SLOT, 'filename': rel(cue1, sbi.name)})
+        cht = find_cht(cue1) if cheats else None
+        if cht: slots.append({'id': CHEAT_SLOT, 'filename': rel(cue1, cht.name)})
         data_path = root.relative_to(common).as_posix()
         prefix = data_path + '/' if data_path != '.' else ''
         shared = shared_card_name(cue1.stem) if args.shared_cards else None

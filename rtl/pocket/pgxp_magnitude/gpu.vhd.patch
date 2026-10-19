@@ -1,0 +1,49 @@
+--- gpu.vhd
++++ gpu.vhd
+@@ -241,6 +241,7 @@
+    signal div_response:t_div_array;
+    signal divider_boundary:std_logic;
+    signal poly_denominator:signed(32 downto 0);
++   signal line_negative,poly_negative,numerator_negative:std_logic_vector(0 to 5);
+    type t_native_div_array is array(0 to 5) of div_type;
+    signal div_array                 : t_div_array;
+    
+@@ -1189,6 +1190,7 @@
+       drawingAreaTop       => drawingAreaTop,   
+       drawingAreaBottom    => drawingAreaBottom,
+       
++      dividend_negative=>line_negative,
+       div1                 => line_div(0), 
+       div2                 => line_div(1), 
+       div3                 => line_div(2), 
+@@ -1315,6 +1317,7 @@
+       drawmode_dithering   => drawMode(9),
+       
+       shared_denominator=>poly_denominator,
++      dividend_negative=>poly_negative,
+       div1                 => poly_div(0), 
+       div2                 => poly_div(1), 
+       div3                 => poly_div(2), 
+@@ -1457,7 +1460,7 @@
+    begin
+    
+       div_array(i).start    <= line_div(i).start    or poly_div(i).start;
+-      div_array(i).dividend <= resize(line_div(i).dividend,53) or poly_div(i).dividend;
++      div_array(i).dividend<=signed(resize(unsigned(line_div(i).dividend),53)) when line_div(0).start='1' else poly_div(i).dividend;
+       div_array(i).divisor  <= resize(line_div(i).divisor,33) or poly_div(i).divisor;
+       
+       line_div(i).done      <= div_array(i).done;     
+@@ -1472,11 +1475,12 @@
+       div_array(i).quotient<=div_response(i).quotient;
+       div_array(i).remainder<=div_response(i).remainder;
+    end generate;
++   numerator_negative<=line_negative when line_div(0).start='1' else poly_negative;
+    divider_boundary<=poly_div(0).start and not poly_div(3).start;
+    divider_bank:entity work.psx_pgxp_divider_bank port map(
+       clk=>clk2x,native_width=>line_div(0).start or not pgxp_enable,
+       boundary_batch=>divider_boundary,line_batch=>line_div(0).start,
+-      common_denominator=>poly_denominator,request=>div_array,response=>div_response);
++      common_denominator=>poly_denominator,numerator_negative=>numerator_negative,request=>div_array,response=>div_response);
+ 
+    
+    pixelColor  <= cpu2vram_pixelColor or vram2vram_pixelColor or pipeline_pixelColor;

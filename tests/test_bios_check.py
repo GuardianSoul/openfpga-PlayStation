@@ -55,9 +55,11 @@ class BiosCheckTest(unittest.TestCase):
                                extra={0x20+k: files.get(n) for k, n in enumerate(BIOS_NAMES)})
 
     def assert_started(self, vm, loads, region=0):
+        # The region goes in the low and high byte (pmpw arrives byte-swapped).
+        region = region | region << 24
         self.assertEqual(vm.events[0], ('core', 0))
         self.assertEqual([e[1] for e in vm.events if e[0] == 'loadf'], loads)
-        self.assertEqual([e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] < HOST], [(REGION, region), (BIOS_REGION, region)])
+        self.assertEqual([e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] < HOST], [(REGION, region), (BIOS_REGION, 0)])
         self.assertLess(vm.events.index(('pmpw', REGION, region)), vm.events.index(('host', 0x4002, 0x4002)))
         self.assertEqual(vm.events[-2:], [('host', 0x4002, 0x4002), ('exit', 0)])
         self.assertEqual(vm.output, [])
@@ -118,6 +120,70 @@ class BiosCheckTest(unittest.TestCase):
         self.assert_started(vm, [0x2f], 2)
         vm, _ = self.run_names({'scph5501.bin': self.bios(size=5), 'scph101.bin': self.bios(usa)})
         self.assert_started(vm, [0x25])
+
+    def disc(self, licence):
+        """A raw (2352-byte sector) disc image with this licence region word."""
+        data = bytearray(2352*6)
+        text = b'          Licensed  by          Sony Computer Entertainment ' + licence
+        data[4*2352+24:4*2352+24+len(text)] = text
+        path = self.dir/f'disc{len(list(self.dir.iterdir()))}.bin'; path.write_bytes(data)
+        return path
+
+    def run_region(self, files, disc, cue=None):
+        """A --bios-names loader with the package's cue (100) and disc image (101) slots."""
+        files = {n: p.rename(p.with_name(n)) for n, p in files.items() if p}
+        from build_chip32_loader import BIOS_NAMES, DISC_SLOT, CUE_SLOT
+        slots = tuple((0x20+k, n) for k, n in enumerate(BIOS_NAMES))
+        table = (0, CARD, 0x20, CUE_SLOT, DISC_SLOT) + tuple(0x21+k for k in range(len(BIOS_NAMES)-1))
+        return self.run_loader(None, None, loader(slots=slots, memcard_slot=CARD, table=table),
+                               extra={**{0x20+k: files.get(n) for k, n in enumerate(BIOS_NAMES)},
+                                      CUE_SLOT: cue, DISC_SLOT: disc})
+
+    def cue(self, name):
+        path = self.dir/name; path.write_text('FILE "track.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+        return path
+
+    def test_game_file_cue_name_picks_its_bios(self):
+        # a game file's disc is its cue (slot 100), whose tracks only the core opens
+        usa, jp, eu = (b'System ROM Version 4.1 12/16/97 '+c for c in (b'A', b'J', b'E'))
+        for name, slot, region in (('Ape Escape (Europe) (En,Fr,De,Es,It).cue', 0x2a, 2),
+                                   ('Ridge Racer (Japan).cue', 0x26, 1), ('Wipeout (UK).cue', 0x2a, 2),
+                                   ('Crash Bandicoot (USA).cue', 0x20, 0), ('No Region.cue', 0x20, 0)):
+            with self.subTest(name=name):
+                files = {'scph5501.bin': self.bios(usa), 'scph5500.bin': self.bios(jp), 'scph5502.bin': self.bios(eu)}
+                vm, _ = self.run_region(files, None, self.cue(name))
+                self.assert_started(vm, [slot], region)
+        # the licence text wins over the name
+        files = {'scph5501.bin': self.bios(usa), 'scph5502.bin': self.bios(eu)}
+        vm, _ = self.run_region(files, self.disc(b'Amer  ica '), self.cue('Game (Europe).cue'))
+        self.assert_started(vm, [0x20], 0)
+
+    def test_disc_region_picks_its_bios(self):
+        usa, jp, eu = (b'System ROM Version 4.1 12/16/97 '+c for c in (b'A', b'J', b'E'))
+        for licence, slot, region in ((b'Euro pe   ', 0x2a, 2), (b'Inc.', 0x26, 1), (b'Amer  ica ', 0x20, 0)):
+            with self.subTest(licence=licence):
+                files = {'scph5501.bin': self.bios(usa), 'scph5500.bin': self.bios(jp), 'scph5502.bin': self.bios(eu)}
+                vm, _ = self.run_region(files, self.disc(licence))
+                self.assert_started(vm, [slot], region)
+                self.assertIsNone(vm.file)
+
+    def test_disc_region_falls_back_to_slot_order(self):
+        usa, eu = (b'System ROM Version 4.1 12/16/97 '+c for c in (b'A', b'E'))
+        # no BIOS of the disc's region, an unreadable licence, no disc file
+        for files, disc in (({'scph5501.bin': self.bios(usa), 'scph5502.bin': self.bios(eu)}, self.disc(b'Inc.')),
+                            ({'scph5501.bin': self.bios(usa), 'scph5502.bin': self.bios(eu)}, self.disc(b'????')),
+                            ({'scph5501.bin': self.bios(usa), 'scph5502.bin': self.bios(eu)}, None)):
+            with self.subTest(disc=disc):
+                vm, _ = self.run_region(files, disc)
+                self.assert_started(vm, [0x20], 0)
+        # a bad BIOS of the disc's region is skipped, not reported
+        vm, text = self.run_region({'scph5502.bin': self.bios(size=1000), 'scph5501.bin': self.bios(usa)},
+                                   self.disc(b'Euro pe   '))
+        self.assert_started(vm, [0x20], 0)
+        # a short disc image (no sector 4)
+        short = self.dir/'short.bin'; short.write_bytes(bytes(2352))
+        vm, _ = self.run_region({'scph5502.bin': self.bios(eu)}, short)
+        self.assert_started(vm, [0x2a], 2)
 
     def test_names_missing_gives_examples(self):
         vm, text = self.run_names({})

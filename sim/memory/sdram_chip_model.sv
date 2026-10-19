@@ -34,7 +34,7 @@ module sdram_chip_model #(
     reg        moded = 0;
     reg [3:0]  bank_open = 0;
     reg [12:0] open_row [0:3];
-    integer    act_at [0:3], pre_at [0:3], idle_at [0:3];
+    integer    act_at [0:3], pre_at [0:3], idle_at [0:3], rd_at [0:3], wr_at [0:3];
     integer    ref_at = -100, mrs_at = -100, i;
     reg [15:0] mode = 0;
 
@@ -53,7 +53,7 @@ module sdram_chip_model #(
     initial begin
         for (i = 0; i < (1<<18); i = i + 1) mem[i] = (i * 16'h9e37) ^ (i >> 5);
         for (i = 0; i < 4; i = i + 1) begin
-            open_row[i] = 0; act_at[i] = -100; pre_at[i] = -100; idle_at[i] = -100;
+            open_row[i] = 0; act_at[i] = -100; pre_at[i] = -100; idle_at[i] = -100; rd_at[i] = -100; wr_at[i] = -100;
         end
         for (i = 0; i < 6; i = i + 1) beat_data[i] = 0;
     end
@@ -102,7 +102,7 @@ module sdram_chip_model #(
                 if (!bank_open[b]) fail(command == 3'b101 ? "READ to closed or precharging bank" : "WRITE to closed or precharging bank");
                 else if (cyc - act_at[b] < T_RCD) fail("READ/WRITE within tRCD");
                 if (command == 3'b101) begin
-                    reads = reads + 1;
+                    reads = reads + 1; rd_at[b] = cyc;
                     if (dqm != 0) fail("DQM set on READ");
                     beat_valid[CAS-2] <= 1; beat_valid[CAS-1] <= 1;
                     beat_data[CAS-2] <= bank_open[b] ? mem[index(b, open_row[b], col)] : 16'hdead;
@@ -114,7 +114,8 @@ module sdram_chip_model #(
                         idle_at[b] = pre_at[b] + T_RP;
                     end
                 end else begin
-                    writes = writes + 1;
+                    writes = writes + 1; wr_at[b] = cyc;
+                    if (beat_valid != 0 || launched) fail("WRITE while read data is on the bus");
                     if (bank_open[b]) begin
                         hword = mem[index(b, open_row[b], col)];
                         if (!dqm[0]) hword[7:0] = dq[7:0];
@@ -132,10 +133,14 @@ module sdram_chip_model #(
                 if (a[10]) begin
                     for (k = 0; k < 4; k = k + 1) if (bank_open[k]) begin
                         if (cyc - act_at[k] < T_RAS) fail("PRECHARGE within tRAS");
+                        if (cyc - wr_at[k] < T_WR) fail("PRECHARGE within tWR");
+                        if (cyc - rd_at[k] < 2) fail("PRECHARGE inside a read burst");
                         bank_open[k] = 0; idle_at[k] = cyc + T_RP;
                     end
                 end else if (bank_open[b]) begin
                     if (cyc - act_at[b] < T_RAS) fail("PRECHARGE within tRAS");
+                    if (cyc - wr_at[b] < T_WR) fail("PRECHARGE within tWR");
+                    if (cyc - rd_at[b] < 2) fail("PRECHARGE inside a read burst");
                     bank_open[b] = 0; idle_at[b] = cyc + T_RP;
                 end
             end

@@ -1,7 +1,7 @@
 # PlayStation game files plugin
 
 A [Pocket plugin](https://github.com/openfpga-library/pocket-plugin) for
-Pocket Sync and pupdate. It makes the game files (`.json`) for the
+Pocket Sync and pupdate. It generates the game files (`.json`) for the
 [PlayStation core](https://github.com/GuardianSoul/openfpga-PlayStation) on
 the SD card, the same way the core's `make_pocket_instances.py` script does:
 
@@ -27,7 +27,8 @@ the SD card, the same way the core's `make_pocket_instances.py` script does:
 ## Use
 
 In Pocket Sync or pupdate, add a plugin from this repository's link, put the
-SD card in, and run *PlayStation game files*. Put your games in
+SD card in, open *PlayStation game files* and choose *Generate game
+files*. Put your games in
 `Assets/playstation/common/`, each in its own folder.
 
 When discs need converting (CHD images, or discs an older core needs in
@@ -61,7 +62,7 @@ machine's folders removed from the paths Rust keeps in the binary.
 on any folder:
 
 ```
-python3 host/run_plugin.py target/wasm32-wasip1/release/plugin.wasm /path/to/sd-card --answer "Make game files"
+python3 host/run_plugin.py target/wasm32-wasip1/release/plugin.wasm /path/to/sd-card --answer "Generate game files"
 ```
 
 The tests live in the core's repository (`tests/test_pocket_plugin.py`, with

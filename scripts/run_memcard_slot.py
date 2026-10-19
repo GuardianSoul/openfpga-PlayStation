@@ -53,7 +53,10 @@ NEGATIVE = [
     ('fault-byte-order', (1, 1), dict(SCEN='load', IMAGE='real', SEED=21), 'image when busy fell'),
     ('fault-busy-early', (1, 2), dict(SCEN='load', IMAGE='junk', SEED=22), 'image when busy fell'),
     ('fault-format-magic-card', (1, 3), dict(SCEN='load', IMAGE='real', SEED=23), 'image when busy fell'),
-    ('fault-magic-first', (1, 4), dict(SCEN='reset_fmt', IMAGE='ff', SEED=24, RST_AT=700, RST_LEN=2), 'image when busy fell'),
+    # (fault 4, magic written first, is harmless since a slot reset with no
+    # card file always formats again: no control for it)
+    # the old check read: a game with no card file keeps the last game's card
+    ('fault-keeps-stale-card', (1, 7), dict(SCEN='load', IMAGE='nofile', SEED=24), 'image when busy fell'),
     ('fault-half-format', (1, 5), dict(SCEN='load', IMAGE='nofile', SEED=25), 'image when busy fell'),
     ('fault-read-ack-early', (1, 6), dict(SCEN='load', IMAGE='real', SEED=26), 'readback'),
 ]

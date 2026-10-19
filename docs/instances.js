@@ -13,6 +13,7 @@
   const SECTOR = 2352;
   const PREGAP = 150;
   const LIBCRYPT_SLOT = 99;
+  const CHEAT_SLOT = 98;
   const CARD_SLOT = 16;
   const DISC = / \(Disc \d+\)/;
   const DISC_N = /\s*\(Disc (\d+)\)/i;
@@ -383,6 +384,15 @@
     return found.length === 1 ? found[0] : null;
   }
 
+  // The game's cheat list: <cue name>.cht, <cue file name>.cht, or the name without its "(Disc n)" tag with .cht.
+  async function findCht(card, cue) {
+    const folder = cue.slice(0, -1), name = cue[cue.length - 1], s = stem(name);
+    for (const c of [s + '.cht', name + '.cht', s.replace(DISC_N_ALL, '').trim() + '.cht']) {
+      if (await fileAt(card, [...folder, c])) return c;
+    }
+    return null;
+  }
+
   // Start Saves/<platform>/common/<name> from the newest per-disc card. Never overwrites.
   async function seedSharedCard(card, platform, core, stems, name) {
     const shared = ['Saves', platform, 'common', name];
@@ -475,6 +485,7 @@
     const maxTracks = declared === null ? 8 : ids.filter((id) => id >= 101 && id <= 199).length;
     const sharedCards = declared === null || ids.includes(CARD_SLOT);
     const libcrypt = declared !== null && ids.includes(LIBCRYPT_SLOT);
+    const cheats = declared !== null && ids.includes(CHEAT_SLOT);
     // --one-file-disc cores: one .bin plus a .trk table per disc (slots 100n+1, 100n+2).
     // --cue-mount cores read the cue themselves (their launch slot takes .cue files).
     const cueReader = declared !== null && declared.some((s) => s && s.id === 0 && (s.extensions || []).includes('cue'));
@@ -513,6 +524,8 @@
       else if (libcrypt || oneFile) sbi = await findSbi(card, cue);
       // Cue-reader cores take a game JSON's .sbi from slot 99 (its cue has no path on the Pocket).
       if (sbi && (cueReader ? libcrypt : !oneFile)) slots.push({ id: LIBCRYPT_SLOT, filename: sbi });
+      const cht = cheats ? await findCht(card, cue) : null;
+      if (cht) slots.push({ id: CHEAT_SLOT, filename: cht });
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
       const shared = sharedCards ? sharedCard || sharedCardName(cueStem) : null;
       if (shared) {
@@ -525,7 +538,7 @@
       await writeInstance(cueStem, slots, prefix);
       const count = oneFile || cueReader ? trackCount : files.length;
       const kind = oneFile ? ', one file' : cueReader ? ', cue' : '';
-      say(`wrote ${cueStem}.json (${count} track${count > 1 ? 's' : ''}${kind}${sbi ? ', LibCrypt ' + sbi : ''})`);
+      say(`wrote ${cueStem}.json (${count} track${count > 1 ? 's' : ''}${kind}${sbi ? ', LibCrypt ' + sbi : ''}${cht ? ', cheats ' + cht : ''})`);
     };
     for (const rel of await walk(commonDir, (n) => /\.cue$/i.test(n))) {
       const cue = [...common, ...rel];
@@ -634,6 +647,8 @@
       const sbi = !libcrypt ? null : cueReader ? (await fileAt(card, [...cue1.slice(0, -1), cue1Stem + '.sbi']) ? cue1Stem + '.sbi' : null)
         : await findSbi(card, cue1);
       if (sbi) slots.push({ id: LIBCRYPT_SLOT, filename: rel(cue1, sbi) });
+      const cht = cheats ? await findCht(card, cue1) : null;
+      if (cht) slots.push({ id: CHEAT_SLOT, filename: rel(cue1, cht) });
       const dataPath = posix(root.slice(common.length));
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
       const shared = sharedCards ? sharedCardName(cue1Stem) : null;

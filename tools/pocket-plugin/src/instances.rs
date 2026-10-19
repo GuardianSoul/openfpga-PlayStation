@@ -24,6 +24,7 @@ pub mod convert;
 const SECTOR: u64 = 2352;
 const PREGAP: u64 = 150;
 const LIBCRYPT_SLOT: i64 = 99;
+const CHEAT_SLOT: i64 = 98;
 const CARD_SLOT: i64 = 16;
 /// Files a cue-reader core reads from the game file's slots 101+ (disc 1).
 const CUE_FILE_SLOTS: usize = 19;
@@ -678,6 +679,17 @@ fn find_sbi(cue: &Path) -> Option<String> {
     if found.len() == 1 { found.pop() } else { None }
 }
 
+/// The game's cheat list: <cue name>.cht, <cue file name>.cht, or the name
+/// without its "(Disc n)" tag with .cht.
+fn find_cht(cue: &Path) -> Option<String> {
+    let folder = cue.parent()?;
+    let name = name_of(cue);
+    let s = stem(&name);
+    [format!("{s}.cht"), format!("{name}.cht"), format!("{}.cht", disc_n().replace_all(s, "").trim())]
+        .into_iter()
+        .find(|c| is_file(&folder.join(c)))
+}
+
 /// Start Saves/<platform>/common/<name> from the newest per-disc card. Never overwrites.
 fn seed_shared_card(card: &Path, platform: &str, core: &str, stems: &[String], name: &str) -> Option<String> {
     let shared = card.join("Saves").join(platform).join("common").join(name);
@@ -841,6 +853,7 @@ struct Writer<'a> {
     common: &'a Path,
     shared_cards: bool,
     libcrypt: bool,
+    cheats: bool,
     one_file: bool,
     cue_reader: bool,
     discs: BTreeMap<String, Vec<String>>, // shared card -> disc stems
@@ -872,6 +885,10 @@ impl Writer<'_> {
         if let (Some(sbi), true) = (&sbi, if self.cue_reader { self.libcrypt } else { !self.one_file }) {
             slots.push((LIBCRYPT_SLOT, sbi.clone()));
         }
+        let cht = if self.cheats { find_cht(cue) } else { None };
+        if let Some(cht) = &cht {
+            slots.push((CHEAT_SLOT, cht.clone()));
+        }
         let mut prefix = if data_path != "." { format!("{data_path}/") } else { String::new() };
         if let Some(shared) = self.shared_cards.then(|| card.map(String::from).or_else(|| shared_card_name(&cue_stem))).flatten() {
             for s in &mut slots {
@@ -884,10 +901,11 @@ impl Writer<'_> {
         self.write_instance(&cue_stem, &prefix, &slots)?;
         let count = if self.one_file || self.cue_reader { track_count } else { files.len() };
         log(&format!(
-            "wrote {cue_stem}.json ({count} track{}{}{})",
+            "wrote {cue_stem}.json ({count} track{}{}{}{})",
             if count > 1 { "s" } else { "" },
             if self.one_file { ", one file" } else if self.cue_reader { ", cue" } else { "" },
-            sbi.map(|s| format!(", LibCrypt {s}")).unwrap_or_default()
+            sbi.map(|s| format!(", LibCrypt {s}")).unwrap_or_default(),
+            cht.map(|s| format!(", cheats {s}")).unwrap_or_default()
         ));
         Ok(())
     }
@@ -908,6 +926,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     let max_tracks = if declared.is_none() { 8 } else { ids.iter().filter(|&&id| (101..=199).contains(&id)).count() };
     let shared_cards = declared.is_none() || ids.contains(&CARD_SLOT);
     let libcrypt = declared.is_some() && ids.contains(&LIBCRYPT_SLOT);
+    let cheats = declared.is_some() && ids.contains(&CHEAT_SLOT);
     let one_file = is_one_file(card, core);
     let cue_reader = is_cue_reader(card, core);
     // Cue-reader cores read .m3u playlists (up to four discs); slot 100 taking
@@ -925,7 +944,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     let discs_declared = 1 + (2..10).filter(|n| disc_tracks[n] > 0).count();
     let (mut written, mut skipped) = (0, report_chds(&common, log));
     skipped += write_lone_cues(&common, log);
-    let mut writer = Writer { out: &out, common: &common, shared_cards, libcrypt, one_file, cue_reader, discs: BTreeMap::new() };
+    let mut writer = Writer { out: &out, common: &common, shared_cards, libcrypt, cheats, one_file, cue_reader, discs: BTreeMap::new() };
     let mut games: BTreeMap<String, BTreeMap<u64, Vec<Part>>> = BTreeMap::new();
     for cue in walk(&common, &|n| has_ext(n, ".cue")) {
         let folder = cue.parent().unwrap().to_path_buf();
@@ -1098,6 +1117,9 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
         };
         if let Some(sbi) = sbi {
             slots.push((LIBCRYPT_SLOT, in_root(cue1, &sbi)));
+        }
+        if let Some(cht) = if cheats { find_cht(cue1) } else { None } {
+            slots.push((CHEAT_SLOT, in_root(cue1, &cht)));
         }
         let data_path = rel(&root, &common);
         let mut prefix = if data_path != "." { format!("{data_path}/") } else { String::new() };

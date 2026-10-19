@@ -34,12 +34,12 @@ def main():
         if digest(copied)!=sha:raise RuntimeError('Input copy changed')
         archive.append(dict(source=path,path=str(copied),sha256=sha))
     report=dict(passed=False,work=str(work),protected_sha256=protected,input_archive=archive,runs=[],
-        scope='13- and 15-bit settings, three async clock ratios; two resets while transfers are active and a stopped destination clock. Original lower33-bit sampler checked every destination edge,46/48-bit outputs checked against independent publication tuples; all four top-two-bit values delivered for15-bit mode. Not electrical/metastability or Pocket proof.')
+        scope='13-, 15- and 16-bit settings, three async clock ratios; two resets while transfers are active and a stopped destination clock. Original lower33-bit sampler checked every destination edge,46/48-bit outputs checked against independent publication tuples; all four top-two-bit values delivered for 15- and 16-bit modes. Not electrical/metastability or Pocket proof.')
     text=source.read_text();anchor='config_out<=hold[CONFIG_W+32:33];'
     if text.count(anchor)!=1:raise ValueError('Analog packet capture changed')
     modes=('normal','wrong-config','live-config','unknown-config','truncated-config')
-    cases=[(width,mode)for width in (13,15)for mode in modes
-           if width==15 or mode!='truncated-config']
+    cases=[(width,mode)for width in (13,15,16)for mode in modes
+           if width>=15 or mode!='truncated-config']
     for width,mode in cases:
         changed=text
         if mode=='wrong-config':changed=changed.replace(anchor,'config_out<=PASS_CONFIG ? hold[CONFIG_W+31:32] : hold[CONFIG_W+32:33];')
@@ -62,7 +62,7 @@ def main():
             print(name,'PASS'if ok else'FAIL',flush=True)
             if not ok:raise RuntimeError(output)
     identity=all(digest(Path(p))==sha for p,sha in protected.items())
-    report.update(passed=identity and len(report['runs'])==13,source_identity_verified=identity)
+    report.update(passed=identity and len(report['runs'])==20,source_identity_verified=identity)
     (work/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     if not report['passed']:raise RuntimeError('Analog inputs changed during checks')
     print('PASS pocket analog',work/'report.json',flush=True)

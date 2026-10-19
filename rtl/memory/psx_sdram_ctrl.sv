@@ -40,7 +40,16 @@ module psx_sdram_ctrl #(
     // access; served last, a DMA burst or CPU traffic can starve it (audio
     // underflow seen on hardware, WipEout CD music). SPU RAM shares no
     // addresses with main RAM, so no ordering between channels changes.
-    parameter integer SPU_FIRST = 0
+    parameter integer SPU_FIRST = 0,
+    // OPEN_ROW (CL3 only): rows stay open after an access instead of closing
+    // with auto-precharge. An access to the open row of its bank issues its
+    // READ on the idle edge (no ACTIVE): with CL3 its data then makes the
+    // same clk1x edge as a CL2 access. An access to another row of an open
+    // bank first precharges it (one clk1x slower than now). Main RAM
+    // alternates 1 KB rows between banks 0 and 1 (address bit 10), so two
+    // main-RAM rows are open at once; BIOS and SPU RAM still close their
+    // rows. A refresh first precharges all banks.
+    parameter integer OPEN_ROW = 0
 ) (
     input  wire         init,
     input  wire         clk,
@@ -175,6 +184,8 @@ module psx_sdram_ctrl #(
     wire        spu_first = SPU_FIRST != 0 && pend3;
     wire [26:0] ch1_a     = LATE_START ? ch1_adr_q : ch1_addr;
     wire [26:0] ch2_a     = LATE_START ? ch2_adr_q : ch2_addr;
+    wire        need_ref;
+    wire [1:0]  next_st;
     wire [26:0] idle_addr = spu_first ? ch3_a : fifo_v ? fifo_adr : (pend1 || (!LATE_START && ch1_req)) ? ch1_a
                           : (pend2 || (!LATE_START && ch2_req)) ? ch2_a : ch3_a;
 
@@ -182,6 +193,7 @@ module psx_sdram_ctrl #(
     reg [10:0] ref_timer = REFRESH_CYCLES[10:0];
     reg [3:0]  ref_owed = 0;
     reg        force_d = 0, force_pend = 0;
+    reg        init_q = 1;   // OPEN_ROW: init registered once (clk1x source)
     wire force_rise = refreshForce && !force_d;
 
     // ------------------------------------------------------ init sequence
@@ -191,7 +203,7 @@ module psx_sdram_ctrl #(
     reg        ready = 0;
 
     // -------------------------------------------------------- access state
-    localparam [3:0] OP_IDLE = 0, OP_READ1 = 1, OP_READ4 = 2, OP_WRITE = 3, OP_WRITE1 = 4, OP_REFRESH = 5;
+    localparam [3:0] OP_IDLE = 0, OP_READ1 = 1, OP_READ4 = 2, OP_WRITE = 3, OP_WRITE1 = 4, OP_REFRESH = 5, OP_PRE = 6;
     // Read result kinds
     localparam [2:0] K_CH1 = 1, K_CH2 = 2, K_CH3 = 3, K_CACHE = 4, K_DMA = 5;
     reg [3:0]  op = OP_IDLE;
@@ -207,15 +219,69 @@ module psx_sdram_ctrl #(
     reg        ch3_write = 0;
     wire       busy = op != OP_IDLE;
 
-    wire [12:0] row = addr[22:10];
-    wire [1:0]  bank = addr[24:23];
+    wire [12:0] row = row_of(addr);
+    wire [1:0]  bank = bank_of(addr);
     function [12:0] column(input [26:0] at, input [8:0] add, input autopre);
         reg [8:0] low;
         begin
             low = at[9:1] + add;
-            column = {2'b00, autopre, at[25], low};
+            column = {2'b00, autopre && !keep_open(at), at[25], low};
         end
     endfunction
+    // OPEN_ROW address map: bank = {[24], [10]}, row = {[23], [22:11]}, so
+    // main RAM alternates 1 KB rows between banks 0 and 1 (BIOS shares those
+    // banks in other rows; SPU RAM uses banks 2 and 3). Plain bit selects:
+    // no logic in front of the bank and row pin registers.
+    function [1:0] bank_of(input [26:0] at);
+        bank_of = OPEN_ROW != 0 ? {at[24], at[10]} : at[24:23];
+    endfunction
+    function [12:0] row_of(input [26:0] at);
+        row_of = OPEN_ROW != 0 ? {at[23], at[22:11]} : at[22:10];
+    endfunction
+    // Only main RAM keeps rows open. BIOS runs from the I-cache, and SPU
+    // reads jump between voices, so an open row there would mostly cost a
+    // PRECHARGE first.
+    function keep_open(input [26:0] at);
+        keep_open = OPEN_ROW != 0 && at[24:23] == 2'd0;
+    endfunction
+
+    // Open main-RAM rows (OPEN_ROW; entry = address bit 10: bank 0 or 1) and
+    // the registered row state of each waiting access: ST_EMPTY bank closed,
+    // ST_HIT its row is open, ST_MISS another row is (or may be) open. The
+    // state is computed one edge ahead from registered addresses (ch1: from
+    // the request at its capture edge); the table only changes while an
+    // access runs, so it is current on every idle edge. CPU reads (ch1) and
+    // writes (ch2) compare rows; DMA FIFO and ch3 accesses to an open bank
+    // simply precharge it first.
+    integer i;
+    localparam [1:0] ST_EMPTY = 0, ST_HIT = 1, ST_MISS = 2;
+    reg [1:0]  open_v = 0;
+    reg [11:0] open_row [0:1];
+    initial begin open_row[0] = 0; open_row[1] = 0; end
+    function [1:0] row_state(input [26:0] at);
+        row_state = (at[24] || !open_v[at[10]]) ? ST_EMPTY
+                  : keep_open(at) && open_row[at[10]] == at[22:11] ? ST_HIT : ST_MISS;
+    endfunction
+    function [1:0] bank_state(input [26:0] at);
+        bank_state = !at[24] && open_v[at[10]] ? ST_MISS : ST_EMPTY;
+    endfunction
+    reg [1:0] st1 = 0, st2 = 0, st3 = 0, stf = 0;
+    // OPEN_ROW: a forced refresh waits one edge in force_pend, so the clk1x
+    // refreshForce input does not reach the pin registers' decisions.
+    assign need_ref = ref_owed != 0 || force_pend || (OPEN_ROW == 0 && force_rise);
+    // row state of the access an idle edge would start (idle_addr's priority)
+    assign next_st = spu_first ? st3 : fifo_v ? stf : pend1 ? st1 : pend2 ? st2 : pend3 ? st3 : ST_EMPTY;
+    // OPEN_ROW: the idle edge's open-row READ (ch1 read, row already open)
+    // from registered state only. With ch1 chosen the row state is st1, so
+    // a HIT never takes the precharge branch; deciding the column address
+    // here keeps that branch's compare out of the a[] pin-register path
+    // (clk3x timing). Same pins and commands as deciding it in the branch.
+    wire open_hit1 = OPEN_ROW != 0 && !need_ref && !spu_first && !fifo_v && req1
+                     && st1 == ST_HIT && ch1_rnw;
+
+    // synthesis translate_off
+    initial if (OPEN_ROW != 0 && CAS_LATENCY != 3) $error("psx_sdram_ctrl: OPEN_ROW needs CAS_LATENCY 3 (registered request path)");
+    // synthesis translate_on
 
     // Read capture pipeline: a READ issued at edge e has beat 0 in dq_in
     // after e+CAS_LATENCY+1 and beat 1 one edge later; the word is complete
@@ -231,7 +297,6 @@ module psx_sdram_ctrl #(
     reg [7:0]  rd_line [0:4];
     reg [1:0]  rd_cnt [0:4];
     reg [15:0] low_half = 0;
-    integer i;
     initial for (i = 0; i < 5; i = i + 1) begin
         rd_kind[i] = 0; rd_index[i] = 0; rd_first[i] = 0; rd_line[i] = 0; rd_cnt[i] = 0;
     end
@@ -279,12 +344,16 @@ module psx_sdram_ctrl #(
     always @(posedge clk) begin
         reg took1, took2, start_ch1w, start_ch2, start_dmarp, start_ch3w, take_fifo;
         reg [3:0] chosen;
+        reg [26:0] sel_adr;
+        reg [1:0] sel_st;
+        reg [2:0] sel_kind;
         took1 = 0; took2 = 0; start_ch1w = 0; start_ch2 = 0; start_dmarp = 0; start_ch3w = 0; take_fifo = 0;
-        chosen = OP_IDLE;
+        chosen = OP_IDLE; sel_adr = 0; sel_st = ST_EMPTY; sel_kind = 0;
         if (SDRAM_EN) begin
             base_seen <= base_toggle;
             before_base <= after_base;
             force_d <= refreshForce;
+            init_q <= init;
             if (force_rise) force_pend <= 1;
 
             // ch3 requests become eligible one clk after capture.
@@ -340,9 +409,9 @@ module psx_sdram_ctrl #(
             end
 
             // --------------------------------------------------- accesses
-            if (init) begin
+            if (OPEN_ROW != 0 ? init_q : init) begin
                 ready <= 0; power_wait <= 0; power_done <= 0; init_step <= 0;
-                op <= OP_IDLE; rd_v <= 0; q_v <= 0; ch3_delay <= 0;
+                op <= OP_IDLE; rd_v <= 0; q_v <= 0; ch3_delay <= 0; open_v <= 0;
             end else if (!ready) begin
                 if (!power_done) begin
                     power_wait <= power_wait + 1'b1;
@@ -397,14 +466,21 @@ module psx_sdram_ctrl #(
                             addr <= fifo_adr; wdata <= fifo_data; wbe <= 4'b1111;
                             take_fifo = 1; chain <= chain + 1'b1;
                             step <= 2; op <= OP_WRITE;
-                        end else a <= {2'b00, 1'b1, addr[25], addr[9:2], 1'b1};
+                        end else a <= {2'b00, !keep_open(addr), addr[25], addr[9:2], 1'b1};
                     end
                     default: ;
                 endcase
             end else begin
                 // Idle: refresh, then dmafifo, ch1, ch2, ch3 (SPU_FIRST: ch3 right after refresh).
-                a <= idle_addr[22:10]; ba <= idle_addr[24:23]; ncs <= idle_addr[26];
-                if (ref_owed != 0 || force_pend || force_rise) begin
+                a <= open_hit1 ? column(ch1_a, 9'd0, 1'b0) : row_of(idle_addr); ba <= bank_of(idle_addr); ncs <= idle_addr[26];
+                if (OPEN_ROW != 0 && (need_ref ? open_v != 0 : next_st == ST_MISS)) begin
+                    // Close the open row(s) first; the access (or refresh) is
+                    // chosen again on the idle edge after tRP and then opens
+                    // its row as usual.
+                    cmd <= C_PRE; a[10] <= need_ref;
+                    if (need_ref) open_v <= 0; else open_v[idle_addr[10]] <= 0;
+                    op <= OP_PRE; step <= 1; last <= 1;
+                end else if (need_ref) begin
                     chosen = OP_REFRESH;
                     cmd <= C_REF;
                     if (force_pend || force_rise) begin
@@ -414,17 +490,20 @@ module psx_sdram_ctrl #(
                     end else ref_owed <= ref_owed - 1'b1 + (ref_timer == 0 && ref_owed != 4'd8);
                     last <= 8;
                 end else if (spu_first) begin
+                    sel_adr = ch3_a; sel_st = st3;
                     pend3 <= 0;
                     addr <= ch3_a; wdata <= LATE_START ? ch3_din_q : ch3_din; wbe <= LATE_START ? ch3_be_q : ch3_be;
                     cmd <= C_ACT;
                     if (LATE_START ? ch3_rnw_q : ch3_rnw) begin chosen = OP_READ1; kind <= K_CH3; last <= 11; end
                     else begin chosen = OP_WRITE; from_fifo <= 0; ch3_write <= 1; last <= 6; end
                 end else if (fifo_v) begin
+                    sel_adr = fifo_adr; sel_st = stf;
                     chosen = OP_WRITE;
                     addr <= fifo_adr; wdata <= fifo_data; wbe <= 4'b1111;
                     from_fifo <= 1; ch3_write <= 0; chain <= 0; take_fifo = 1; last <= 6;
                     cmd <= C_ACT;
                 end else if (req1) begin
+                    sel_adr = ch1_a; sel_st = st1; sel_kind = ch1_dma ? K_DMA : ch1_cache ? K_CACHE : K_CH1;
                     took1 = 1; pend1 <= 0;
                     addr <= ch1_a; cnt <= ch1_cntDMA;
                     cmd <= C_ACT;
@@ -438,6 +517,7 @@ module psx_sdram_ctrl #(
                         chosen = OP_READ1; kind <= K_CH1; last <= 11;
                     end
                 end else if (req2) begin
+                    sel_adr = ch2_a; sel_st = st2;
                     took2 = 1; pend2 <= 0;
                     addr <= ch2_a; wdata <= ch2_din; wbe <= ch2_be;
                     cmd <= C_ACT;
@@ -447,6 +527,7 @@ module psx_sdram_ctrl #(
                         start_ch2 = 1;                      // posted write
                     end
                 end else if (req3) begin
+                    sel_adr = ch3_a; sel_st = st3;
                     pend3 <= 0;
                     addr <= ch3_a; wdata <= LATE_START ? ch3_din_q : ch3_din; wbe <= LATE_START ? ch3_be_q : ch3_be;
                     cmd <= C_ACT;
@@ -454,6 +535,20 @@ module psx_sdram_ctrl #(
                     else begin chosen = OP_WRITE; from_fifo <= 0; ch3_write <= 1; last <= 6; end
                 end
                 if (chosen != OP_IDLE) begin op <= chosen; step <= 1; end
+                if (OPEN_ROW != 0 && chosen != OP_IDLE) begin
+                    if (chosen == OP_REFRESH) begin
+                    end else if (sel_st == ST_HIT) begin
+                        if (took1 && ch1_rnw) begin
+                            // CPU/DMA read: first READ now, the access goes on from step 3
+                            // (ch1 is the idle edge's choice, so ba already holds its bank)
+                            cmd <= C_READ; step <= 3;           // a: column(ch1_a) via open_hit1
+                            q_v <= 1; q_kind <= sel_kind; q_index <= 0;
+                            q_first <= ch1_a[3:2]; q_line <= ch1_a[11:4]; q_cnt <= ch1_cntDMA;
+                        end else cmd <= C_NOP;          // other accesses start at step 2 as usual
+                    end else begin
+                        if (keep_open(sel_adr)) begin open_v[sel_adr[10]] <= 1; open_row[sel_adr[10]] <= sel_adr[22:11]; end
+                    end
+                end
             end
 
             // DMA FIFO: pop the word taken (CL2), or keep the head register
@@ -463,14 +558,21 @@ module psx_sdram_ctrl #(
                 if (take_fifo) dmafifo_read <= 1;
             end else begin
                 if (take_fifo) head_v <= 0;
+                stf <= bank_state(head_adr);
                 if ((!head_v || take_fifo) && !dmafifo_empty && !dmafifo_read) begin
                     head_v <= 1; head_adr <= dmafifo_adr; head_data <= dmafifo_data; dmafifo_read <= 1;
+                    stf <= bank_state(dmafifo_adr);
                 end
             end
 
             // Requests not started this edge stay pending.
             if (after_base && ch1_req && !took1) begin pend1 <= 1; ch1_adr_q <= ch1_addr; end
             if (after_base && ch2_req && !took2) begin pend2 <= 1; ch2_adr_q <= ch2_addr; end
+            // Row states for the next idle edge (OPEN_ROW)
+            st1 <= row_state(after_base && ch1_req && !took1 ? ch1_addr : ch1_adr_q);
+            // A write that has to wait only checks its bank (no row compare).
+            st2 <= after_base && ch2_req && !took2 ? row_state(ch2_addr) : bank_state(ch2_adr_q);
+            st3 <= bank_state(ch3_adr_q);
 
             // ---------------------------------------- clk1x-facing outputs
             // Events wait for the next before_base edge; events of this very

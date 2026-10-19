@@ -14,9 +14,10 @@ function automatic integer vp_index(input [21:0] w);
     else if (w >= 22'h0E0000 && w < 22'h100000) vp_index = 32'h58000 + int'(w - 22'h0E0000); // frame 3, die 0 top
     else if (w >= 22'h200000 && w < 22'h204000) vp_index = 32'h78000 + int'(w - 22'h200000); // die 1 bottom
     else if (w >= 22'h3FC000)                   vp_index = 32'h7C000 + int'(w - 22'h3FC000); // die 1 top
+    else if (w >= 22'h27C000 && w < 22'h280000) vp_index = 32'h80000 + int'(w - 22'h27C000); // save buffer top
     else vp_index = -1;
 endfunction
-localparam integer VP_WORDS = 32'h80000;
+localparam integer VP_WORDS = 32'h84000;
 
 function automatic [15:0] vp_seed(input integer chip, input [21:0] w, input integer beat);
     reg [31:0] x;

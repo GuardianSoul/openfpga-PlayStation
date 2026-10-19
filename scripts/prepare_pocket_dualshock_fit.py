@@ -26,6 +26,8 @@ CPU_SHA='e238aa73e7ae5617e5686bf636b68eb7f453336d63f844eafdde34c12d38efba'
 SPU_SHA='6399255d10dcabc98068bac155c0124e1f49bbcd67843f46b2d52ac7cf51bd22'
 CPU_PRODUCT_SHA='e7fac3b0ebed127f8ff2f6b763419e6dbe92c84a54c94f1440470a57c95cdf65'
 SPU_QUEUE_SHA='169813eeab5a521bc897cc7a5c64923571a4fd52f2454ab49758ce27d11361be'
+# rtl/pocket/joypad_pad_table.vhd (prepare --pad-table, make test-joypad-pad-table)
+PAD_TABLE_SHA='2f845f92c56c82fde1d933c4889a89968628246009e384fb969c5b87c61951e6'
 
 def once(t,a,b):
 
@@ -72,7 +74,7 @@ def queue_text(source):
     return source[:m.start()]+new+source[m.end():]
 
 
-def prepare(project, *, sort_reread=False):
+def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=False, gpu_poly_diffmux=False):
     from prepare_divider_bank import prepare_project as divider
     from prepare_cd_side_slot import prepare_project as side
     from prepare_gte_mac_ram import prepare as mac
@@ -85,19 +87,36 @@ def prepare(project, *, sort_reread=False):
             ['git','check-ignore','--quiet',str(project/'dualshock-fit/manifest.json')],cwd=ROOT).returncode):
         raise ValueError('Ignored build project required')
     for name in ('db','incremental_db','output_files','dualshock-fit','divider-bank',
-                 'cd-side-slot','gte-mac-ram','gpu-release-watchdogs','cpu-execute-share','cpu-hold-margin'):
+                 'cd-side-slot','gte-mac-ram','gpu-release-watchdogs','cpu-execute-share','cpu-hold-margin','gpu-recip'):
         if (project/name).exists():raise ValueError('Fresh project required: '+name)
     if not json.loads((project/'manifest.json').read_text()).get('reset_only'):
         raise ValueError('Reset-only build required')
     qsf=project/'apf_top.qsf'
     selected=assignments(project,qsf.read_text())
     cache_paths={p for _,p in selected if p.name=='psx_spu_ch3_cache.sv'}
-    if len(cache_paths)!=1 or digest(next(iter(cache_paths)))!='1e65c93531ea81962f7eaf33d3ee5e0531629c754bfea41cb28999dd396e1911':
+    # b81de5f1: the same cache with the CHEAT port (off unless prepare --cheats)
+    if len(cache_paths)!=1 or digest(next(iter(cache_paths))) not in ('1e65c93531ea81962f7eaf33d3ee5e0531629c754bfea41cb28999dd396e1911',
+                                                                      'b81de5f149563ddd9f4ac1c7364e90bfe7be390214af1b8d7683718eeba965c2'):
         raise ValueError('Released rc8 slim SPU cache and free-slot profile required')
     def one(name):
         paths={p for _,p in selected if p.name==name}
         if len(paths)!=1:raise ValueError('Expected one selected '+name)
         return paths.pop()
+    def pad_digest():
+        # prepare --analog-setting selects a copy whose only change is the
+        # ANALOG_LEVEL default (true); check it as the reviewed pad.
+        names={p.name for _,p in selected}
+        if 'joypad_pad_table.vhd' in names:
+            # prepare --pad-table: the table pad with the replaced pad's
+            # STICK_DPAD/ANALOG_LEVEL defaults; checked with both at false.
+            text=one('joypad_pad_table.vhd').read_text()
+            text=re.sub(r'(STICK_DPAD|ANALOG_LEVEL) : boolean := true',r'\1 : boolean := false',text)
+            return PAD_TABLE_SHA if hashlib.sha256(text.encode()).hexdigest()==PAD_TABLE_SHA else None
+        if 'joypad_pad_dualshock_analog.vhd' in names and 'joypad_pad_dualshock.vhd' not in names:
+            text=one('joypad_pad_dualshock_analog.vhd').read_text()
+            if text.count('ANALOG_LEVEL : boolean := true')!=1: return None
+            return hashlib.sha256(text.replace('ANALOG_LEVEL : boolean := true','ANALOG_LEVEL : boolean := false').encode()).hexdigest()
+        return digest(one('joypad_pad_dualshock.vhd'))
     cpu,spu=one('cpu.vhd'),one('spu.vhd')
     cpu_text,spu_text=product_text(cpu.read_text()),queue_text(spu.read_text())
     if hashlib.sha256(cpu_text.encode()).hexdigest()!=CPU_PRODUCT_SHA or hashlib.sha256(spu_text.encode()).hexdigest()!=SPU_QUEUE_SHA:
@@ -107,12 +126,17 @@ def prepare(project, *, sort_reread=False):
     if analog_sha not in ('7ba041d832cb9209dfed45642caa2995dfb7fb6ff16d07a7859a6263e270d3e7','c329bb75dab0a24687d365aa1852333a52a462c619d610a5850dd9a6f7745a6a','81ee3571b73e1825701badf2459df8ef4f290b841419ac6bfcb3dbbeb0de00f9','ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033'):
         raise ValueError('Unreviewed analog transport')
     if ('psx_pocket_stick_map stick_map' not in core or not any(tag in core for tag in ('psx_pocket_analog pad_analog','psx_pocket_analog #(.PASS_CONFIG(1)')) or
-            digest(one('joypad_pad_dualshock.vhd'))!='18b893b42b224e17b9d2b3963a60d1e1d86436b488aaba3094da34ce5cb78ebc'):
+            # 83d3cc78: the same pad with the ANALOG_LEVEL generic (--analog-setting, 77d5f25)
+            pad_digest() not in (PAD_TABLE_SHA, '18b893b42b224e17b9d2b3963a60d1e1d86436b488aaba3094da34ce5cb78ebc',
+                                 '83d3cc782c51427806a58793f1168396274e9239ddec471fe4ace34fd031045e',
+                                 # 8cbbc514: 83d3cc78 with a name dropped from one comment (72cefc8)
+                                 '8cbbc514d567d3ac59e34a6cad97868bcac24d26d597abef501416302cca35ad')):
         raise ValueError('Current DualShock and stick-settings profile required')
     atomic='psx_pocket_analog #(.PASS_CONFIG(1)' in core
-    config_bits=15 if 'wire [14:0] pad_stick_config_in' in core else 13 if 'wire [12:0] pad_stick_config_in' in core else 4 if 'wire [3:0] pad_stick_config_in' in core else 0
-    # 15 bits: the A/B/X/Y stick list (Claude, 2026-10-17) on the CONFIG_W transport.
-    if atomic and ((config_bits==15 and analog_sha!='ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033') or
+    config_bits=16 if 'wire [15:0] pad_stick_config_in' in core else 15 if 'wire [14:0] pad_stick_config_in' in core else 13 if 'wire [12:0] pad_stick_config_in' in core else 4 if 'wire [3:0] pad_stick_config_in' in core else 0
+    # 15 bits: the A/B/X/Y stick list (Claude, 2026-10-17) on the CONFIG_W transport;
+    # 16: SELECT + D-Pad widened to 3 bits for its Face Buttons option (same transport).
+    if atomic and ((config_bits in (15,16) and analog_sha!='ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033') or
                    (config_bits==13 and analog_sha not in ('81ee3571b73e1825701badf2459df8ef4f290b841419ac6bfcb3dbbeb0de00f9','ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033')) or
                    (config_bits==4 and analog_sha!='c329bb75dab0a24687d365aa1852333a52a462c619d610a5850dd9a6f7745a6a') or config_bits==0):
         raise ValueError('Input-settings packet/transport version mismatch')
@@ -158,6 +182,26 @@ def prepare(project, *, sort_reread=False):
             original_sha256='f169f05c98a8d714c881568a44cdc0b7c2d6eb864808510f6c9c9f2af8cf5d90',
             sha256=digest(sort_source),extra_GPU_clocks_per_triangle=4,
             preparer_sha256=digest(Path(__file__).with_name('prepare_gpu_sort_reread.py')))
+    if gpu_recip:
+        # After the watchdog and sorted-reread sources: the final gpu, poly and line.
+        from prepare_gpu_recip import apply_project
+        selected_now=assignments(project,qsf.read_text())
+        def final(name):
+            paths={p for _,p in selected_now if p.name==name}
+            if len(paths)!=1:raise ValueError('Expected one selected '+name)
+            return paths.pop()
+        report['overlays']['GPU_recip']=dict(apply_project(project,final),
+            preparer_sha256=digest(Path(__file__).with_name('prepare_gpu_recip.py')))
+    if gpu_poly_stepadd:
+        if not gpu_recip:raise ValueError('--gpu-poly-stepadd needs --gpu-recip')
+        from prepare_gpu_poly_stepadd import apply_project as stepadd
+        report['overlays']['GPU_poly_stepadd']=dict(stepadd(project),
+            preparer_sha256=digest(Path(__file__).with_name('prepare_gpu_poly_stepadd.py')))
+    if gpu_poly_diffmux:
+        if not gpu_recip:raise ValueError('--gpu-poly-diffmux needs --gpu-recip')
+        from prepare_gpu_poly_diffmux import apply_project as diffmux
+        report['overlays']['GPU_poly_diffmux']=dict(diffmux(project),
+            preparer_sha256=digest(Path(__file__).with_name('prepare_gpu_poly_diffmux.py')))
     report['helper_sha256']=digest(Path(__file__))
     report['inputs']=inputs(project)
     report['project_sha256']={ext:digest(project/('apf_top'+ext))for ext in ['.qsf','.qpf']}
@@ -172,8 +216,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('project',type=Path)
     parser.add_argument('--sort-reread',action='store_true',help='Sorted vertex RAM reread: +4 GPU clocks per triangle')
+    parser.add_argument('--gpu-recip',action='store_true',help='GPU gradients through one reciprocal and a multiply, three 11-bit dividers (prepare_gpu_recip.py; same pixels, earlier gradients)')
+    parser.add_argument('--gpu-poly-stepadd',action='store_true',help='gpu_poly base/work colour and texture steps through one adder per channel (prepare_gpu_poly_stepadd.py; needs --gpu-recip; cycle-identical)')
+    parser.add_argument('--gpu-poly-diffmux',action='store_true',help='gpu_poly colour/texture differences subtracted after the muldiv input mux, no difference registers (prepare_gpu_poly_diffmux.py; needs --gpu-recip; cycle-identical)')
     args=parser.parse_args()
-    print(json.dumps(prepare(args.project,sort_reread=args.sort_reread),indent=2))
+    print(json.dumps(prepare(args.project,sort_reread=args.sort_reread,gpu_recip=args.gpu_recip,
+                             gpu_poly_stepadd=args.gpu_poly_stepadd,gpu_poly_diffmux=args.gpu_poly_diffmux),indent=2))
 
 
 if __name__=='__main__':main()

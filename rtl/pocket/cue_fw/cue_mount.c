@@ -34,6 +34,12 @@
 // to the playlist, # comments) is a multi-disc game with one save: its
 // first entry is mounted, and the menu's Disc k is entry k. Entries are
 // cues or plain images, opened into CUE2_SLOT.
+//
+// Cheats (prepare --cheats): a game JSON's slot 98 holds a GameShark code
+// list as text (the plugin and make_pocket_instances.py put it there). Its
+// codes are read at launch and, while the Cheats setting is on, applied to
+// main RAM once per frame through psx_cue_mount's main RAM port. Builds
+// without the port have no slot 98, so the list stays empty.
 
 typedef unsigned int u32;
 typedef unsigned char u8;
@@ -49,7 +55,13 @@ enum { W_CMD, W_IDLEN, W_OFF, W_DONE, W_UPD, W_FLAGS, W_DISC, W_CLR };
 // IO reads
 // R_STATUS: status in bits 7:0, the menu's Disc in 9:8, the stream's slot
 // in 18:10 and length in 30:19, bit 31 set when LibCrypt is on (ST_LC)
-enum { R_STATUS, R_UOFF };
+enum { R_STATUS, R_UOFF, R_CHEAT };
+// R_CHEAT (prepare --cheats): the last main RAM read in bits 15:0, the
+// Cheats setting in bit 29, a toggle per frame in bit 30, an access running
+// in bit 31
+#define CH_ON   (1u << 29)
+#define CH_BUSY 0x80000000u
+#define CLR_CHEAT 0x80000000u   // W_CLR: start the main RAM access W_IDLEN and W_OFF describe
 #define ST_ERR   7u
 #define ST_CMD   8u      // a command is running
 #define ST_U     16u     // the stream's read is waiting
@@ -321,12 +333,14 @@ NOINLINE static u32 open(u32 k) {
 }
 
 // ---------------- track table (make_pocket_instances.py track_table) ----------------
-static u32 bcd(u32 v) { u32 t = 0; while (v >= 10) { v -= 10; t++; } return t << 4 | v; }
-static u32 msf(u32 v) {   // bcd(min) << 8 | bcd(sec) of v sectors
-    u32 m = 0, s = 0;
-    while (v >= 4500) { v -= 4500; m++; }
-    while (v >= 75) { v -= 75; s++; }
-    return bcd(m) << 8 | bcd(s);
+// Divisions by constants as multiplies (exact for v < 1024 and r < 4500):
+// SERV's are slow and the stream waits for the table.
+// v / unit by subtraction (no divide on RV32I), v keeps the remainder
+NOINLINE static u32 cnt(u32 *v, u32 unit) { u32 n = 0; while (*v >= unit) { *v -= unit; n++; } return n; }
+static u32 bcd(u32 v) { u32 t = cnt(&v, 10); return t << 4 | v; }
+static u32 msf(u32 v) {   // bcd(min) << 8 | bcd(sec) of v sectors, one BCD digit per count
+    u32 r = cnt(&v, 45000) << 12; r |= cnt(&v, 4500) << 8;
+    return r | cnt(&v, 750) << 4 | cnt(&v, 75);
 }
 NOINLINE static u32 table_word(u32 w) {
     if (w == 0) return bcd(ntracks) << 8 | ntracks;
@@ -353,7 +367,12 @@ static u32 m3u_n, m3u_slot, m3u_ent[4];  // playlist entries: offset | length <<
 
 static int is_disc(u32 id) { return id == 101 || id == 201 || id == 301 || id == 401; }
 
-static u32 retry;   // a launch mount that fails is tried once more before the stream (and the BIOS) sees no disc
+// Launch tries left after this one: a launch mount that fails is tried up
+// to three times, a pause before each retry, before the stream (and the
+// BIOS) sees no disc. retry_wait (start.S, at 0x10 so the bench can shorten
+// it) is the pause in loop turns.
+static u32 retry;
+extern const u32 retry_wait;
 
 #define fail(mode) fail_at(mode, __LINE__)
 NOINLINE static void fail_at(int mode, u32 line) {
@@ -370,7 +389,14 @@ static void cue(u32 slot, u32 size, int mode);
 // cue in CUE_SLOT and its files, so the cue is read as if it had been picked.
 static void game_json(void) {
     // A track table is 1,600 bytes; a 0.5.2 JSON has track 2's .bin there.
-    if ((!cmd(K_READ, TABLE_SLOT, 0, 4) && cmd(K_READ, TABLE_SLOT, 1600, 4)) || cmd(K_READ, CUE_SLOT, 0, 4)) { setf(flags | F_ALLC); return; }
+    // No cue readable: a cold card's failed read is tried again; after the
+    // last try it is left to APF.
+    if (!cmd(K_READ, TABLE_SLOT, 0, 4) && cmd(K_READ, TABLE_SLOT, 1600, 4)) goto apf;
+    if (cmd(K_READ, CUE_SLOT, 0, 4)) {
+        if (retry) { fail(M_LAUNCH); return; }
+    apf:
+        setf((flags & ~F_FAILED) | F_ALLC); return;
+    }
     bin = 0; open_file = NONE;
     json = 1;
     cue(CUE_SLOT, probe(CUE_SLOT, 1, 13), M_LAUNCH);
@@ -647,15 +673,108 @@ static void serve(void) {
 
 static u32 menu_now(void) { return IO[R_STATUS] >> 8 & 3; }
 
+// ---------------- cheats ----------------
+// GameShark codes: type << 24 | address, and the value.
+#define CHT_SLOT 98u
+#define MAXC 32u
+static u32 ch_a[MAXC] BIG;
+static unsigned short ch_v[MAXC] BIG;
+static u32 ncheat, vbl_seen;
+
+// Codes from the text in CHT_SLOT: an 8-digit hex word followed by a 4-digit
+// one ("80012345 0063", libretro's "80012345+0063"); lines starting with #
+// or ; are comments. A libretro .cht keeps a cheat's codes only when its
+// "cheatN_enable = true" line follows them (a line naming "enable" without
+// "true" drops the codes since the previous such line); a plain list has no
+// such lines and keeps every code.
+static int hexval(int x) { x = upper(x); return digit(x) ? x - '0' : x >= 'A' && x <= 'F' ? x - 'A' + 10 : -1; }
+NOINLINE static void load_cheats(void) {
+    ncheat = 0;
+    if (cmd(K_READ, CHT_SLOT, 0, 4)) return;
+    pick = CHT_SLOT; cue_size = probe(CHT_SLOT, 1, 14);
+    cbase = clen = cpos = 0;
+    u32 run = 0, val = 0, a8 = 0, have = 0, last4 = 0, en = 0, mark = 0;
+    int line = 1;
+    for (;;) {
+        if (IO[R_STATUS] & ST_U) serve();   // the game may already read the disc
+        int x = getb(), h = x < 0 ? -1 : hexval(x);
+        if (line && (x == '#' || x == ';')) { while (x >= 0 && !eol(x)) x = getb(); }
+        line = eol(x);
+        last4 = last4 << 8 | (x | 0x20);
+        if (last4 == 0x61626c65) en |= 1;        // "able"
+        if (last4 == 0x74727565) en |= 2;        // "true"
+        if (line) { if (en & 1) { if (!(en & 2)) ncheat = mark; mark = ncheat; } en = 0; }
+        if (h >= 0) { val = val << 4 | h; run++; continue; }
+        if (run == 8) { a8 = val; have = 1; }
+        else if (run == 4 && have && ncheat < MAXC) { ch_a[ncheat] = a8; ch_v[ncheat++] = val; have = 0; }
+        else if (run) have = 0;
+        run = val = 0;
+        if (x < 0) break;
+    }
+}
+
+// One main RAM access (byte, else halfword); a read's value.
+NOINLINE static u32 ram(u32 a, u32 rnw, u32 byte, u32 v) {
+    IO[W_IDLEN] = (a & 0x1ff) | ((a >> 9 & 0xfff) | rnw << 12) << 16;
+    IO[W_OFF] = (v & 0xffff) | byte << 16;
+    IO[W_CLR] = CLR_CHEAT;
+    u32 q;
+    while ((q = IO[R_CHEAT]) & CH_BUSY) ;
+    q &= 0xffff;
+    return byte ? q >> ((a & 1) << 3) & 0xff : q;
+}
+
+// One frame of codes: writes (80 16-bit, 30 8-bit), increments (10, 11
+// 16-bit; 20, 21 8-bit), conditions on the next code (D0-D3 16-bit, E0-E3
+// 8-bit: equal, not equal, less, greater) and the serial 50 code. Others
+// are ignored. The stream's reads go first.
+NOINLINE static void apply_cheats(void) {
+    for (u32 i = 0; i < ncheat; i++) {
+        if (IO[R_STATUS] & ST_U) serve();
+        u32 a = ch_a[i], t = a >> 24, v = ch_v[i], byte = 0;
+        a &= 0x1fffff;
+        switch (t) {
+        case 0x30: byte = 1; /* fall through */
+        case 0x80: ram(a, 0, byte, v); break;
+        case 0x20: case 0x21: byte = 1; /* fall through */
+        case 0x10: case 0x11: {
+            u32 x = ram(a, 1, byte, 0);
+            ram(a, 0, byte, t & 1 ? x - v : x + v);
+            break;
+        }
+        case 0xE0: case 0xE1: case 0xE2: case 0xE3: byte = 1; v &= 0xff; /* fall through */
+        case 0xD0: case 0xD1: case 0xD2: case 0xD3: {
+            u32 x = ram(a, 1, byte, 0), k = t & 3;
+            if (!(k == 0 ? x == v : k == 1 ? x != v : k == 2 ? x < v : x > v)) i++;
+            break;
+        }
+        case 0x50: {
+            if (i + 1 >= ncheat) break;
+            u32 n = a >> 8 & 0xff, step = a & 0xff, b = ch_a[++i], w = ch_v[i];
+            byte = b >> 24 == 0x30;
+            b &= 0x1fffff;
+            for (u32 k = 0; k < n; k++, b += step, w += v) ram(b, 0, byte, w);
+            break;
+        }
+        }
+    }
+}
+
 void main(void) {
-    nfiles = ntracks = total = dirlen = cue_size = bin = cur = 0;
+    nfiles = ntracks = total = dirlen = cue_size = bin = cur = ncheat = 0;
     cbase = clen = cpos = 0;
     open_file = NONE; pick = DISC_SLOT;
     setf(F_IDLE | F_ACCEPT);
     for (;;) {
         u32 s = IO[R_STATUS];
         if (s & ST_U) { serve(); continue; }
-        if (!(s & (ST_BOOT | ST_UPD | ST_MENU))) continue;
+        if (!(s & (ST_BOOT | ST_UPD | ST_MENU))) {
+            if (ncheat) {
+                u32 cs = IO[R_CHEAT], v = cs >> 30 & 1;
+                if (v != vbl_seen) { vbl_seen = v; if (cs & CH_ON) apply_cheats(); }
+            }
+            continue;
+        }
         // A pick or a menu Disc: stop the stream's reads (serve one that
         // slipped in).
         setf(flags & ~(F_IDLE | F_ACCEPT));
@@ -663,14 +782,19 @@ void main(void) {
         u32 m = menu_now();
         if (s & ST_BOOT) {
             // A cold first launch (after a restart or card writes) can fail a
-            // read; the second try reads cached data.
+            // read; a later try reads cached data.
             IO[W_CLR] = ST_BOOT | CLR_MENU;
             setf(flags & ~F_FAILED);
-            retry = 1; mount(LAUNCH_SLOT);
-            retry = 0; if (flags & F_FAILED) mount(LAUNCH_SLOT);
+            for (retry = 2;; retry--) {
+                mount(LAUNCH_SLOT);
+                if (!(flags & F_FAILED) || !retry) break;
+                for (u32 n = retry_wait; n; n--) __asm__ volatile("");
+            }
         }
-        else if (s & ST_UPD) { IO[W_CLR] = ST_UPD | CLR_MENU; mount(DISC_SLOT); }
+        else if (s & ST_UPD) { IO[W_CLR] = ST_UPD | CLR_MENU; ncheat = 0; mount(DISC_SLOT); }
         else menu_disc(m + 1);
         setf((flags & ~F_DISC) | m << 8 | F_IDLE | (flags & F_MOUNTED ? 0 : F_ACCEPT));
+        // The launched game's cheat list, read while the stream may run.
+        if (s & ST_BOOT) load_cheats();
     }
 }

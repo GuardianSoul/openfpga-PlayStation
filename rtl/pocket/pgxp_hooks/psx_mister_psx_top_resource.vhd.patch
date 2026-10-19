@@ -1,0 +1,49 @@
+--- a/psx_mister_psx_top_resource.vhd
++++ b/psx_mister_psx_top_resource.vhd
+@@ -6,6 +6,22 @@
+ use work.pJoypad.all;
+ entity psx_mister_psx_top_resource is
+ port (
++      pgxp_requested : in std_logic;
++      pgxp_enabled : out std_logic;
++      pgxp_clear : out std_logic;
++      pgxp_cpu_read : out std_logic;
++      pgxp_gpu_read : out std_logic;
++      pgxp_cpu_tag : out std_logic_vector(7 downto 0);
++      pgxp_store_meta : out std_logic_vector(9 downto 0);
++      pgxp_cpu_valid : in std_logic;
++      pgxp_cpu_ready : out std_logic;
++      pgxp_return_tag : in std_logic_vector(7 downto 0);
++      pgxp_cpu_record : in std_logic_vector(63 downto 0);
++      pgxp_gpu_valid : in std_logic;
++      pgxp_gpu_ready : out std_logic;
++      pgxp_gpu_record : in std_logic_vector(63 downto 0);
++      pgxp_memory_idle : in std_logic;
++      pgxp_initializing : in std_logic;
+     clk1x : in std_logic;
+     clk2x : in std_logic;
+     clk3x : in std_logic;
+@@ -282,6 +298,23 @@
+     joypad4.Analog2Y <= (others=>'0');
+     component_core : entity work.psx_top
+     port map (
++      pgxp_requested=>pgxp_requested,
++      pgxp_enabled=>pgxp_enabled,
++      pgxp_clear=>pgxp_clear,
++      pgxp_cpu_read=>pgxp_cpu_read,
++      pgxp_gpu_read=>pgxp_gpu_read,
++      pgxp_cpu_tag=>pgxp_cpu_tag,
++      pgxp_store_meta=>pgxp_store_meta,
++      pgxp_cpu_valid=>pgxp_cpu_valid,
++      pgxp_cpu_ready=>pgxp_cpu_ready,
++      pgxp_return_tag=>pgxp_return_tag,
++      pgxp_cpu_record=>pgxp_cpu_record,
++      pgxp_gpu_valid=>pgxp_gpu_valid,
++      pgxp_gpu_ready=>pgxp_gpu_ready,
++      pgxp_gpu_record=>pgxp_gpu_record,
++      pgxp_memory_idle=>pgxp_memory_idle,
++      pgxp_initializing=>pgxp_initializing,
++
+         clk1x => clk1x,
+         clk2x => clk2x,
+         clk3x => clk3x,

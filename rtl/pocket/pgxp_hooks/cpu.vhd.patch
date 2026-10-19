@@ -1,0 +1,381 @@
+--- a/cpu.vhd
++++ b/cpu.vhd
+@@ -6,10 +6,17 @@
+ library mem;
+ 
+ use work.pexport.all;
++use work.psx_pgxp_pkg.all;
+ 
+ entity cpu is
+    port 
+    (
++      pgxp_enable          : in std_logic := '0';
++      pgxp_clear           : in std_logic := '0';
++      pgxp_mem_meta        : in pgxp_meta := PGXP_NONE;
++      pgxp_gte_read_meta   : in pgxp_meta := PGXP_NONE;
++      pgxp_mem_write_meta  : out pgxp_meta := PGXP_NONE;
++      pgxp_gte_write_meta  : out pgxp_meta := PGXP_NONE;
+       clk1x                 : in  std_logic;
+       clk2x                 : in  std_logic;
+       clk3x                 : in  std_logic;
+@@ -119,6 +126,15 @@
+    end function;
+ 
+      
++   signal pgxp_regs1_q,pgxp_regs2_q,pgxp_regs_data : pgxp_meta;
++   signal pgxp_regs_valid : std_logic_vector(31 downto 0) := (others=>'0');
++   signal pgxp_decode1,pgxp_decode2,pgxp_value1,pgxp_value2 : pgxp_meta := PGXP_NONE;
++   signal pgxp_result,pgxp_exe_result,pgxp_store_q,pgxp_exe_store : pgxp_meta := PGXP_NONE;
++   signal pgxp_wb,pgxp_done,pgxp_late,pgxp_late_old,pgxp_execute_gte : pgxp_meta := PGXP_NONE;
++   signal pgxp_scratch_q,pgxp_scratch_read,pgxp_scratch_data,pgxp_scratch_forward : pgxp_meta;
++   signal pgxp_scratch_count : unsigned(8 downto 0) := (others=>'0');
++   signal pgxp_scratch_write_address,pgxp_scratch_read_address,pgxp_scratch_forward_address : std_logic_vector(7 downto 0);
++   signal pgxp_scratch_wren,pgxp_scratch_forward_valid : std_logic := '0';
+    -- register file
+    signal regs_address_a               : std_logic_vector(4 downto 0);
+    signal regs_data_a                  : std_logic_vector(31 downto 0);
+@@ -595,6 +611,27 @@
+                      std_logic_vector(writebackTarget);
+    
+    
++   pgxp_mem_write_meta <= pgxp_store_q when pgxp_enable='1' else PGXP_NONE;
++   pgxp_regs_data <= PGXP_NONE when ss_regs_load='1' or pgxp_enable='0' else
++                     pgxp_late when lateReadWrite='1' else pgxp_wb;
++   g_pgxp_regs : for k in 0 to 1 generate
++      signal q : pgxp_meta;
++      signal rd : std_logic_vector(4 downto 0);
++   begin
++      rd<=regs1_address_b when k=0 else regs2_address_b;
++      iram : entity mem.RamMLAB generic map(width=>10,widthad=>5)
++         port map(inclock=>clk1x,wren=>regs_wren_a,data=>pgxp_regs_data,
++                  wraddress=>regs_address_a,rdaddress=>rd,q=>q);
++      g_first : if k=0 generate pgxp_regs1_q<=q; end generate;
++      g_second : if k=1 generate pgxp_regs2_q<=q; end generate;
++   end generate;
++   process(clk1x) begin
++      if rising_edge(clk1x) then
++         if reset='1' or pgxp_enable='0' or pgxp_clear='1' then pgxp_regs_valid<=(others=>'0');
++         elsif regs_wren_a='1' and unsigned(regs_address_a)/=0 then pgxp_regs_valid(to_integer(unsigned(regs_address_a)))<='1'; end if;
++      end if;
++   end process;
++
+    regs1_address_b <= std_logic_vector(decSource1);
+    regs2_address_b <= std_logic_vector(decSource2);
+    
+@@ -1045,7 +1082,9 @@
+                   decodeSource1    <= (others => '0');
+                   decodeSource2    <= (others => '0');
+                   decodeValue1     <= (others => '0');
++                  pgxp_decode1<=PGXP_NONE;
+                   decodeValue2     <= (others => '0');
++                  pgxp_decode2<=PGXP_NONE;
+                   decodeOP         <= (others => '0');
+                   decodeFunct      <= (others => '0');
+                   decodeShamt      <= (others => '0');
+@@ -1062,7 +1101,9 @@
+                   opcode1 <= opcodeCacheMuxed;
+                   
+                   decodeValue1     <= unsigned(regs1_q_b);
++                  pgxp_decode1<=PGXP_NONE; if pgxp_regs_valid(to_integer(decSource1))='1' then pgxp_decode1<=pgxp_regs1_q; end if;
+                   decodeValue2     <= unsigned(regs2_q_b);
++                  pgxp_decode2<=PGXP_NONE; if pgxp_regs_valid(to_integer(decSource2))='1' then pgxp_decode2<=pgxp_regs2_q; end if;
+    
+                   decodeImmData    <= decImmData;   
+                   decodeJumpTarget <= decJumpTarget;
+@@ -1101,6 +1142,10 @@
+             end if;
+             
+          end if;
++         if reset='1' or pgxp_enable='0' or pgxp_clear='1' then
++            pgxp_decode1<=PGXP_NONE;
++            pgxp_decode2<=PGXP_NONE;
++         end if;
+       end if;
+    end process;
+    
+@@ -1128,12 +1173,28 @@
+       end if;
+       
+    end process;
++   process(all)
++   begin
++   
++      pgxp_value1 <= pgxp_decode1;
++      if    (decodeSource1 > 0 and resultTarget    = decodeSource1 and resultWriteEnable    = '1' and execute_lastreadCOP = '0') then pgxp_value1 <= pgxp_result;
++      elsif (decodeSource1 = lateReadTarget and lateReadBypass = '1' and blockLoadforward = '0' )                                then pgxp_value1 <= pgxp_late;
++      elsif (decodeSource1 > 0 and writebackTarget = decodeSource1 and writebackWriteEnable = '1' and blockLoadforward = '0')    then pgxp_value1 <= pgxp_wb;
++      elsif (decodeSource1 > 0 and writeDoneTarget = decodeSource1 and writeDoneWriteEnable = '1')                               then pgxp_value1 <= pgxp_done;
++      end if;
++      
++      pgxp_value2 <= pgxp_decode2;
++      if    (decodeSource2 > 0 and resultTarget    = decodeSource2 and resultWriteEnable    = '1' and execute_lastreadCOP = '0') then pgxp_value2 <= pgxp_result;
++      elsif (decodeSource2 = lateReadTarget and lateReadBypass = '1' and blockLoadforward = '0' )                                then pgxp_value2 <= pgxp_late;
++      elsif (decodeSource2 > 0 and writebackTarget = decodeSource2 and writebackWriteEnable = '1' and blockLoadforward = '0'   ) then pgxp_value2 <= pgxp_wb;
++      elsif (decodeSource2 > 0 and writeDoneTarget = decodeSource2 and writeDoneWriteEnable = '1')                               then pgxp_value2 <= pgxp_done;
++      end if;
++      
++   end process;
+    
+    EXEBreakpoint <= '1' when ((cop0_DCIC(31 downto 29) = "111" and cop0_DCIC(24 downto 23) = "11") and (((pcOld1 xor cop0_BPC) and cop0_BPCM) = x"00000000")) else '0';
+ 
+-   process (decodeImmData, decodeTarget, decodeJumpTarget, decodeSource1, decodeSource2, decodeValue1, decodeValue2, decodeOP, decodeFunct, decodeShamt, decodeRD, exception, stall3, stall, value1, value2, pcOld0, resultData, executeStalltype,
+-            cop0_BPC, cop0_BDA, cop0_JUMPDEST, cop0_DCIC, cop0_BADVADDR, cop0_BDAM, cop0_BPCM, cop0_SR, cop0_CAUSE, cop0_EPC, cop0_PRID, PC, hi, lo, hiloWait, 
+-            opcode1, gte_readAddr, decode_gte_readAddr, gte_readData, gte_busy, execute_gte_cmdEna, ce, execute_gte_readAddr, EXEBreakpoint)
++   process(all)
+       variable calcResult   : unsigned(31 downto 0);
+       variable calcMemAddr  : unsigned(31 downto 0);
+       variable executeShamt : unsigned(4 downto 0) := (others => '0');
+@@ -1148,6 +1209,7 @@
+       exceptionNew3           <= '0';
+       stallNew3               <= stall3;
+       EXEresultData           <= resultData;
++      pgxp_exe_result<=pgxp_execute(opcode1,pgxp_value1,pgxp_value2);
+       PCbranch                <= pcOld0;
+       EXEresultTarget         <= decodeTarget;
+       EXEresultWriteEnable    <= '0';          
+@@ -1164,6 +1226,7 @@
+       if value1(31) /= sharedRight(31) then sharedLess := value1(31); end if;
+       calcMemAddr             := sharedSum(31 downto 0);
+       EXEMemAddr              <= calcMemAddr;
++      pgxp_exe_store<=pgxp_store(decodeOP,calcMemAddr(1 downto 0),pgxp_value2);
+       
+       EXEMemWriteEnable       <= '0';
+       EXEMemWriteData         <= value2;
+@@ -1553,7 +1616,7 @@
+                      case (decodeSource1(3 downto 0)) is
+                         when x"0" => --mfcn
+                            EXEresultWriteEnable <= '1';
+-                           EXEresultData        <= gte_readData;
++                           EXEresultData        <= gte_readData; pgxp_exe_result<=pgxp_gte_read_meta;
+                            EXElastreadCOP       <= '1';
+                            if (gte_busy = '1' or gte_cmdEna = '1' or execute_gte_cmdEna = '1' or gte_writeEna = '1') then --gte_cmdEna not needed as will be busy on new request anyway?
+                               stallNew3    <= '1';
+@@ -1564,7 +1627,7 @@
+                         
+                         when x"2" => --cfcn
+                            EXEresultWriteEnable <= '1';
+-                           EXEresultData        <= gte_readData;
++                           EXEresultData        <= gte_readData; pgxp_exe_result<=pgxp_gte_read_meta;
+                            EXElastreadCOP       <= '1';
+                            if (gte_busy = '1' or gte_cmdEna = '1' or execute_gte_cmdEna = '1' or gte_writeEna = '1') then --gte_cmdEna not needed as will be busy on new request anyway?
+                               stallNew3    <= '1';
+@@ -1733,7 +1796,7 @@
+                   exceptionCode_3 <= x"B";
+                else
+                   EXEMemWriteEnable <= '1';
+-                  EXEMemWriteData   <= gte_readData;
++                  EXEMemWriteData   <= gte_readData; pgxp_exe_store<=pgxp_gte_read_meta;
+                   if (gte_busy = '1' or execute_gte_cmdEna = '1' or gte_writeEna = '1') then
+                      stallNew3    <= '1';
+                      EXEstalltype <= EXESTALLTYPE_GTE;
+@@ -1889,8 +1952,8 @@
+             
+             -- GTE
+             if (executeStalltype = EXESTALLTYPE_GTE and gte_readEna = '1') then
+-               resultData          <= gte_readData;
+-               executeMemWriteData <= gte_readData;
++               resultData          <= gte_readData; pgxp_result<=pgxp_gte_read_meta;
++               executeMemWriteData <= gte_readData; pgxp_store_q<=pgxp_gte_read_meta;
+                stall3              <= '0';
+                executeStalltype    <= EXESTALLTYPE_NONE;
+             end if;
+@@ -1930,13 +1993,13 @@
+                   -- from calculation     
+                   resultWriteEnable             <= EXEresultWriteEnable;
+                         
+-                  resultData                    <= EXEresultData;    
++                  resultData                    <= EXEresultData; pgxp_result<=pgxp_exe_result;    
+                   resultTarget                  <= EXEresultTarget;
+                         
+                   executeBranchdelaySlot        <= EXEBranchdelaySlot;
+                   executeBranchTaken            <= EXEBranchTaken;       
+       
+-                  executeMemWriteData           <= EXEMemWriteData;             
++                  executeMemWriteData           <= EXEMemWriteData; pgxp_store_q<=pgxp_exe_store;             
+                   executeMemWriteMask           <= EXEMemWriteMask;             
+                   executeMemWriteAddr           <= EXEMemAddr(31 downto 2) & "00";             
+                   executeMemWriteEnable         <= EXEMemWriteEnable;  
+@@ -1955,7 +2018,7 @@
+                   executeStalltype              <= EXEstalltype; 
+ 
+                   execute_gte_writeAddr         <= EXEgte_writeAddr;
+-                  execute_gte_writeData         <= EXEgte_writeData;
++                  execute_gte_writeData         <= EXEgte_writeData; pgxp_execute_gte<=pgxp_value2;
+                   execute_gte_writeEna          <= EXEgte_writeEna;
+ 
+                   execute_gte_cmdData           <= EXEgte_cmdData;
+@@ -2060,6 +2123,11 @@
+ 
+          end if;
+          
++         if reset='1' or pgxp_enable='0' or pgxp_clear='1' then
++            pgxp_result<=PGXP_NONE;
++            pgxp_store_q<=PGXP_NONE;
++            pgxp_execute_gte<=PGXP_NONE;
++         end if;
+       end if;
+    end process;
+    
+@@ -2101,6 +2169,34 @@
+    end generate; 
+    
+    scratchpad_dataread <= unsigned(scratchpad_q_b);
++
++   pgxp_scratch_write_address<=std_logic_vector(pgxp_scratch_count(7 downto 0)) when pgxp_scratch_count(8)='0' else std_logic_vector(executeMemWriteAddr(9 downto 2));
++   pgxp_scratch_read_address<=std_logic_vector(EXEMemAddr(9 downto 2)) when stall=0 else std_logic_vector(executeReadAddress(9 downto 2));
++   pgxp_scratch_wren<='1' when pgxp_scratch_count(8)='0' or scratchpad_wren_a/="0000" else '0';
++   pgxp_scratch_read<=pgxp_scratch_forward when pgxp_scratch_forward_valid='1' and pgxp_scratch_forward_address=std_logic_vector(executeReadAddress(9 downto 2)) else pgxp_scratch_q;
++   process(all) variable v:pgxp_meta; begin
++      v:=pgxp_scratch_read;
++      if scratchpad_wren_a(1 downto 0)/="00" then v(8):=pgxp_store_q(8);v(3 downto 0):=pgxp_store_q(3 downto 0);end if;
++      if scratchpad_wren_a(3 downto 2)/="00" then v(9):=pgxp_store_q(9);v(7 downto 4):=pgxp_store_q(7 downto 4);end if;
++      if pgxp_scratch_count(8)='0' or pgxp_enable='0' then v:=PGXP_NONE;end if;
++      pgxp_scratch_data<=v;
++   end process;
++   pgxp_scratch_ram: entity mem.psx_m10k_sdp generic map(WIDTH=>10,WIDTHAD=>8)
++      port map(wrclock=>clk1x,rdclock=>clk1x,wren=>pgxp_scratch_wren,
++         wraddress=>pgxp_scratch_write_address,data=>pgxp_scratch_data,
++         rdaddress=>pgxp_scratch_read_address,q=>pgxp_scratch_q);
++   process(clk1x)begin if rising_edge(clk1x)then
++      if reset='1' or pgxp_clear='1' then
++         pgxp_scratch_count<=(others=>'0');pgxp_scratch_forward_valid<='0';
++      else
++         if pgxp_scratch_count(8)='0' then pgxp_scratch_count<=pgxp_scratch_count+1;end if;
++         if pgxp_scratch_wren='1' and pgxp_scratch_count(8)='1' then
++            pgxp_scratch_forward<=pgxp_scratch_data;pgxp_scratch_forward_address<=pgxp_scratch_write_address;
++            pgxp_scratch_forward_valid<='1';
++         end if;
++      end if;
++   end if;end process;
++
+    
+    
+    -- datacache ###############################################
+@@ -2285,6 +2381,7 @@
+    process (clk1x)
+       variable dataReadData : unsigned(31 downto 0);
+       variable oldData      : unsigned(31 downto 0);
++      variable pgxp_old : pgxp_meta;
+    begin
+       if (rising_edge(clk1x)) then
+       
+@@ -2324,7 +2421,7 @@
+          
+             stall4         <= stallNew4;
+             dataReadData   := unsigned(mem_dataRead);
+-            oldData        := writebackData;
++            oldData        := writebackData; pgxp_old:=pgxp_wb;
+             
+             writebackInvalidateCacheEna  <= WBinvalidateCacheEna; 
+             writebackInvalidateCacheLine <= WBinvalidateCacheLine;   
+@@ -2374,7 +2471,7 @@
+ -- synthesis translate_on
+                
+                   writebackTarget              <= resultTarget;
+-                  writebackData                <= resultData;
++                  writebackData                <= resultData; pgxp_wb<=pgxp_result;
+                   
+                   writebackException           <= executeException;
+                            
+@@ -2383,11 +2480,11 @@
+                   writebackGTEReadEnable       <= executeGTEReadEnable;
+                   WBgte_writeAddr              <= '0' & executeGTETarget;
+                   
+-                  oldData := resultData;
++                  oldData := resultData; pgxp_old:=pgxp_result;
+                   if (lateReadTarget = resultTarget and lateReadBypass = '1') then
+-                     oldData := lateReadData;
++                     oldData := lateReadData; pgxp_old:=pgxp_late;
+                   elsif (writebackTarget = resultTarget and writebackWriteEnable = '1') then
+-                     oldData := writebackData;
++                     oldData := writebackData; pgxp_old:=pgxp_wb;
+                   end if;
+                   
+                   writebackWriteEnable <= '0';
+@@ -2396,11 +2493,12 @@
+                         (TURBO_CACHE = '1' and executeReadAddress(28 downto 0) < 16#800000# and dcache_read_hit = '1')) then -- data cache read
+                         if (executeGTEReadEnable = '1') then
+                            gte_writeAddr <= '0' & executeGTETarget;
+-                           gte_writeData <= spad_cache_dataread;
++                           gte_writeData <= spad_cache_dataread; pgxp_gte_write_meta<=pgxp_scratch_read;
+                            gte_writeEna  <= '1';
+                         else
+                            writebackWriteEnable <= '1';
+ 
++                           pgxp_wb<=pgxp_load(CPU_LOADTYPE'pos(executeLoadType),executeReadAddress(1 downto 0),pgxp_scratch_read,pgxp_old);
+                            case (executeLoadType) is
+                               when LOADTYPE_SBYTE => 
+                                  case (executeReadAddress(1 downto 0)) is 
+@@ -2457,12 +2555,12 @@
+                         end if;
+                      elsif (executeReadAddress = x"FFFE0130") then
+                         writebackWriteEnable <= '1';
+-                        writebackData        <= CACHECONTROL;
++                        writebackData        <= CACHECONTROL; pgxp_wb<=PGXP_NONE;
+                      else
+                         writebackLoadType       <= executeLoadType;
+                         writebackReadAddress    <= executeReadAddress;
+                         lateReadTarget          <= resultTarget;
+-                        lateReadOldData         <= oldData;
++                        lateReadOldData         <= oldData; pgxp_late_old<=pgxp_old;
+                         lateReadWriteAfterWrite <= '0';
+                      end if;
+                   else
+@@ -2471,7 +2569,7 @@
+                   
+                   if (execute_gte_writeEna = '1') then
+                      gte_writeAddr <= execute_gte_writeAddr;
+-                     gte_writeData <= execute_gte_writeData;
++                     gte_writeData <= execute_gte_writeData; pgxp_gte_write_meta<=pgxp_execute_gte;
+                      gte_writeEna  <= '1';
+                   end if;
+                   
+@@ -2503,7 +2601,7 @@
+             if (mem_done = '1' and memoryMuxStage4 = '1') then
+                if (writebackGTEReadEnable = '1') then
+                   gte_writeAddr <= WBgte_writeAddr;
+-                  gte_writeData <= dataReadData;
++                  gte_writeData <= dataReadData; pgxp_gte_write_meta<=pgxp_mem_meta;
+                   gte_writeEna  <= '1';
+                else
+                   if (lateReadTarget > 0 and lateReadWriteAfterWrite = '0') then
+@@ -2514,6 +2612,7 @@
+                      end if;
+                   end if;
+ 
++                  pgxp_late<=pgxp_load(CPU_LOADTYPE'pos(writebackLoadType),writebackReadAddress(1 downto 0),pgxp_mem_meta,pgxp_late_old);
+                   case (writebackLoadType) is
+                      
+                      when LOADTYPE_SBYTE => lateReadData <= unsigned(resize(signed(dataReadData(7 downto 0)), 32));
+@@ -2552,6 +2651,12 @@
+             writebackInvalidateCacheLine <= SS_Adr(7 downto 0);
+          end if;
+          
++         if reset='1' or pgxp_enable='0' or pgxp_clear='1' then
++            pgxp_wb<=PGXP_NONE;
++            pgxp_late<=PGXP_NONE;
++            pgxp_late_old<=PGXP_NONE;
++            pgxp_gte_write_meta<=PGXP_NONE;
++         end if;
+       end if;
+    end process;
+    
+@@ -2600,7 +2705,7 @@
+ -- synthesis translate_on
+             
+                writeDoneTarget      <= writebackTarget;     
+-               writeDoneData        <= writebackData;       
++               writeDoneData        <= writebackData; pgxp_done<=pgxp_wb;       
+                writeDoneWriteEnable <= writebackWriteEnable;
+                
+                -- export
+@@ -2646,6 +2751,9 @@
+          end if; 
+ -- synthesis translate_on
+          
++         if reset='1' or pgxp_enable='0' or pgxp_clear='1' then
++            pgxp_done<=PGXP_NONE;
++         end if;
+       end if;
+    end process;
+    

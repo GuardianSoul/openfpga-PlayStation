@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "scope": "Optional producer magnitude factoring after the source-bound structural GPU profile. Share a26-bit polygon gradient abs before existing operand registers, narrow boundary/line abs, explicit numerator signs, held payload and start-selected line/poly bus. Six parallel lanes/work/remainder/result banks andnative45/wide53clocks retained. NoDSP/RAM added; not a production/timing/hardware acceptance.",
+  "baseline_structure_manifest_sha256": "07d3ee43726c2437d2f61c28c44557d4a7799132078efbc1b3bcd83f02502edd",
+  "hooks": [
+    {
+      "name": "gpu.vhd",
+      "patch": "gpu.vhd.patch",
+      "patch_sha256": "51bc530840f16befa8f36d5b902fc270326370a63eb0635cf4d81af4d9d83ad1",
+      "input_sha256": "c64904a26b5f32be71eba98cd53ba93275279913afd43b90e94742afb2f2b237",
+      "output_sha256": "0321fd818bc986db0d01147a18d9a2ec06a7c202e6e3916bd74c6f261b673762"
+    },
+    {
+      "name": "gpu_poly.vhd",
+      "patch": "gpu_poly.vhd.patch",
+      "patch_sha256": "a02df775b4a2e6cf4e24f60ff9575b5737a6410b4ec2940cc1654a97c1436e2d",
+      "input_sha256": "da291c0c10ba42df0cfc99648d01084c9dd327720961e31d1301a5208550efd6",
+      "output_sha256": "f8128bb44b6e201a6744689b3f9c8e434a4c04557b07a81e2c4993f89e0d043e"
+    },
+    {
+      "name": "gpu_line.vhd",
+      "patch": "gpu_line.vhd.patch",
+      "patch_sha256": "e1b3c4fdb0c8bff06d2b032c8e1df0fb4aa7fc3dc8ef2a086bcad3ca0beae2c0",
+      "input_sha256": "0d43702adadceef2ce77ee01e7e222ba434622228e032cb8d71d3ee891d79254",
+      "output_sha256": "0717cae306778377629d04d893b0d0bd8f562197c44a2f62aa0a14838c676f5e"
+    },
+    {
+      "name": "psx_pgxp_divider_bank.vhd",
+      "patch": "psx_pgxp_divider_bank.vhd.patch",
+      "patch_sha256": "7a2ae36655aacd1125b6424783cc417f00808c54e44c82a032cec549d538bb46",
+      "input_sha256": "efeac0a56f1841efdaf5b62b1cd40f39c86bb7ed7123eb0e2a94e28570381a54",
+      "output_sha256": "ef7b334fd5355f720976b19a02b5e194c10522555a8601fcb66b4e2088dfe6a9"
+    }
+  ]
+}

@@ -11,10 +11,10 @@ mod instances;
 use instances::convert::{self, Mode};
 
 const CARD: &str = "pocket";
-const MAKE: &str = "Make game files";
+const MAKE: &str = "Generate game files";
 const KEEP: &str = "Convert them, keep the originals";
 const REPLACE: &str = "Convert them, replace the originals";
-const SKIP: &str = "Skip them, make the other game files";
+const SKIP: &str = "Skip them, generate the other game files";
 const EXIT: &str = "Exit";
 
 #[derive(Clone, Serialize, ToBytes)]

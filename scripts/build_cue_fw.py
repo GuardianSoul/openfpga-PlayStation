@@ -17,7 +17,7 @@ from tool_paths import ROOT, find_tool
 SRC = ROOT/'rtl/pocket/cue_fw'
 HEX = [ROOT/f'rtl/pocket/psx_cue_fw{lane}.hex' for lane in range(4)]
 WORDS = 4096        # psx_cue_mount's RAM
-CODE_LIMIT = 0x3C00  # link.ld: the stack starts here
+CODE_LIMIT = 0x3E00  # link.ld: the stack starts here
 
 
 def build(out):

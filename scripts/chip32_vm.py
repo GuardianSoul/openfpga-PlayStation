@@ -18,10 +18,11 @@ class Halt(Exception):
 
 
 class Chip32:
-    def __init__(self, program, slots, pmp_reads=None, selected_slot=0, regs=None):
+    def __init__(self, program, slots, pmp_reads=None, selected_slot=0, regs=None, soft_open=(0x10,)):
         self.ram = bytearray(0x2000)
         self.ram[:len(program)] = program
         self.slots = dict(slots)             # id -> Path or None
+        self.soft_open = set(soft_open)      # slots whose empty open does not fault
         self.pmp_reads = dict(pmp_reads or {})
         self.r = list(regs) if regs else [0]*16
         self.r[0] = selected_slot
@@ -145,6 +146,13 @@ class Chip32:
             if path is not None and Path(path).is_file():
                 data = Path(path).read_bytes()
                 self.file = [r[x], data, 0]; self.set(y, len(data)); self.zero = True
+            elif r[x] in self.slots and r[x] not in self.soft_open:
+                # On the Pocket, opening a declared slot with no file faults
+                # (docs/pocket-bios-check.md; a BIOS slot at 0x016C on
+                # hardware). A nonvolatile save slot opens without its file:
+                # the loader's card open boots games with no .sav yet.
+                self.events.append(('open', r[x], False))
+                return self.fault('open of a slot with no file')
             else:
                 self.set(y, 0); self.zero = False
             self.events.append(('open', r[x], self.zero))

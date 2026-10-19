@@ -17,6 +17,12 @@
 -- receiveBuffer, ack, isActive, padMode, JustifierIrqEnable) is cycle-exact
 -- with the pinned entity under those constraints;
 -- sim/pocket/tb_joypad_pad_dualshock.vhd checks it in lockstep.
+-- ANALOG_LEVEL (default false, so the lockstep holds): pad 1's ToggleDS
+-- input is the menu's Digital / Analog level (prepare --analog-setting,
+-- 2026-10-17). Whenever it changes, and once after reset, the pad
+-- switches to that mode, as the DualShock's Analog button would, unless the
+-- game has locked the mode (0x44; then it applies once unlocked).
+-- L3+R3+Up/Down still switch it too.
 -- STICK_DPAD (default false, so the lockstep holds): as DuckStation's
 -- default "Use Left Analog for D-Pad in Digital Mode", a DualShock in digital
 -- mode (not analog, not config) also presses the D-pad from the left stick,
@@ -38,7 +44,7 @@ use IEEE.numeric_std.all;
 use work.pJoypad.all;
 
 entity joypad_pad is
-   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false);
+   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false; ANALOG_LEVEL : boolean := false);
    port
    (
       clk1x                : in  std_logic;
@@ -143,6 +149,7 @@ architecture dualshock of joypad_pad is
    signal dsConfigMode    : std_logic := '0';
    signal dsAnalogMode    : std_logic := '0';
    signal dsAnalogLock    : std_logic := '0';
+   signal analogLevelSeen : std_logic := '0';   -- ANALOG_LEVEL: last applied ToggleDS level
    signal dsRumbleConfig  : std_logic_vector(47 downto 0) := (others => '1'); -- RUMBLE_ECHO only
 
    signal dsConfigModeSave  : std_logic := '0';
@@ -235,6 +242,7 @@ begin
             dsAnalogMode   <= '0';
             dsAnalogLock   <= '0';
             dsRumbleConfig <= (others => '1');
+            analogLevelSeen <= '0';
 
          elsif (ce = '1') then
 
@@ -245,6 +253,10 @@ begin
             elsif (joypad.PadPortDS = '1') then
                -- only port 1 can be a DualShock
                if (dsAnalogLock = '0') then
+                  if (ANALOG_LEVEL and joypad.ToggleDS /= analogLevelSeen) then
+                     dsAnalogMode    <= joypad.ToggleDS;
+                     analogLevelSeen <= joypad.ToggleDS;
+                  end if;
                   -- switch from button combo
                   if (joypad.KeyL3 = '1' and joypad.KeyR3 = '1' and joypad.KeyUp = '1') then
                      dsAnalogMode <= '1';

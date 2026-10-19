@@ -16,8 +16,12 @@
 // hits until it moves to the next block.
 // spu_ram holds address, data and direction from its request until done
 // (spu.vhd waits in the request's state), so only the request is latched.
+// CHEAT=1 (prepare --cheats): a second requester for main RAM halfwords
+// and bytes (the cheat firmware in psx_cue_mount). It is taken only when no
+// SPU request is pending, holds its fields until ch_done, and is answered
+// at once (ch_q 0) during a guest reset, when ch3 belongs to the BIOS loader.
 `default_nettype none
-module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
+module psx_spu_ch3_cache #(parameter integer SET_BITS = 5, parameter CHEAT = 0) (
     input wire clk1x, reset, discard,
     input wire spu_req, spu_rnw,
     input wire [18:0] spu_addr, input wire [31:0] spu_data, input wire [3:0] spu_be,
@@ -25,7 +29,10 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
     output reg ch3_req=0, output reg ch3_rnw=0,
     output reg [26:0] ch3_addr=0, output reg [31:0] ch3_din=0, output reg [3:0] ch3_be=0,
     input wire ch3_ready, input wire [31:0] ch3_dout,
-    output reg stat_access=0, output reg stat_hit=0   // one-clock pulses per SPU read / read hit
+    output reg stat_access=0, output reg stat_hit=0,  // one-clock pulses per SPU read / read hit
+    // CHEAT: main RAM byte address, a byte (else a halfword) access
+    input wire ch_req, ch_rnw, ch_byte, input wire [20:0] ch_addr, input wire [15:0] ch_data,
+    output reg ch_done=0, output reg [15:0] ch_q=0
 );
     localparam integer LINES = 1 << SET_BITS;
     (* ramstyle="MLAB, no_rw_check" *) reg [18:0] tags [0:LINES-1];   // {tag, present words}
@@ -38,9 +45,9 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
     wire [3:0] word_bit=4'b0001<<spu_addr[3:2];
     wire hit=line_ok && |(entry[3:0] & word_bit);
 
-    localparam E_IDLE=0, E_HIT=1, E_DEMAND=2, E_WRITE=3, E_REDO=4;
+    localparam E_IDLE=0, E_HIT=1, E_DEMAND=2, E_WRITE=3, E_REDO=4, E_CHEAT=5;
     reg [2:0] eng=E_IDLE;
-    reg pend=0, redo=0;
+    reg pend=0, redo=0, ch_pend=0;
 
     // Data RAM: one write port (read-miss words, write updates) and one
     // read port that reads the request's word every clock, so a hit's word
@@ -64,10 +71,11 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
     wire take=spu_req || pend;
 
     always @(posedge clk1x) begin
-        spu_done<=0; ch3_req<=0; stat_access<=0; stat_hit<=0;
+        spu_done<=0; ch3_req<=0; stat_access<=0; stat_hit<=0; ch_done<=0;
         if (spu_req) pend<=1;   // cleared below when the request is taken
+        if (CHEAT!=0 && ch_req) ch_pend<=1;
         if (reset) begin
-            valid<=0; pend<=0; redo<=0; eng<=E_IDLE;
+            valid<=0; pend<=0; redo<=0; ch_pend<=0; eng<=E_IDLE;
         end else if (discard) begin
             // Guest reset: the BIOS loader owns ch3 and ch3_ready is gated
             // off, so nothing may wait for a ch3 answer. Reads are dropped;
@@ -75,6 +83,7 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
             // (same address and data: idempotent).
             valid<=0; pend<=0; eng<=E_IDLE;
             if (eng==E_WRITE || eng==E_REDO) redo<=1;
+            if (CHEAT!=0 && (ch_pend || eng==E_CHEAT)) begin ch_pend<=0; ch_q<=0; ch_done<=1; end
         end else case (eng)
             E_IDLE:
                 if (redo) begin
@@ -93,6 +102,13 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
                             ch3_addr<=base+{8'b0,spu_addr[18:2],2'b00};
                         end
                     end
+                end else if (CHEAT!=0 && ch_pend) begin
+                    // A halfword read returns it in ch3_dout[15:0]; a byte
+                    // goes to both lanes of its halfword.
+                    ch_pend<=0; eng<=E_CHEAT; ch3_req<=1; ch3_rnw<=ch_rnw;
+                    ch3_addr<={6'b0,ch_addr[20:1],1'b0};
+                    ch3_din<={16'b0, ch_byte ? {2{ch_data[7:0]}} : ch_data};
+                    ch3_be<=!ch_byte ? 4'b0011 : ch_addr[0] ? 4'b0010 : 4'b0001;
                 end
             E_HIT: begin
                 spu_q<={16'b0, spu_addr[1] ? q[3:2] : q[1:0]}; spu_done<=1; eng<=E_IDLE;
@@ -107,6 +123,7 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5) (
                 spu_q<=0; spu_done<=1; eng<=E_IDLE;
             end
             E_REDO: if (ch3_ready) eng<=E_IDLE;
+            E_CHEAT: if (ch3_ready) begin ch_q<=ch3_dout[15:0]; ch_done<=1; eng<=E_IDLE; end
             default: eng<=E_IDLE;
         endcase
     end

@@ -1,0 +1,20 @@
+--- a/GTEComputePath.sv
++++ b/GTEComputePath.sv
+@@ -16,6 +16,8 @@
+ `include "GTEDefine.hv"
+ 
+ module PocketGTEComputePath(
++    output wire [3:0] pgxp_fraction,
++    output wire pgxp_clipped,
+ 	input					i_clk,
+     input i_ce,
+ 	input					i_nRst,
+@@ -549,6 +551,8 @@
+ 
+ wire [15:0] xyValue;
+ wire isXY_UOFlow;
++assign pgxp_fraction=finalSum[15:12];
++assign pgxp_clipped=isXY_UOFlow;
+ FlagClipXY FlagClipXY_inst(
+ 	.v					({finalSum[44],finalSum[31:16]}),		// 11 bit (27:16)
+ 	.i_overflowS32		(isOverflowS32),

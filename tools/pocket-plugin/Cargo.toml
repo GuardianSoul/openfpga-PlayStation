@@ -1,6 +1,6 @@
 [package]
 name = "playstation-game-files"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 license = "MIT"
 description = "Pocket Sync / pupdate plugin: game files for the PlayStation core"

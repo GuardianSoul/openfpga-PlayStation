@@ -55,7 +55,7 @@ class CPUHold(unittest.TestCase):
     @unittest.skipUnless(tcl_command(),'Tcl interpreter unavailable')
     def test_only_one_complete_known_family_is_accepted(self):
         scope=ROOT/'scripts/pocket_cpu_hold_scope.tcl'
-        for fault in ('none','missing','extra','period','master','hierarchy','duplicate-index','unknown'):
+        for fault in ('none','vram','missing','extra','period','master','hierarchy','duplicate-index','unknown','two-vram','vram-period'):
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as tmp:
                 clocks=['c0','c1','c2'];periods=[29.524,14.762,9.841]
                 names=[f'ic|cpu_pll|general[{i}].gpll~PLL_OUTPUT_COUNTER|divclk' for i in range(3)];masters=['cpu-vco']*3
@@ -66,9 +66,13 @@ class CPUHold(unittest.TestCase):
                 if fault=='hierarchy':names[2]='other|'+names[2]
                 if fault=='duplicate-index':names[2]=names[1]
                 if fault=='unknown':names[2]='unknown'
+                if fault in ('vram','two-vram','vram-period'):
+                    clocks.append('c3');periods.append(15.0 if fault=='vram-period' else 14.762)
+                    names.append('ic|cpu_pll|general[3].gpll~PLL_OUTPUT_COUNTER|divclk');masters.append('cpu-vco')
+                if fault=='two-vram':clocks.append('c4');periods.append(14.762);names.append(names[3]);masters.append('cpu-vco')
                 data='\n'.join('dict set '+field+' c'+str(i)+' {'+str(value)+'}' for field,values in [('names',names),('periods',periods),('masters',masters)] for i,value in enumerate(values))
                 script=Path(tmp)/'scope.tcl';script.write_text('''set pocket_cpu_hold_ns 0.1
-proc get_clocks {args} {return $::clocks}
+proc get_clocks {pattern} {if {$pattern eq {*cpu_pll*OUTPUT_COUNTER*divclk}} {return $::clocks};foreach c $::clocks {if {[dict get $::names $c] eq $pattern} {return $c}};error NO_CLOCK}
 proc get_collection_size {c} {llength $c}
 proc foreach_in_collection {var collection body} {
  foreach item $collection {uplevel 1 [list set $var $item];uplevel 1 $body}
@@ -79,9 +83,11 @@ proc get_clock_info {field clock} {
 proc set_clock_uncertainty {args} {puts "APPLIED $args"}
 '''+data+'\nset clocks {'+' '.join(clocks)+'}\nsource {'+str(scope)+'}\n')
                 r=subprocess.run([*tcl_command(),str(script)],capture_output=True,text=True,timeout=15)
-                self.assertEqual(r.returncode==0,fault=='none',(fault,r.stdout,r.stderr))
-                self.assertEqual('APPLIED' in r.stdout,fault=='none')
-                if fault=='none':self.assertIn('-add -hold -enable_same_physical_edge -from {c0 c1 c2} -to {c0 c1 c2} 0.1',r.stdout)
+                ok=fault in ('none','vram')
+                self.assertEqual(r.returncode==0,ok,(fault,r.stdout,r.stderr))
+                self.assertEqual('APPLIED' in r.stdout,ok)
+                if ok:self.assertEqual(sorted(l for l in r.stdout.splitlines() if l.startswith('APPLIED')),
+                    sorted(f'APPLIED -add -hold -enable_same_physical_edge -from c{a} -to c{b} 0.1' for a in range(3) for b in range(3)))
 
 
 if __name__=='__main__':unittest.main()

@@ -67,7 +67,7 @@ MUTATIONS = [
      "act_din <= ddr_din; act_be <= b_be; b_v <= 1'b0;\n        end else if (sel_bus)", ['mismatch']),
     ('parked-read-sampled-early', [("            3'd3: p_oe_n <= aux_we;",
                                     "            3'd3: begin p_oe_n <= aux_we; if (!aux_we) aux_dout <= dq_in; end"),
-                                   ("                if (!aux_we) aux_dout <= dq_in;\n", "")], None, ['aux read mismatch']),
+                                   ("                if (!aux_we) aux_dout <= FULL_RATE ? dq_r : dq_in;\n", "")], None, ['aux read mismatch']),
 ]
 # broken boards with the unchanged controller
 BOARD_FAULTS = [
@@ -140,7 +140,15 @@ def main():
         # latency summary without resets or parks (reads waiting for re-init excluded)
         positive[f'quiet-seed{s}'] = dict(SEED=s, N_OPS=2500, RESETS=0, PARKS=0)
         positive[f'quiet-noaux-seed{s}'] = dict(SEED=s, N_OPS=2500, RESETS=0, PARKS=0, AUX=0)
+    # full-rate chip clock (--vram-full-rate): latency 5, DDIO clock PHASE ns
+    # after clk, matched pin delays (the window moves with clock-vs-data skew)
+    full = dict(FULL_RATE=1, LATENCY=5, T_CLK_MIN=14.7, PHASE=10.0, CLK_DLY=4.5, CTL_DLY=4.5, DQ_DLY=4.5, RET_DLY=2.0)
+    positive['full-rate-seed1'] = dict(SEED=1, N_OPS=1500, RESETS=2, PARKS=2, **full)
+    positive['full-rate-measure'] = dict(MEASURE=1, **full)
     if not a.quick:
+        positive['full-rate-foreign'] = dict(SEED=2, N_OPS=1200, RESETS=2, PARKS=2, FOREIGN=1, **full)
+        positive['full-rate-1ns-phase11.5'] = dict(SEED=3, N_OPS=1200, RESETS=2, PARKS=1,
+                                                   **{**full, 'PHASE': 11.5, 'CLK_DLY': 1.0, 'CTL_DLY': 1.0, 'DQ_DLY': 1.0, 'RET_DLY': 1.0})
         for name, prof in PROFILES.items():
             positive[f'profile-{name}'] = dict(SEED=10 + len(positive), N_OPS=1200, RESETS=2, PARKS=1, **prof)
         positive['latency4'] = dict(SEED=7, N_OPS=1200, RESETS=2, PARKS=2, LATENCY=4)

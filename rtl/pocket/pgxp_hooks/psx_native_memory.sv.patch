@@ -1,0 +1,56 @@
+--- a/psx_native_memory.sv
++++ b/psx_native_memory.sv
+@@ -9,6 +9,18 @@
+ // MiSTer byte map: main RAM 0, BIOS 0x800000, SPU RAM 0x1000000.
+ `default_nettype none
+ module psx_native_memory (
++    input wire pgxp_enabled,pgxp_clear,
++    input wire pgxp_cpu_read,pgxp_gpu_read,
++    input wire [7:0] pgxp_cpu_tag,
++    input wire [9:0] pgxp_cpu_store_meta,
++    output wire pgxp_cpu_valid,
++    input wire pgxp_cpu_ready,
++    output wire [7:0] pgxp_cpu_return_tag,
++    output wire [63:0] pgxp_cpu_record,
++    output wire pgxp_gpu_valid,
++    input wire pgxp_gpu_ready,
++    output wire [63:0] pgxp_gpu_record,
++    output wire pgxp_idle,pgxp_initializing,
+     input wire clk1x, clk3x, init,      // init: SDRAM reset (PLL not locked)
+     input wire cpu_reset,               // clk1x: the core is held in reset (loader owns ch3)
+     // core main RAM port (clk1x)
+@@ -92,13 +104,33 @@
+     assign spuram_done=c_done && !cpu_reset;
+     assign spuram_dataRead=c_q;
+ 
++    wire pgxp_queue_ready,pgxp_queue_almost_full,pgxp_event_valid,pgxp_backend_idle,pgxp_controller_idle;
++    wire [79:0] pgxp_event_data;
++    wire p4_req,p4_rnw,p4_ready;
++    wire [26:0] p4_address;
++    wire [31:0] p4_data,p4_q;
++    wire [3:0] p4_mask;
++    psx_pgxp_memory precision_memory (
++        .clk1x(clk1x),.clk3x(clk3x),.init(init),.reset(cpu_reset),.invalidate(pgxp_clear),.enabled(pgxp_enabled),
++        .event_valid(pgxp_event_valid),.event_data(pgxp_event_data),.queue_ready(pgxp_queue_ready),.queue_almost_full(pgxp_queue_almost_full),
++        .cpu_valid(pgxp_cpu_valid),.cpu_ready(pgxp_cpu_ready),.cpu_tag(pgxp_cpu_return_tag),.cpu_record(pgxp_cpu_record),
++        .gpu_valid(pgxp_gpu_valid),.gpu_ready(pgxp_gpu_ready),.gpu_record(pgxp_gpu_record),
++        .idle(pgxp_backend_idle),.initializing(pgxp_initializing),
++        .ch4_req(p4_req),.ch4_rnw(p4_rnw),.ch4_address(p4_address),.ch4_data(p4_data),.ch4_mask(p4_mask),.ch4_done(p4_ready),.ch4_q(p4_q)
++    );
++    assign pgxp_idle=pgxp_backend_idle && pgxp_controller_idle;
++
+     wire rd_ready, wr_ready;
+     assign ram_done=rd_ready || wr_ready;
+     psx_sdram_ctrl #(.SINGLE_CHIP(1), .CAS_LATENCY(3), .SPU_FIRST(1)) controller (
++        .pgxp_enabled(pgxp_enabled),.pgxp_queue_ready(pgxp_queue_ready),.pgxp_queue_almost_full(pgxp_queue_almost_full),
++        .pgxp_cpu_read(pgxp_cpu_read),.pgxp_gpu_read(pgxp_gpu_read),.pgxp_cpu_tag(pgxp_cpu_tag),.pgxp_cpu_store_metadata(pgxp_cpu_store_meta),
++        .pgxp_event_valid(pgxp_event_valid),.pgxp_event_data(pgxp_event_data),
++        .ch4_req(p4_req),.ch4_rnw(p4_rnw),.ch4_addr(p4_address),.ch4_din(p4_data),.ch4_be(p4_mask),.ch4_ready(p4_ready),.ch4_dout(p4_q),
+         .SDRAM_DQ(dram_dq), .SDRAM_A(dram_a), .SDRAM_DQML(dram_dqm[0]), .SDRAM_DQMH(dram_dqm[1]),
+         .SDRAM_BA(dram_ba), .SDRAM_nCS(), .SDRAM_nWE(dram_we_n), .SDRAM_nRAS(dram_ras_n),
+         .SDRAM_nCAS(dram_cas_n), .SDRAM_CKE(dram_cke), .SDRAM_CLK(dram_clk), .SDRAM_EN(1'b1),
+-        .init(init), .clk(clk3x), .clk_base(clk1x), .refreshForce(ram_refresh), .ram_idle(),
++        .init(init), .clk(clk3x), .clk_base(clk1x), .refreshForce(ram_refresh), .ram_idle(pgxp_controller_idle),
+         .ch1_addr({2'b0,ram_adr}), .ch1_dout(), .ch1_dout32(ram_dataRead32), .ch1_din(16'b0),
+         .ch1_req(ram_ena && ram_rnw), .ch1_rnw(1'b1), .ch1_dma(ram_dma), .ch1_cntDMA(ram_cntDMA),
+         .ch1_cache(ram_cache), .ch1_ready(rd_ready),

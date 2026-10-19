@@ -1,0 +1,31 @@
+--- psx_pgxp_divider_bank.vhd
++++ psx_pgxp_divider_bank.vhd
+@@ -10,6 +10,7 @@
+ entity psx_pgxp_divider_bank is
+  port(clk,native_width,boundary_batch,line_batch:in std_logic;
+       common_denominator:in signed(32 downto 0);
++      numerator_negative:in std_logic_vector(0 to 5);
+       request:in pgxp_div_array;response:out pgxp_div_array);
+ end;
+ architecture parallel_lanes of psx_pgxp_divider_bank is
+@@ -28,7 +29,7 @@
+ begin
+  process(clk)
+   variable launch:boolean;
+-  variable n_value,q_value:signed(52 downto 0);
++  variable q_value:signed(52 downto 0);
+   variable d_value,r_value:signed(32 downto 0);
+   variable n_magnitude:unsigned(52 downto 0);
+   variable d_magnitude:unsigned(33 downto 0);
+@@ -99,9 +100,8 @@
+     if launch then
+      mask_q(i)<=request(i).start;
+      if request(i).start='1'then
+-      r_next:=(others=>'0');n_value:=request(i).dividend;
+-      if native_width='1' and line_batch='1'then n_value:=resize(n_value(44 downto 0),53);end if;
+-      n_magnitude:=unsigned(abs(n_value));sign_n(i)<=n_value(52);
++      r_next:=(others=>'0');
++      n_magnitude:=unsigned(request(i).dividend);sign_n(i)<=numerator_negative(i);
+       if native_width='1' and line_batch='1'then work_q(i)<=shift_left(n_magnitude,8)&'0';
+       elsif native_width='1' and boundary_batch='1'then
+        -- Q4 biased magnitude =16*originalMagnitude+15 (unless dx=0).

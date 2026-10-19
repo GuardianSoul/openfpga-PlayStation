@@ -17,7 +17,7 @@
 `timescale 1ns/1ps
 `default_nettype none
 module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter integer SEED = 1,
-                     parameter integer OPS = 4000, parameter integer CAS = 2, parameter integer SPU_FIRST = 0,
+                     parameter integer OPS = 4000, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
                      // ns: forwarded chip-clock delay, chip clock-to-data max / hold min, data return delay
                      parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0) (
     input wire clk3, clk1,
@@ -64,7 +64,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
             .dmafifo_adr(fifo_adr[fifo_r[3:0]]), .dmafifo_data(fifo_dat[fifo_r[3:0]]),
             .dmafifo_empty(fifo_empty), .dmafifo_read(fifo_read));
     end else begin : new_dut
-        psx_sdram_ctrl #(.CAS_LATENCY(CAS), .SPU_FIRST(SPU_FIRST)) dut (
+        psx_sdram_ctrl #(.CAS_LATENCY(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW)) dut (
             .init(init), .clk(clk3), .clk_base(clk1), .SDRAM_EN(1'b1),
             .SDRAM_DQ(dq), .SDRAM_A(a), .SDRAM_DQML(dqml), .SDRAM_DQMH(dqmh), .SDRAM_BA(ba), .SDRAM_nCS(ncs),
             .SDRAM_nWE(nwe), .SDRAM_nRAS(nras), .SDRAM_nCAS(ncas), .SDRAM_CKE(cke), .SDRAM_CLK(chip_clk),
@@ -115,7 +115,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     always @(posedge clk3) cyc3 <= cyc3 + 1;
 
     function [17:0] gi(input [26:0] adr);      // halfword index as the chip model stores it
-        gi = {adr[24:23], adr[15:10], adr[25], adr[9:1]};
+        gi = OPEN_ROW != 0 ? {adr[24], adr[10], adr[16:11], adr[25], adr[9:1]} : {adr[24:23], adr[15:10], adr[25], adr[9:1]};
     endfunction
     function [31:0] gold32(input [26:0] adr);  // [15:0] = halfword, [31:16] = its pair
         gold32 = {gold[gi(adr) ^ 18'd1], gold[gi(adr)]};
@@ -141,8 +141,14 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     endtask
 
     // Random addresses: bank (2 bits) is the region, row high bits random.
+    // OPEN_ROW: few rows so accesses hit, miss and share open rows; the DMA
+    // FIFO region moves into main RAM (rows 8-11), since the OPEN_ROW map
+    // puts bit 23 into the row and bank 3 holds SPU-region rows.
     function [26:0] rand_addr(input [1:0] bank, input integer r1, input integer r2);
-        rand_addr = {r2[8], r2[7], bank, r1[12:0], r2[16:9], 2'b00};
+        if (OPEN_ROW != 0)
+            rand_addr = {r2[8], r2[7], bank == 3 ? 2'd0 : bank, bank == 3 ? 13'd8 + r1[1:0] : {11'd0, r1[1:0]}, r2[16:9], 2'b00};
+        else
+            rand_addr = {r2[8], r2[7], bank, r1[12:0], r2[16:9], 2'b00};
     endfunction
 
     // -------------------------------------------------- cache line capture
@@ -180,6 +186,11 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     integer seed1 = SEED, seed3 = SEED + 77, seedf = SEED + 991;
     integer ops_left = OPS;
     reg cpu_done = 0, spu_done = 0, fifo_done = 0;
+    // DMA expectation queue (declared before the requester that fills it)
+    reg [26:0] dma_expect [0:63];
+    integer dma_issue [0:63];
+    integer exp_w = 0, exp_r = 0, dma_checked = 0;
+    integer dma_word_k [0:63];
     initial begin : cpu
         integer op, r1, r2, issue, fin, k, w, cnt, chain, gap;
         reg [26:0] adr;
@@ -258,10 +269,6 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
 
     // DMA data check: the requester queues the address of every word it
     // asked for; delivered words must come back in that order.
-    reg [26:0] dma_expect [0:63];
-    integer dma_issue [0:63];
-    integer exp_w = 0, exp_r = 0, dma_checked = 0;
-    integer dma_word_k [0:63];
     always @(posedge clk1) if (dma_wr) begin
         if (exp_r == exp_w) bad("unexpected DMA word", dma_data, 0);
         else if (dma_data !== gold32(dma_expect[exp_r & 63])) bad("DMA word", dma_data, gold32(dma_expect[exp_r & 63]));
@@ -372,7 +379,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     end
 endmodule
 
-module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2, parameter integer SPU_FIRST = 0,
+module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
                           parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0);
     reg clk3 = 0, clk1 = 0;
     always #4.921 clk3 = ~clk3;     // 101.6064 MHz
@@ -380,7 +387,7 @@ module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED 
     wire done_new, done_ref;
     integer err_new, err_ref;
     integer seed;
-    sdram_bench #(.USE_REF(0), .PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
+    sdram_bench #(.USE_REF(0), .PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
 `ifdef WITH_REFERENCE
     sdram_bench #(.USE_REF(1), .PREFIX("reference"), .OPS(OPS), .SEED(SEED), .CAS(2), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) reference (.clk3(clk3), .clk1(clk1), .done(done_ref), .errors(err_ref));
 `else
