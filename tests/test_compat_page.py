@@ -180,6 +180,23 @@ class CompatPage(unittest.TestCase):
                               str(DOCS/'compatibility.json')], check=True, capture_output=True, text=True).stdout
         self.assertEqual(json.loads(out), [])
 
+    def fetch_versions(self, releases, tags):
+        script = f"""
+const Compat = require({json.dumps(str(DOCS/'compat.js'))});
+const answers = {{ releases: {json.dumps(releases)}, tags: {json.dumps(tags)} }};
+const fake = async (url) => ({{ ok: true, json: async () => answers[url.split('/').pop().split('?')[0]] }});
+Compat.fetchVersions(fake).then((v) => console.log(JSON.stringify(v)), (e) => console.log(JSON.stringify(null)));
+"""
+        return json.loads(subprocess.run([NODE, '-e', script], check=True, capture_output=True, text=True).stdout)
+
+    def test_versions_from_releases_or_tags(self):
+        release = lambda tag, pre=False: {'tag_name': tag, 'draft': False, 'prerelease': pre}
+        self.assertEqual(self.fetch_versions([release('v0.5.4'), release('v0.5.10'), release('v0.6.0', True)], []),
+                         ['0.5.10', '0.5.4'])
+        # GitHub's signed-out release list can come back empty; the tags stand in.
+        self.assertEqual(self.fetch_versions([], [{'name': 'v0.5.5'}, {'name': 'v0.5.4'}, {'name': 'test6'}]),
+                         ['0.5.5', '0.5.4'])
+        self.assertIsNone(self.fetch_versions([], []))
 
 if __name__ == '__main__':
     unittest.main()

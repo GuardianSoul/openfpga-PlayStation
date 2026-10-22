@@ -303,12 +303,19 @@
   }
 
   // Released core versions, newest first ("0.5.3"), from the repo's releases.
+  // GitHub sometimes answers the release list with [] for signed-out visitors,
+  // which would drop every vote; the version tags ("v0.5.3") stand in then.
   async function fetchVersions(fetchImpl = fetch, repo = REPO) {
-    const response = await fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=30`,
-                                     { headers: { Accept: 'application/vnd.github+json' } });
-    if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-    return (await response.json()).filter((r) => !r.draft && !r.prerelease)
-      .map((r) => String(r.tag_name).replace(/^v/i, '')).sort((a, b) => compareVersions(b, a));
+    const get = async (path) => {
+      const response = await fetchImpl(`https://api.github.com/repos/${repo}/${path}?per_page=30`,
+                                       { headers: { Accept: 'application/vnd.github+json' } });
+      if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
+      return response.json();
+    };
+    let tags = (await get('releases')).filter((r) => !r.draft && !r.prerelease).map((r) => r.tag_name);
+    if (!tags.length) tags = (await get('tags')).map((t) => t.name).filter((n) => /^v\d+(\.\d+)*$/i.test(n));
+    if (!tags.length) throw new Error('GitHub listed no releases');
+    return tags.map((t) => String(t).replace(/^v/i, '')).sort((a, b) => compareVersions(b, a));
   }
 
   // released: the published core versions. A report naming any other version
