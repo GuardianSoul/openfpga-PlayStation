@@ -256,6 +256,20 @@ def main():
     parser.add_argument('--wide-lines', action='store_true', help='With --scaler-slots: stretch every line to 640 pixels (rtl/pocket/psx_apf_video_wide.sv) so scaler slots only differ by height: 640x240, 640x480, 640x288 (package --wide-lines)')
     parser.add_argument('--hybrid-slots', action='store_true', help='With --wide-lines: keep native 320/256 (and 512 at 240 lines) slots and stretch only other widths (psx_apf_video_wide HYBRID; package --hybrid-slots)')
     parser.add_argument('--aspect-setting', action='store_true', help='With --hybrid-slots: Core Settings "Aspect Ratio" list, Fit / 4:3 (4:3, default) or Stretch / Fill Screen (whole 10:9 screen), bridge 0x50000048 (psx_apf_video_wide ASPECT; package --aspect-setting writes its 8 slots)')
+    parser.add_argument('--pal-bob', action='store_true', help='With --aspect-setting --pal288 --crop-lines: a PAL 480i field is a whole 288-line frame (bob): no 480i feature word, Fit in the 4:3 640x288 slot, Fill in the 10:9 640x268 one, so the PAL BIOS screens are neither cut nor squashed (psx_apf_video_wide PAL_BOB)')
+    parser.add_argument('--even-lines', action='store_true', help='With --wide-lines --lead-line --vs-on-hs: the lead line goes out only in 480i, and a frame or field with an odd number of lines ends with one black pad line, so every count is even (psx_apf_video_wide LEAD_LINE 2 and EVEN_LINES; bhendo, issue #5): with an odd count the APF scaler left the end of a top row unwritten from power-on (red line), and progressive frames kept the lead line, a row low')
+    parser.add_argument('--weave-576', action='store_true', help='With --fill-detect --fit-368 --dbl-320 --pal288 --crop-lines --even-lines: PAL 480i woven like NTSC in a 640x576 Fit slot (5) and a 640x536 Fill slot (7); progressive Fill lines sent twice so they share the Fill slots (NTSC 448 in 1, PAL 536 in 7). Fit and the native slots unchanged (psx_apf_video_wide WEAVE576; package --weave-576)')
+    parser.add_argument('--pal-shape', action='store_true', help='With --weave-576 --fill-center: PAL Fill window 256 lines (640x512 slot), and in Fit a PAL picture of up to 240 lines cropped to 240 in the NTSC slots, a taller one centred (up 4 / down 16 lines) (psx_apf_video_wide PAL_SHAPE; package --pal-shape)')
+    parser.add_argument('--wide-blend', action='store_true', help='With --weave-576: slot 2 is 800x240 4:3; 256-wide lines, and 368-wide ones when Core Settings "Wide Pixels" is Even (bridge 0x50000064), go out 800 wide with sharp-bilinear blending, so every pixel shows the same width at exact 4:3 (psx_apf_video_wide BLEND; package --wide-blend)')
+    parser.add_argument('--fill-blend-panel', action='store_true', help='With --weave-576: Fill stays 640 wide and every line is blended in panel columns (the Pocket draws 640 -> 1600 as 2,3,2,3 panel pixels), so every pixel covers the same width; Core Settings "Fill Phase" A/B (bridge 0x50000068) picks the Pocket\'s 2/3 phase (psx_apf_video_wide FILL_BLEND 2; package --fill-blend-panel)')
+    parser.add_argument('--fill-blend', action='store_true', help='With --weave-576: Fill sends every line 800 wide with sharp-bilinear blending in 800x448 / 800x512 slots, so every pixel shows the same width (psx_apf_video_wide FILL_BLEND; package --fill-blend)')
+    parser.add_argument('--pace', action='store_true', help='With --wide-lines: lines go out at 2/3 of the pixel clock (every third clock a held pixel with skip): docked, the full rate gave a shaking stripe at the right and Fill flickering between two sizes (issue #15 tester); handheld unchanged (psx_apf_video_wide PACE)')
+    parser.add_argument('--eol-twice', action='store_true', help='With --wide-lines: the end-of-line slot word goes out on the first and second clock after DE (psx_apf_video_wide EOL_TWICE), for a dock that samples DE a clock late (issues #13, #15)')
+    parser.add_argument('--dock-test', action='store_true', help='Test builds, with --wide-lines: Core Settings "Dock test" list (bridge 0x50000060): Normal, Paced pixels (a 640 line at 2/3 rate with skip), Black tail (16 black pixels after each line), Both - for the dock stripe of issues #13/#15; the mode is in the --video-log records (psx_apf_video_wide DOCK_TEST; package --dock-test)')
+    parser.add_argument('--fill-center', action='store_true', help='With --fill-detect: the Fill window (and Hide Overscan) keeps its 224/268 lines but is centred on the picture seen since the last PAL/480i change, so a game drawn low or high loses its black band (psx_apf_video_wide FILL_CENTER)')
+    parser.add_argument('--pal-steady-field', action='store_true', help='PAL 480i: scan out the same field lines every frame (as --steady-field, PAL only), so --pal-bob shows a still picture instead of even and odd lines in turn; GPUSTAT reports unchanged')
+    parser.add_argument('--pal-line-rate', action='store_true', help='PAL lines of 3437 video clocks instead of 3406: at the fixed 53.693166 MHz video clock that is the PAL console\'s 64.0 us line, so PAL frames run at 49.75 Hz (console 49.75) instead of 50.21 (MiSTer retunes its PLL instead); NTSC unchanged (scripts/prepare_pal_line_rate.py)')
+    parser.add_argument('--height-slots', action='store_true', help='With --fill-detect: the 8 scaler slots differ by height only, every line at 640 (no native 256/368 slots): Original 640x240/480/288/576, Fill 640x224/448/268/536, so PAL 480i and 384-wide lines are not cut (psx_apf_video_wide HEIGHT_SLOTS; package --height-slots)')
     parser.add_argument('--fill-detect', action='store_true', help='With --aspect-setting: Stretch (Fill Screen) crops the overscan as DuckStation does, sending lines 8-231 of 240 (also per 480i field) and 10-277 of PAL 288 to 640x224/448/268 slots (package --fill-detect); Fit unchanged (psx_apf_video_wide FILL_DETECT)')
     parser.add_argument('--overscan-setting', action='store_true', help='With --wide-lines: Core Settings "Hide Overscan" checkbox (bridge 0x5000005C, on by default): on sends the lines --fill-detect crops (0-7 and 232-239 of 240, 0-9 and 278-287 of PAL 288) black in Fit, so it hides the same overscan; frames keep 240/288 lines (psx_apf_video_wide OVERSCAN_BLANK; package --overscan-setting)')
     parser.add_argument('--dbl-320', action='store_true', help='With --fit-368: Fit sends 320 lines doubled in the 640 slots; slot 1 is 640x480 at 10:9 for Stretch 480i (psx_apf_video_wide DBL320; package --dbl-320)')
@@ -280,6 +294,8 @@ def main():
     parser.add_argument('--psram-write-extra', type=int, default=0, help='With --psram-main: clocks added to each PSRAM write (0-10)')
     parser.add_argument('--psram-write-gap', type=int, default=0, help='With --psram-main: idle clocks after each write packet')
     parser.add_argument('--psram-phase', default=None, help='With --psram-main: chip clock phase in ps (200 ps steps)')
+    parser.add_argument('--video-log', action='store_true', help='With --perf-log --wide-lines: log video geometry next to the memory counters (psx_apf_video_wide LOG): lines in the frame and sent, first and last source line kept, scaler slot, the pal/480i/bob/fit/fill flags, HS count, line width, the source lines and pixels that hold picture, and a content hash (two alternating hashes on a still screen = jitter). A frame is stored only when it differs from both frames before it, plus every 256th, with its frame number: 9-word records, 227 of them, so a session from BIOS to game fits; read with scripts/decode_perf_log.py')
+    parser.add_argument('--video-log-tag', type=int, default=0, help='With --video-log: a 10-bit build tag in header word 3 (bits 29:20) so a log can never be ambiguous about which probe build wrote it')
     parser.add_argument('--perf-stages', action='store_true', help='With --perf-log --psram-sync: per-stage clk3x counters (adapter busy, PSRAM read/write) in 8-word records (~100 ALMs)')
     parser.add_argument('--field-swap-setting', action='store_true', help='Menu checkbox that flips the 480i APF field bit at run time (bridge 0x50000008)')
     parser.add_argument('--async-hold-cut', action='store_true', help='Experimental clock-family hold cuts to avoid asynchronous hold padding; WARNING: Quartus Lite also suppresses Gray-bus skew checks on these paths')
@@ -331,6 +347,8 @@ def main():
     parser.add_argument('--trigger-buttons', action='store_true', help='A docked analog controller\'s triggers past 25%% also press L2/R2 (cont1_trig), for pads whose L2/R2 are analog triggers')
     parser.add_argument('--ntsc-fixed-vblank', action='store_true', help='NTSC pictures always span the fixed 240-line TV window (MiSTer "Fixed VBlank" for NTSC only): a game with a shorter display range gets black lines instead of fewer lines, which the APF scaler left stale (CTR logo)')
     parser.add_argument('--dualshock', action='store_true', help='Pad 1 is a DualShock (rtl/pocket/joypad_pad_dualshock.vhd, lockstep-equal to the pinned MiSTer joypad_pad) with a docked controller\'s sticks; menu checkbox "DualShock" (bridge 0x50000040, on by default) falls back to a digital pad (package --dualshock)')
+    parser.add_argument('--pad2', action='store_true', help='With --dualshock --pad-combos: player 2 is dock controller 2, a DualShock with its own buttons and sticks, connected while the Pocket reports a controller 2 (scripts/prepare_pocket_pad2.py; the package\'s default input.json entry covers every player)')
+    parser.add_argument('--analogizer', action='store_true', help='Analogizer on the cartridge port: 15 kHz RGBS/RGsB/YPbPr from the GPU timing and SNAC for a real PlayStation controller; Core Settings Analogizer Video (0x50000078) and Analogizer SNAC (0x5000007C), both off by default (scripts/prepare_pocket_analogizer.py; package --analogizer)')
     parser.add_argument('--pad-table', action='store_true', help='With --dualshock: the DualShock protocol decoding in one M10K ROM (rtl/pocket/joypad_pad_table.vhd, lockstep-equal to joypad_pad_dualshock under the SIO timing; make test-joypad-pad-table), about half the pad logic')
     parser.add_argument('--analog-setting', action='store_true', help='With --dualshock: pad 1 is always a DualShock and the bridge 0x50000040 setting becomes Digital (default) / Analog, switched at run time like the Analog button (joypad_pad_dualshock ANALOG_LEVEL; package --analog-setting)')
     parser.add_argument('--cheats', action='store_true', help='With --cue-mount --spu-cache-slim: GameShark cheats from a game JSON\'s slot 98, applied by the cue reader\'s firmware once per frame through a main RAM port on SDRAM ch3 (psx_cue_mount CHEATS, psx_spu_ch3_cache CHEAT); Cheats setting at bridge 0x50000054 (package --cheats)')
@@ -1217,9 +1235,9 @@ def main():
             '"core_top:ic|psx_mister_psx_top_resource:psx|psx_top:component_core|gpu:igpu|gpu_videoout:igpu_videoout|gpu_videoout_async:igpu_videoout_async"\n')
         sdc = out/'pocket.sdc'
         sdc.write_text(sdc.read_text() + '''
-# --static-host-cuts. pause (0x11000018) and isPal (0x11000154) are written
-# only by the MiSTer-style host service, which the Pocket never drives: both
-# stay at their reset value. cd_top's HPS request/LBA/region/reset outputs
+# --static-host-cuts. pause (0x11000018) is written only by the MiSTer-style
+# host service, which the Pocket never drives, so it stays at its reset value.
+# isPal (0x11000154) is written once by the BIOS loader before the core starts. cd_top's HPS request/LBA/region/reset outputs
 # and pausing reach the APF bridge only through the diagnostic service
 # readback mux (0x12000xxx), which host tools poll and the core never reads.
 set_false_path -from [get_registers {*core_top:ic|pause}] -to [get_registers {*|psx_top:component_core|pausing *|psx_top:component_core|pausing~DUPLICATE* *|psx_top:component_core|pausingSS *|psx_top:component_core|pausingSS~DUPLICATE* *|psx_top:component_core|ce *|psx_top:component_core|ce~DUPLICATE* *|psx_top:component_core|cpuPaused *|psx_top:component_core|cpuPaused~DUPLICATE*}]
@@ -1408,16 +1426,25 @@ CHIP_CLOCK_PINS""" + text[end:]
                       f'set_multicycle_path -setup 3 -from [get_clocks {c}_clk_out] -to [get_registers {cap}]',
                       f'set_multicycle_path -hold 2 -from [get_clocks {c}_clk_out] -to [get_registers {cap}]']
         sdc.write_text(sdc.read_text() + '\n'.join(lines) + '\n')
+    # Size word of the saved perf log: 4 header words plus record words x ring
+    # frames. 16400 = 4 x (4 x 1023 + 4). A --video-log build rings at 9 words
+    # x 227 records (2047 words, eight M10K: the 0.5.5 recipe is short of RAM
+    # blocks); it stores a frame only when its picture changed, so 227 records
+    # cover a session. The depth is also in header word 3 for the decoder.
+    perf_bytes = 4 * (4 * 1023 + 4)
+    if args.video_log: perf_bytes = 4 * (9 * 227 + 4)
     if args.perf_log:
         if not args.cd_stream or args.boot_trace: parser.error('--perf-log needs --cd-stream and no --boot-trace')
         inst = '    psx_apf_video #('
         if text.count(inst) != 1: parser.error('--perf-log: APF video instance not found')
         text = text.replace(inst, '''    // Per-frame memory-wait counters (psx_perf_log), saved from 0x40000000.
     wire [31:0] perf_data;
+LOG_DECL    
     psx_perf_log PERF_PARAMSperf_log (.clk1x(clk1x), .clk2x(clk2x), .clk3x(PERF_CLK3X), .stage(PERF_STAGE), .vsync(vsync),
         .ram_ena(ram_ena), .ram_done(ram_done), .spu_ena(spuram_ena), .spu_done(spuram_done), .sample(sound_out_valid),
         .vram_rd(ddr3_RD), .vram_we(ddr3_WE), .vram_busy(ddr3_BUSY), .vram_ready(ddr3_DOUT_READY),
         .status({passed, failed, checking, mem_ready74[1], PSRAM_INIT, shared_initialized, 8'b0, loaded_words}),
+        .video_seq(LOG_SEQ), .video_w4(LOG_W4), .video_w5(LOG_W5), .video_w6(LOG_W6), .video_w7(LOG_W7),
         .read_clk(clk_74a), .read_index(bridge_addr[14:2]), .read_data(perf_data));
 ''' + inst)
         mux = "        if (bridge_addr[31:24]==8'hf8) bridge_rd_data=cmd_bridge_rd_data;"
@@ -1426,7 +1453,7 @@ CHIP_CLOCK_PINS""" + text[end:]
         # Nonvolatile slot 1's size word (data-table entry 3) is rewritten
         # whenever the disc streamer is not using the table port.
         for old_t, new_t in (('.datatable_addr(cd_table_addr),', '.datatable_addr(cd_table_active ? cd_table_addr : 10\'d3),'),
-                             ('.datatable_wren(1\'b0),\n        .datatable_data(32\'b0),', '.datatable_wren(!cd_table_active),\n        .datatable_data(32\'d16400),'),
+                             ('.datatable_wren(1\'b0),\n        .datatable_data(32\'b0),', f'.datatable_wren(!cd_table_active),\n        .datatable_data(32\'d{perf_bytes}),'),
                              ('.table_grant(1\'b1)', '.table_grant(cd_table_grant)')):
             if text.count(old_t) != 1: parser.error('--perf-log: data-table wiring not found: ' + old_t)
             text = text.replace(old_t, new_t)
@@ -1436,7 +1463,35 @@ CHIP_CLOCK_PINS""" + text[end:]
         pair_state = 'psram_debug[7:4]'
         stages = args.psram_sync and args.perf_stages
         if args.perf_stages and not args.psram_sync: parser.error('--perf-stages needs --psram-sync')
-        text = text.replace('PERF_PARAMS', '#(.FRAMES(511), .STAGES(1)) ' if stages else '')
+        text = text.replace('PERF_PARAMS', '#(.FRAMES(511), .STAGES(1)) ' if stages else
+                            '#(.FRAMES(227), .VIDEO(1), .TAG(%d)) ' % args.video_log_tag if args.video_log else '')
+        if args.video_log:
+            if not args.wide_lines: parser.error('--video-log needs --wide-lines (psx_apf_video_wide LOG)')
+            if not 0 <= args.video_log_tag <= 0x3ff: parser.error('--video-log-tag must be 0..0x3ff')
+            text = text.replace('LOG_DECL', '''    // psx_apf_video_wide LOG (video_rgb_clock) -> the perf ring (clk1x): the words are
+    // latched at the video module's vs_edge together with a toggle (log_seq); perf_log
+    // takes them two clk1x stages after the toggle has passed its own four, so they
+    // have settled (false paths below). One frame of lag: a record holds its own
+    // memory counters with the previous frame's video words.
+    wire [31:0] apf_log_w4, apf_log_w5, apf_log_w6, apf_log_w7;
+    wire apf_log_seq;
+    (* async_reg="true" *) reg [31:0] log_w4m=0, log_w5m=0, log_w6m=0, log_w7m=0;
+    reg [31:0] log_w4=0, log_w5=0, log_w6=0, log_w7=0;
+    always @(posedge clk1x) begin
+        log_w4m<=apf_log_w4; log_w4<=log_w4m;
+        log_w5m<=apf_log_w5; log_w5<=log_w5m;
+        log_w6m<=apf_log_w6; log_w6<=log_w6m;
+        log_w7m<=apf_log_w7; log_w7<=log_w7m;
+    end
+''')
+            for n in ('4', '5', '6', '7'):
+                text = text.replace('LOG_W' + n, 'log_w' + n)
+            text = text.replace('LOG_SEQ', 'apf_log_seq')
+        else:
+            text = text.replace('LOG_DECL', '')
+            for n in ('4', '5', '6', '7'):
+                text = text.replace('LOG_W' + n, "32'b0")
+            text = text.replace('LOG_SEQ', "1'b0")
         text = text.replace('PERF_CLK3X', 'clk3x' if stages else "1'b0")
         text = text.replace('PERF_STAGE', f"{{{pair_state}==4'd4 || {pair_state}==4'd5 || {pair_state}==4'd10, "
                             f"{pair_state}==4'd6 || {pair_state}==4'd7, main_debug[3:1]!=3'd0}}" if stages else "3'b0")
@@ -1461,7 +1516,7 @@ CHIP_CLOCK_PINS""" + text[end:]
         qsf = out/'apf_top.qsf'
         qsf.write_text(qsf.read_text()+f'set_global_assignment -name SYSTEMVERILOG_FILE "{Path(__file__).resolve().parents[1]}/rtl/pocket/psx_perf_log.sv" -library work\n')
         sdc = out/'pocket.sdc'
-        sdc.write_text(sdc.read_text()+'set_false_path -from [get_registers {*|perf_log|recorded[*] *|perf_log|slot[*]}]\nset_false_path -from [get_registers {*|perf_log|ring*}] -to [get_registers {*|perf_log|q[*]}]\nset_false_path -from [get_registers {*|perf_log|ring_rtl*}]\n')
+        sdc.write_text(sdc.read_text()+(('set_false_path -from [get_registers {*|apf_video|log_w4[*] *|apf_video|log_w5[*] *|apf_video|log_w6[*] *|apf_video|log_w7[*] *|apf_video|log_seq}]\n') if args.video_log else '')+'set_false_path -from [get_registers {*|perf_log|recorded[*] *|perf_log|slot[*]}]\nset_false_path -from [get_registers {*|perf_log|ring*}] -to [get_registers {*|perf_log|q[*]}]\nset_false_path -from [get_registers {*|perf_log|ring_rtl*}]\n')
     if args.vram_cdc_constraints:
         if text.count('psx_vram_stream') != 1:
             parser.error('--vram-cdc-constraints needs one psx_vram_stream instance')
@@ -1507,6 +1562,20 @@ CHIP_CLOCK_PINS""" + text[end:]
         parser.error('--fill-detect needs --aspect-setting')
     if args.fill_detect and args.fit_368 and not args.dbl_320:
         parser.error('--fill-detect needs --dbl-320 with --fit-368 (Stretch 480i then shares the Fit 640x480 slot)')
+    if args.even_lines and not (args.wide_lines and args.lead_line and args.vs_on_hs): parser.error('--even-lines needs --wide-lines --lead-line --vs-on-hs')
+    if args.weave_576 and not (args.fill_detect and args.fit_368 and args.dbl_320 and args.pal288 and args.crop_lines and args.even_lines and not args.pal_bob and not args.height_slots):
+        parser.error('--weave-576 needs --fill-detect --fit-368 --dbl-320 --pal288 --crop-lines --even-lines, without --pal-bob or --height-slots')
+    if args.fill_blend_panel and (args.fill_blend or not args.weave_576): parser.error('--fill-blend-panel needs --weave-576, without --fill-blend')
+    if args.fill_blend and not args.weave_576: parser.error('--fill-blend needs --weave-576')
+    if args.wide_blend and not args.weave_576: parser.error('--wide-blend needs --weave-576')
+    if args.pal_shape and not (args.weave_576 and args.fill_center): parser.error('--pal-shape needs --weave-576 --fill-center')
+    if args.dock_test and not args.wide_lines: parser.error('--dock-test needs --wide-lines')
+    if args.fill_center and not args.fill_detect: parser.error('--fill-center needs --fill-detect')
+    if args.pal_steady_field and (args.steady_field or not args.pal_bob): parser.error('--pal-steady-field needs --pal-bob, without --steady-field')
+    if args.pal_bob and not (args.wide_lines and args.aspect_setting and args.pal288 and args.crop_lines and not args.height_slots):
+        parser.error('--pal-bob needs --wide-lines --aspect-setting --pal288 --crop-lines, without --height-slots')
+    if args.height_slots and (not args.fill_detect or args.fit_368 or args.dbl_320):
+        parser.error('--height-slots needs --fill-detect, without --fit-368 or --dbl-320')
     if args.overscan_setting and not args.wide_lines:
         parser.error('--overscan-setting needs --wide-lines')
     if args.vs_on_hs and (args.vs_at_vblank or not args.scaler_slots):
@@ -1611,6 +1680,28 @@ CHIP_CLOCK_PINS""" + text[end:]
         if 'RUMBLE_ECHO : boolean := false' not in pad_text: parser.error('--pad-table: the pad must answer 0x4D with 0xFF (RUMBLE_ECHO false)')
         (out/'joypad_pad_table.vhd').write_text(table_text)
         qsf_path.write_text(qsf_text.replace(f'"{pads[0]}"', f'"{out/"joypad_pad_table.vhd"}"'))
+    if args.pad2:
+        # Player 2 is dock controller 2, a DualShock (scripts/prepare_pocket_pad2.py).
+        if not (args.dualshock and args.pad_combos): parser.error('--pad2 needs --dualshock --pad-combos')
+        from prepare_pocket_pad2 import wrapper_text as pad2_wrapper, top_text as pad2_top, SDC as PAD2_SDC
+        wrap = out/'psx_mister_psx_top_resource.vhd'
+        try:
+            wrap.write_text(pad2_wrapper(wrap.read_text(), args.analog_setting))
+            text = pad2_top(text)
+        except ValueError as error: parser.error('--pad2: ' + str(error))
+        sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + PAD2_SDC)
+    if args.analogizer:
+        # Analogizer on the cartridge port (scripts/prepare_pocket_analogizer.py).
+        from prepare_pocket_analogizer import wrapper_text as az_wrapper, top_text as az_top, SDC as AZ_SDC, FILES as AZ_FILES
+        wrap = out/'psx_mister_psx_top_resource.vhd'
+        try:
+            wrap.write_text(az_wrapper(wrap.read_text()))
+            text = az_top(text)
+        except ValueError as error: parser.error('--analogizer: ' + str(error))
+        root = Path(__file__).resolve().parents[1]
+        qsf_path = out/'apf_top.qsf'
+        qsf_path.write_text(qsf_path.read_text() + ''.join(f'\nset_global_assignment -name SYSTEMVERILOG_FILE "{root/f}" -library work\n' for f in AZ_FILES))
+        sdc = out/'pocket.sdc'; sdc.write_text(sdc.read_text() + AZ_SDC)
     if args.logo_skip_setting:
         # Single-word loaders (no --psram-main batching): give the loader a
         # halfword count of 2 so psx_bios_patch can sit in front of its CDC.
@@ -1908,8 +1999,12 @@ CHIP_CLOCK_PINS""" + text[end:]
             if used: parser.error(f'{flag} has no effect with --wide-lines (psx_apf_video_wide)')
         start = text.find('psx_apf_video #('); end = text.find(') apf_video (', start)
         if start < 0 or end < 0 or text.count('psx_apf_video #(') != 1: parser.error('--wide-lines: psx_apf_video instance not found')
-        params = (['.INTERLACE_FEATURE(1)'] if args.interlace_feature else []) + (['.FIELD_INVERT(1)'] if args.field_invert else []) + (['.PAL288(1)'] if args.pal288 else []) + (['.HYBRID(1)'] if args.hybrid_slots else []) + (['.LEAD_LINE(1)'] if args.lead_line else []) + (['.VS_ON_HS(1)'] if args.vs_on_hs else []) + (['.ASPECT(1)', '.PAL_TIMING(1)'] if args.aspect_setting else []) + (['.CROP_LINES(1)'] if args.crop_lines else []) + (['.VIDEO_PROBE(1)'] if args.video_probe else []) + (['.SLOT368(1)'] if args.fit_368 else []) + (['.DBL320(1)'] if args.dbl_320 else []) + (['.FILL_DETECT(1)'] if args.fill_detect else []) + (['.OVERSCAN_BLANK(1)'] if args.overscan_setting else [])
+        params = (['.INTERLACE_FEATURE(1)'] if args.interlace_feature else []) + (['.FIELD_INVERT(1)'] if args.field_invert else []) + (['.PAL288(1)'] if args.pal288 else []) + (['.HYBRID(1)'] if args.hybrid_slots else []) + (['.LEAD_LINE(2)' if args.even_lines else '.LEAD_LINE(1)'] if args.lead_line else []) + (['.VS_ON_HS(1)'] if args.vs_on_hs else []) + (['.ASPECT(1)', '.PAL_TIMING(1)'] if args.aspect_setting else []) + (['.CROP_LINES(1)'] if args.crop_lines else []) + (['.VIDEO_PROBE(1)'] if args.video_probe else []) + (['.SLOT368(1)'] if args.fit_368 else []) + (['.DBL320(1)'] if args.dbl_320 else []) + (['.FILL_DETECT(1)'] if args.fill_detect else []) + (['.OVERSCAN_BLANK(1)'] if args.overscan_setting else []) + (['.HEIGHT_SLOTS(1)'] if args.height_slots else []) + (['.PAL_BOB(1)'] if args.pal_bob else []) + (['.LOG(1)'] if args.video_log else []) + (['.FILL_CENTER(1)'] if args.fill_center else []) + (['.EVEN_LINES(1)'] if args.even_lines else []) + (['.WEAVE576(1)'] if args.weave_576 else []) + (['.DOCK_TEST(1)'] if args.dock_test else []) + (['.PAL_SHAPE(1)'] if args.pal_shape else []) + (['.BLEND(1)'] if args.wide_blend else []) + (['.EOL_TWICE(1)'] if args.eol_twice else []) + (['.FILL_BLEND(1)'] if args.fill_blend else []) + (['.PACE(1)'] if args.pace else []) + (['.FILL_BLEND(2)'] if args.fill_blend_panel else [])
         text = text[:start] + 'psx_apf_video_wide #(' + ', '.join(params or ['.PAL288(0)']) + text[end:]
+        if args.video_log:
+            if not args.perf_log: parser.error('--video-log needs --perf-log (the log is saved through the perf slot)')
+            if text.count('.rgb(apf_rgb));') != 1: parser.error('--video-log: APF video output wiring not found')
+            text = text.replace('.rgb(apf_rgb));', '.rgb(apf_rgb),\n        .log_w4(apf_log_w4), .log_w5(apf_log_w5), .log_w6(apf_log_w6), .log_w7(apf_log_w7), .log_seq(apf_log_seq));', 1)
         if args.aspect_setting:
             # "Aspect Ratio" list (interact.json, bridge 0x50000048, value from any
             # byte): 0 Fit, 1 Stretch. Fit until the Pocket writes the saved value.
@@ -1934,6 +2029,39 @@ CHIP_CLOCK_PINS""" + text[end:]
     always @(posedge video_rgb_clock) overscan_sync<={overscan_sync[0],overscan_set};
 """ + text[at:]
             text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .hide_overscan(overscan_sync[1]),', 1)
+        if args.fill_blend_panel:
+            # "Fill Phase" list (interact.json, bridge 0x50000068; A until set).
+            if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
+                parser.error('--fill-blend-panel: video setting wiring not found')
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg phase_set=1'b0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000068) phase_set<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] phase_sync=2'b00;
+    always @(posedge video_rgb_clock) phase_sync<={phase_sync[0],phase_set};
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .fill_phase(phase_sync[1]),', 1)
+        if args.wide_blend:
+            # "Wide Pixels" list (interact.json, bridge 0x50000064; Sharp until set).
+            if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
+                parser.error('--wide-blend: video setting wiring not found')
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg wide_set=1'b0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000064) wide_set<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] wide_sync=2'b00;
+    always @(posedge video_rgb_clock) wide_sync<={wide_sync[0],wide_set};
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .wide_even(wide_sync[1]),', 1)
+        if args.dock_test:
+            # "Dock test" list (interact.json, bridge 0x50000060; Normal until set).
+            if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
+                parser.error('--dock-test: video setting wiring not found')
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg [1:0] dock_set=2'd0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000060) dock_set<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
+    (* async_reg="true" *) reg [1:0] dock_sync0=2'd0, dock_sync1=2'd0;
+    always @(posedge video_rgb_clock) begin dock_sync0<=dock_set; dock_sync1<=dock_sync0; end
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .dock_mode(dock_sync1),', 1)
         qsf_path = out/'apf_top.qsf'
         qsf_path.write_text(qsf_path.read_text() + f'set_global_assignment -name SYSTEMVERILOG_FILE "{Path(__file__).resolve().parents[1]}/rtl/pocket/psx_apf_video_wide.sv" -library work\n')
     if args.cd_buffers != 2:
@@ -1954,7 +2082,7 @@ CHIP_CLOCK_PINS""" + text[end:]
         if text.count(".datatable_addr(cd_table_active ? cd_table_addr : 10'd3),") == 1:
             for o, n in ((".datatable_addr(cd_table_active ? cd_table_addr : 10'd3),",
                           ".datatable_addr(cd_table_active ? cd_table_addr : table_pick ? 10'd5 : 10'd3),"),
-                         (".datatable_data(32'd16400),", f".datatable_data(table_pick ? 32'd16400 : {card_size}),")):
+                         (f".datatable_data(32'd{perf_bytes}),", f".datatable_data(table_pick ? 32'd{perf_bytes} : {card_size}),")):
                 if text.count(o) != 1: parser.error('--memcard-slot: data-table wiring not found: ' + o)
                 text = text.replace(o, n)
         else:
@@ -2002,7 +2130,7 @@ CHIP_CLOCK_PINS""" + text[end:]
     if 'psx_apf_video #(' in text or 'psx_apf_video_wide #(' in text:
         extra.append('# The 480i and Screen menu settings cross into the video clock through two-flop synchronizers.\n'
                      'set_false_path -to [get_registers {*|weave_sync[0] *|swap_sync[0] *|video_test_meta[*]'
-                     + (' *|stretch_sync[0]' if args.aspect_setting else '') + (' *|overscan_sync[0]' if args.overscan_setting else '') + '}]\n')
+                     + (' *|stretch_sync[0]' if args.aspect_setting else '') + (' *|overscan_sync[0]' if args.overscan_setting else '') + (' *|dock_sync0[*]' if args.dock_test else '') + (' *|wide_sync[0]' if args.wide_blend else '') + (' *|phase_sync[0]' if args.fill_blend_panel else '') + '}]\n')
     if args.cd_stream:
         # psx_cd_stream holds every multi-bit value that crosses from before its
         # toggle until the far side answers; the toggles cross through two flops.
@@ -2024,6 +2152,23 @@ CHIP_CLOCK_PINS""" + text[end:]
     if args.host_config_cdc or args.video_config_cdc or args.apf_blank_cdc:
         from prepare_pocket_config_cdc import prepare_project
         prepare_project(out, host=args.host_config_cdc, video=args.video_config_cdc, blank=args.apf_blank_cdc)
+    if args.pal_steady_field:
+        # After the CDC copies: patch whichever gpu_videoout_async the project uses.
+        # PAL 480i fetches the vramRange(10)-relative even lines in both fields, as
+        # --steady-field does for every 480i; GPUSTAT field/odd-line reports are
+        # unchanged, so games see the real field.
+        qsf_path = out/'apf_top.qsf'; q = qsf_path.read_text()
+        vids = re.findall(r'"([^"]*/gpu_videoout_async[^"/]*\.vhd)"', q)
+        if len(vids) != 1: parser.error('--pal-steady-field: expected one gpu_videoout_async in the project')
+        old = '               activeLineLSBMuxed          := videoout_reports.activeLineLSB;\n'
+        v = Path(vids[0]).read_text()
+        if v.count(old) != 1: parser.error('--pal-steady-field: gpu_videoout_async line select changed')
+        v = v.replace(old, old + "               if (videoout_settings.GPUSTAT_PalVideoMode = '1') then activeLineLSBMuxed := videoout_settings.vramRange(10); end if; -- PSXEarly --pal-steady-field\n")
+        copy = out/'pal-steady-field'/'gpu_videoout_async.vhd'; copy.parent.mkdir(exist_ok=True); copy.write_text(v)
+        qsf_path.write_text(q.replace(f'"{vids[0]}"', f'"{copy}"'))
+    if args.pal_line_rate:
+        from prepare_pal_line_rate import prepare_project as prepare_pal_line
+        prepare_pal_line(out)
     if args.video_return_ff:
         from prepare_video_return_ff import prepare_project as prepare_return_ff
         prepare_return_ff(out)

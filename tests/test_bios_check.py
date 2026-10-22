@@ -11,8 +11,9 @@ sys.path.insert(0, str(ROOT/'scripts'))
 from chip32_vm import Chip32  # noqa: E402
 
 BIOS, CARD = 0x20, 0x10
-REGION, BIOS_REGION = 0x1100009c, 0x11000020
+REGION, BIOS_REGION, ISPAL = 0x1100009c, 0x11000020, 0x11000154
 SLOT_TABLE, HOST = 0xf8002000, 0xf8000000
+SIZE_BLOCK, SIZE_MAGIC = 0x2c0001c0, 0x53495a45   # psx_cue_mount RAM 0x21C0
 _built = {}
 
 
@@ -56,10 +57,12 @@ class BiosCheckTest(unittest.TestCase):
 
     def assert_started(self, vm, loads, region=0):
         # The region goes in the low and high byte (pmpw arrives byte-swapped).
+        ispal = 0x01000001 if region == 2 else 0   # Europe: PAL, bit 0 in both byte lanes
         region = region | region << 24
         self.assertEqual(vm.events[0], ('core', 0))
         self.assertEqual([e[1] for e in vm.events if e[0] == 'loadf'], loads)
-        self.assertEqual([e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] < HOST], [(REGION, region), (BIOS_REGION, 0)])
+        self.assertEqual([e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] < HOST and not SIZE_BLOCK <= e[1] < SIZE_BLOCK + 64],
+                         [(REGION, region), (ISPAL, ispal), (BIOS_REGION, 0)])
         self.assertLess(vm.events.index(('pmpw', REGION, region)), vm.events.index(('host', 0x4002, 0x4002)))
         self.assertEqual(vm.events[-2:], [('host', 0x4002, 0x4002), ('exit', 0)])
         self.assertEqual(vm.output, [])
@@ -206,11 +209,59 @@ class BiosCheckTest(unittest.TestCase):
                                         extra={0: game, 101: disc})
                 self.assert_started(vm, [BIOS])
                 writes = [e[1:] for e in vm.events if e[0] == 'pmpw' and e[1] >= HOST]
-                expected = [w for k, (slot, size) in enumerate(zip(table, (2, 0, 0, 524288, 2352*3, 0)))
+                block = [e[1:] for e in vm.events if e[0] == 'pmpw' and SIZE_BLOCK <= e[1] < SIZE_BLOCK + 64]
+                # slots 0 and 101 (and 100, 102: no file) for the cue reader, then the magic
+                self.assertEqual(block, [(SIZE_BLOCK+4, 2), (SIZE_BLOCK+12, 0), (SIZE_BLOCK+16, 2352*3), (SIZE_BLOCK+20, 0),
+                                         (SIZE_BLOCK, SIZE_MAGIC)])
+                self.assertLess(vm.events.index(('pmpw', SIZE_BLOCK, SIZE_MAGIC)), vm.events.index(('host', 0x4002, 0x4002)))
+                # the BIOS slot's size is written once the BIOS pass opens it
+                expected = [w for k, (slot, size) in enumerate(zip(table, (2, 0, 0, 0, 2352*3, 0)))
                             for w in ((SLOT_TABLE+8*k, slot), (SLOT_TABLE+8*k+4, size))]
-                self.assertEqual(writes, expected + ([(HOST, 0x434d0082)] if complete else []))
+                self.assertEqual(writes, expected + [(SLOT_TABLE+8*3+4, 524288)] + ([(HOST, 0x434d0082)] if complete else []))
                 self.assertLess(vm.events.index(('pmpw',)+writes[-1]), vm.events.index(('host', 0x4002, 0x4002)))
                 self.assertIsNone(vm.file)
+
+    def opens(self, vm):
+        return [e[1] for e in vm.events if e[0] == 'open']
+
+    def test_each_file_opened_once(self):
+        # The Pocket's loading bar appears with the BIOS loadf: before it,
+        # only the slots that have to be opened are, each once.
+        usa, eu = (b'System ROM Version 4.1 12/16/97 '+c for c in (b'A', b'E'))
+        card = self.dir/'game.sav'; card.write_bytes(bytes(131072))
+        from build_chip32_loader import BIOS_NAMES, DISC_SLOT, CUE_SLOT
+        slots = tuple((0x20+k, n) for k, n in enumerate(BIOS_NAMES))
+        table = (0, CARD, 0x20, CUE_SLOT, DISC_SLOT) + tuple(0x21+k for k in range(len(BIOS_NAMES)-1))
+        program = loader(slots=slots, memcard_slot=CARD, table=table)
+        def run(files, disc=None, cue=None):
+            files = {n: p.rename(p.with_name(n)) for n, p in files.items() if p}
+            vm = Chip32(program, {**{0x20+k: files.get(n) for k, n in enumerate(BIOS_NAMES)},
+                                  CARD: card, CUE_SLOT: cue, DISC_SLOT: disc},
+                     query_declared=[0x20+k for k in range(len(BIOS_NAMES))])
+            vm.run()
+            return vm
+        # a USA game and scph5501: the card, the disc, then that one BIOS
+        vm = run({'scph5501.bin': self.bios(usa)}, self.disc(b'Amer  ica '))
+        self.assert_started(vm, [0x20, CARD])
+        self.assertEqual(self.opens(vm), [CARD, DISC_SLOT, 0x20])
+        # a European cue: the European names first, the USA BIOS untouched
+        vm = run({'scph5501.bin': self.bios(usa), 'scph1002.bin': self.bios(eu)}, None, self.cue('Game (Europe).cue'))
+        self.assert_started(vm, [0x2c, CARD], 2)
+        self.assertEqual(self.opens(vm), [CARD, CUE_SLOT, 0x2a, 0x2b, 0x2c])
+        # no BIOS of its region: every name once, then the USA BIOS
+        vm = run({'scph5501.bin': self.bios(usa)}, None, self.cue('Game (Europe).cue'))
+        self.assert_started(vm, [0x20, CARD])
+        opened = self.opens(vm)
+        self.assertEqual(sorted(opened), sorted(set(opened)))
+        self.assertEqual(len(opened), 2 + len(BIOS_NAMES))
+        self.assertEqual(len([e for e in vm.events if e[0] == 'fault']), len(BIOS_NAMES) - 1)
+
+    def test_card_outside_the_table_is_opened(self):
+        card = self.dir/'game.sav'; card.write_bytes(bytes(131072))
+        vm, _ = self.run_loader(self.bios(), card, program=loader(memcard_slot=CARD, table=(0, 0x20)))
+        self.assert_started(vm, [BIOS, CARD])
+        vm, _ = self.run_loader(self.bios(), None, program=loader(memcard_slot=CARD, table=(0, CARD, 0x20)))
+        self.assert_started(vm, [BIOS])
 
     def test_later_run_exits(self):
         regs = [0]*16; regs[13] = 1

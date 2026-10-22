@@ -28,6 +28,9 @@ CPU_PRODUCT_SHA='e7fac3b0ebed127f8ff2f6b763419e6dbe92c84a54c94f1440470a57c95cdf6
 SPU_QUEUE_SHA='169813eeab5a521bc897cc7a5c64923571a4fd52f2454ab49758ce27d11361be'
 # rtl/pocket/joypad_pad_table.vhd (prepare --pad-table, make test-joypad-pad-table)
 PAD_TABLE_SHA='2f845f92c56c82fde1d933c4889a89968628246009e384fb969c5b87c61951e6'
+# 2e9058d: each port keeps its DualShock state, as upstream (--pad2; lockstep
+# with the pinned MiSTer pad in make test-joypad-pad-table / -dualshock-lean)
+PAD_TABLE_SHAS=(PAD_TABLE_SHA,'b6788a427cdd0d165966995a41ab8fba70a957a5726650b27ac0d09c40b13136')
 
 def once(t,a,b):
 
@@ -111,7 +114,8 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
             # STICK_DPAD/ANALOG_LEVEL defaults; checked with both at false.
             text=one('joypad_pad_table.vhd').read_text()
             text=re.sub(r'(STICK_DPAD|ANALOG_LEVEL) : boolean := true',r'\1 : boolean := false',text)
-            return PAD_TABLE_SHA if hashlib.sha256(text.encode()).hexdigest()==PAD_TABLE_SHA else None
+            sha=hashlib.sha256(text.encode()).hexdigest()
+            return sha if sha in PAD_TABLE_SHAS else None
         if 'joypad_pad_dualshock_analog.vhd' in names and 'joypad_pad_dualshock.vhd' not in names:
             text=one('joypad_pad_dualshock_analog.vhd').read_text()
             if text.count('ANALOG_LEVEL : boolean := true')!=1: return None
@@ -127,10 +131,12 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
         raise ValueError('Unreviewed analog transport')
     if ('psx_pocket_stick_map stick_map' not in core or not any(tag in core for tag in ('psx_pocket_analog pad_analog','psx_pocket_analog #(.PASS_CONFIG(1)')) or
             # 83d3cc78: the same pad with the ANALOG_LEVEL generic (--analog-setting, 77d5f25)
-            pad_digest() not in (PAD_TABLE_SHA, '18b893b42b224e17b9d2b3963a60d1e1d86436b488aaba3094da34ce5cb78ebc',
+            pad_digest() not in (*PAD_TABLE_SHAS, '18b893b42b224e17b9d2b3963a60d1e1d86436b488aaba3094da34ce5cb78ebc',
                                  '83d3cc782c51427806a58793f1168396274e9239ddec471fe4ace34fd031045e',
                                  # 8cbbc514: 83d3cc78 with a name dropped from one comment (72cefc8)
-                                 '8cbbc514d567d3ac59e34a6cad97868bcac24d26d597abef501416302cca35ad')):
+                                 '8cbbc514d567d3ac59e34a6cad97868bcac24d26d597abef501416302cca35ad',
+                                 # 964fd214: per-port DualShock state (2e9058d)
+                                 '964fd214d71db2a712cb2e1451b1188a1d387dd57811824a150d8e65dc7ebd40')):
         raise ValueError('Current DualShock and stick-settings profile required')
     atomic='psx_pocket_analog #(.PASS_CONFIG(1)' in core
     config_bits=16 if 'wire [15:0] pad_stick_config_in' in core else 15 if 'wire [14:0] pad_stick_config_in' in core else 13 if 'wire [12:0] pad_stick_config_in' in core else 4 if 'wire [3:0] pad_stick_config_in' in core else 0

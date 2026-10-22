@@ -333,7 +333,58 @@ fn parse_cue_text(text: &str) -> Result<CueFiles, String> {
 fn parse_cue(path: &Path) -> Result<CueFiles, String> {
     let data = fs::read(path).map_err(|e| e.to_string())?;
     let data = data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&data);
-    parse_cue_text(&String::from_utf8_lossy(data))
+    let files = parse_cue_text(&String::from_utf8_lossy(data))?;
+    let names: Vec<String> = files.iter().map(|f| f.0.clone()).collect();
+    Ok(files.into_iter().map(|(name, tracks)| (resolve_file(path, &name, &names), tracks)).collect())
+}
+
+fn track_file() -> &'static Regex { regex!(r"(?i)\(Track (\d+)\)") }
+
+fn track_number(name: &str) -> Option<u64> { track_file().captures(name)?[1].parse().ok() }
+
+/// The file in cue's folder that FILE name means: name itself when it is
+/// there, else the one file that matches it ignoring case (or its folders),
+/// else for a one-file cue "<cue name>.bin" (renamed along with its cue, as
+/// the core's cue reader also takes), else the one .bin with the same
+/// "(Track n)" when the cue is the only one in its folder and its .bin files
+/// are exactly the cue's tracks, one per "(Track n)". Without any of these,
+/// name (reported as missing).
+fn resolve_file(cue: &Path, name: &str, names: &[String]) -> String {
+    let folder = cue.parent().unwrap_or(Path::new(""));
+    if is_file(&join(folder, &name.replace('\\', "/"))) {
+        return name.to_string();
+    }
+    let mut files: Vec<String> = fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().map_or(false, |t| t.is_file()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with("._"))
+        .collect();
+    files.sort();
+    let one = |test: &dyn Fn(&str) -> bool| {
+        let found: Vec<&String> = files.iter().filter(|f| test(f)).collect();
+        (found.len() == 1).then(|| found[0].clone())
+    };
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let lower = base.to_lowercase();
+    let renamed = format!("{}.bin", stem(&name_of(cue)).to_lowercase());
+    let track = track_number(base);
+    let bins: Vec<&String> = files.iter().filter(|f| has_ext(f, ".bin") && !f.ends_with(" (one file).bin")).collect();
+    let mut numbers: Vec<Option<u64>> = names.iter().map(|n| track_number(n.rsplit(['/', '\\']).next().unwrap_or(n))).collect();
+    let mut bin_numbers: Vec<Option<u64>> = bins.iter().map(|f| track_number(f)).collect();
+    numbers.sort();
+    bin_numbers.sort();
+    let by_track = files.iter().filter(|f| has_ext(f, ".cue")).count() == 1
+        && !numbers.contains(&None)
+        && numbers.windows(2).all(|w| w[0] != w[1])
+        && numbers == bin_numbers;
+    one(&|f| f == base)
+        .or_else(|| one(&|f| f.to_lowercase() == lower))
+        .or_else(|| if names.len() == 1 { one(&|f| f.to_lowercase() == renamed) } else { None })
+        .or_else(|| if track.is_some() && by_track { one(&|f| has_ext(f, ".bin") && track_number(f) == track) } else { None })
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn raw_track(kind: &str) -> bool {

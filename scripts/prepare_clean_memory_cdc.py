@@ -17,8 +17,8 @@ from prepare_pocket_config_cdc import assignments
 from prepare_resource_targets import digest
 from tool_paths import ROOT
 
-CARD_SHA = '0e8613220b6174d00ef8550684d4027b81160c80b161de035c880945368ecca9'
-VRAM_SHA = 'b0c0c5592528105728d83e771d1c1ebb946e483f3a0d3e6d9026e0269cb53c0f'
+CARD_SHA = '9eda6aa00f8223ac1285e20e84a48137e13276b55d7fb4e57315be064cf92712'
+VRAM_SHA = '99d8dd3ad4a5950a22dfd7c304354db83ce31ae318eeeb418081340e139efa81'
 COMMAND_SHA = '4f558ed91203ce733187bc9c3d72cf6450102e08f25da83a927a7a59e001fcc5'
 SYNC_ATTRIBUTE = '(* preserve, dont_merge, async_reg="true" *) '
 CARD_SYNC = ('s74_rst', 's74_take', 's2x_req', 's2x_ready', 's2x_rack')

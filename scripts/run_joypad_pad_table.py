@@ -29,11 +29,15 @@ MUTATIONS = (  # (old, new, generics)
     ('state or ("000000" & (dsAnalogModeSave or dsConfigModeSave))', 'state or ("000000" & dsAnalogModeSave)', ()),
     ('then id := 16#F3#;', 'then id := 16#F1#;', ()),
     ('if (to_integer(joypad.Analog1Y) >=  64) then b(6)', 'if (to_integer(joypad.Analog1Y) >=  65) then b(6)', ()),
-    ('dsAnalogMode    <= joypad.ToggleDS;', 'dsAnalogMode    <= not joypad.ToggleDS;', ('-gANALOG_LEVEL=true',)),
+    ('dsAnalogMode(portNr)    <= joypad.ToggleDS;', 'dsAnalogMode(portNr)    <= not joypad.ToggleDS;', ('-gANALOG_LEVEL=true',)),
+    # port 2's L3+R3+Up combo lands in port 1's state (needs a second DualShock)
+    ("joypad.KeyUp = '1') then\n                     dsAnalogMode(portNr) <= '1';", "joypad.KeyUp = '1') then\n                     dsAnalogMode(0) <= '1';", ('-gPAD2=2',)),
 )
 RUNS = [(('-gPAD2=0', f'-gSEED={s}'), 1) for s in (1, 2, 3)] + [(('-gPAD2=1', f'-gSEED={s}'), 1) for s in (4, 5, 6)] + [
     (('-gSEED=7', '-gSTICK_DPAD=false'), 1), (('-gSEED=8', '-gANALOG_LEVEL=true', '-gCYCLES=1500000'), 1),
-    (('-gSEED=9', '-gPAD2=1', '-gANALOG_LEVEL=true', '-gCYCLES=2000000'), 1)]
+    (('-gSEED=9', '-gPAD2=1', '-gANALOG_LEVEL=true', '-gCYCLES=2000000'), 1)] + [
+    (('-gPAD2=2', f'-gSEED={s}'), 1) for s in (12, 13, 14)] + [
+    (('-gSEED=15', '-gPAD2=2', '-gANALOG_LEVEL=true', '-gCYCLES=2000000'), 1)]
 
 
 def build(ghdl, folder, table):

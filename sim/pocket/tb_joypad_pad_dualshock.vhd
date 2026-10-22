@@ -7,7 +7,8 @@
 -- 00..03 arguments), the L3+R3+Up/Down analog combo, random sticks, CE holds,
 -- deselects, port switches while deselected, slot-busy and resets. Every
 -- output except the rumble motors and ss_out (not produced) is compared on
--- every clock. Generic PAD2 enables port 2 as a second digital pad.
+-- every clock. Generic PAD2 enables port 2 as a second digital pad (1) or a
+-- second DualShock that also switches to a digital pad at random (2).
 -- ECHO=1 builds the lean pad with RUMBLE_ECHO (exact everywhere); ECHO=0
 -- (the Pocket build) may differ only in the six 0x4D config bytes, which
 -- must then read 0xFF. actionNext never fires on two clocks in a row: the
@@ -76,6 +77,7 @@ begin
       variable errs, valids, acks : natural := 0;
       variable sel_hold : natural := 0;
       variable sel_new, ds_now : std_logic := '1';
+      variable ds2_now, toggle2 : std_logic := '1';   -- PAD2=2: pad 2 is a DualShock / digital pad too
       variable f3s, s73s : natural := 0;
       variable rumble_left, rumble_ffs : natural := 0;
       variable rumble_byte : boolean;
@@ -143,9 +145,10 @@ begin
          slotIdle <= bit_r(0.95);
          transmitValue <= byte_r;
          if rnd < 0.0005 then ds_now := not ds_now; end if;
+         if PAD2 = 2 and rnd < 0.0005 then ds2_now := not ds2_now; end if;
          if rnd < 0.01 then rand_pad(j1, '1', ds_now); end if;
          if rnd < 0.01 then
-            if PAD2 /= 0 then rand_pad(j2, '1'); else rand_pad(j2, '0'); end if;
+            if PAD2 = 2 then rand_pad(j2, '1', ds2_now); elsif PAD2 /= 0 then rand_pad(j2, '1'); else rand_pad(j2, '0'); end if;
          end if;
          wait until rising_edge(clk);
          wait for 0 ns; wait for 0 ns;

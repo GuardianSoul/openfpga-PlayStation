@@ -204,6 +204,14 @@ class PocketPlugin(unittest.TestCase):
             self.assertNotIn('needs converting', out)
             self.assertIn('wrote Game.json (3 tracks, cue)', out)
             self.assertIn('wrote Ape Escape (Europe).json (1 track, cue, LibCrypt Ape Escape (Europe).sbi)', out)
+            # Cue FILE names that differ from the files: the game file names the real files.
+            self.assertIn('skip Gone/Gone (USA).cue: Gone (USA) (Track 2).bin: file missing', out)
+            self.assertIn('skip Stray/Stray (USA).cue: Stray (USA) (Track 1).bin: file missing', out)
+            slots = lambda name: [s['filename'] for s in json.loads(
+                (plugin/'Assets/playstation'/CORE/f'{name}.json').read_text())['instance']['data_slots']]
+            self.assertEqual(slots('Case'), ['Case.cue', 'Case Game (USA).bin'])
+            self.assertEqual(slots('Renamed'), ['Renamed.cue', 'Renamed.bin'])
+            self.assertEqual(slots('Tracks Renamed (USA)'), ['Tracks Renamed (USA).cue'] + [f'TR (Track 0{k}).bin' for k in (1, 2, 3)])
             self.assertIn("Final Fantasy IX: the discs' names differ by more than their number: wrote the playlist", out)
             self.assertNoLargeFiles(before, plugin)
             self.assertEqual([n for n in tree(plugin) if n not in before and not n.endswith(('.json', '.sav', '.m3u'))],

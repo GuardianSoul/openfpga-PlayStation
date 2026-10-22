@@ -6,29 +6,40 @@
 //   1. selects bitstream 0;
 //   2. reads the disc's region from its licence text (sector 4 of the
 //      disc image: "Sony Computer Entertainment Amer", "Inc." or "Euro");
-//   3. tries the BIOS slots in order (one fixed file name each) and loads
-//      the first file that is 512 KB and carries a PlayStation ROM version
-//      line ("System ROM Version 3.0 11/18/96 A"), whose last letter is
-//      its region: A (USA), J (Japan) or E (Europe). A BIOS of the disc's
-//      region goes first; without one, any usable BIOS is loaded;
+//   3. tries the BIOS slots (one fixed file name each) and loads the first
+//      file that is 512 KB and carries a PlayStation ROM version line
+//      ("System ROM Version 3.0 11/18/96 A"), whose last letter is its
+//      region: A (USA), J (Japan) or E (Europe). A BIOS of the disc's
+//      region goes first (its names are tried first); without one, the
+//      first usable BIOS in slot order is loaded;
 //   4. sets the CD controller's region to match, as MiSTer does per BIOS,
 //      so the BIOS accepts every disc; the BIOS bank select stays 0, since
 //      the BIOS writer always fills bank 0 (0x800000) whatever the region;
+//      and gives the GPU its PAL video mode (isPal, bridge 0x11000154) so a
+//      European BIOS drives its own 50 Hz screen with all its lines;
 //   5. otherwise stops with a one-line message on the Pocket's error
 //      screen: "Missing BIOS scph5501.bin", or "Bad BIOS <name>" for the
-//      first file it found that is not 512 KB or has no version line;
+//      first file in slot order that is not 512 KB or has no version line;
 //   6. loads the memory card if its file exists, and starts the core.
-// Before step 3 it writes the core's slot ID/size table (bridge 0xF8002000),
-// which the firmware leaves empty under Chip32; opening a slot only works
-// before the BIOS is loaded and faults for a slot with no file.
+// Step 2 is part of writing the core's slot ID/size table (bridge
+// 0xF8002000), which the firmware leaves empty under Chip32; opening a slot
+// only works before the BIOS is loaded and faults for a slot with no file.
 // The disc and track slots are deferred; the core reads them itself and
 // finds their sizes in that table.
+// The Pocket draws its loading bar only while loadf runs, and every SD card
+// open before the BIOS load delays it, so each file is opened at most once:
+// the table pass skips the BIOS slots (the BIOS passes write the sizes of
+// those they open), reads the licence while the disc is open and keeps the
+// card's size for step 6. It also hands the cue reader (psx_cue_mount) the
+// sizes of the launch, cue, .sbi, disc, track table and cheat slots, which
+// its firmware would otherwise measure with dozens of APF reads.
 // A later run (a slot reload) exits at once: r13 survives between runs.
 //
 // scripts/build_chip32_loader.py appends the constants memcard_slot
 // (0xffff: none), disc_slot (the disc image, 0xffff: none), cue_slot (a game file's cue, 0xffff: none) and send_complete (1: also raise the core's "all slots
 // complete" as the firmware's command 0x0082 does), the 0-terminated word
-// list bios_slots, the 0xffff-terminated list table_slots (every data.json
+// list bios_slots, the word list bios_expect (each BIOS name's region from
+// its last digit, 0xff for another name), the 0xffff-terminated list table_slots (every data.json
 // slot in order) and the string msg_names (the first file name, for the
 // missing message).
 
@@ -40,6 +51,7 @@ constant version_bytes = 33
 constant region_char = 32           // A (USA), J (Japan) or E (Europe)
 constant region_reg = 0x1100009c    // core_top region: 0 USA, 1 Japan, 2 Europe
 constant biosregion_reg = 0x11000020
+constant ispal_reg = 0x11000154    // core_top isPal: MiSTer's GPU PAL video mode at reset
 constant flag_started = 1
 constant slot_table = 0xf8002000
 constant bridge_host = 0xf8000000
@@ -49,7 +61,17 @@ constant name_buf = 0x1d00
 constant licence_seek = 9492        // sector 4 (2352-byte raw) data + 60
 constant no_region = 0xff
 constant bios_first = 0x20          // BIOS slots 0x20-0x2f (BIOS_SLOT_MASK)
-constant present = 0x1e00           // one byte per BIOS slot: 0 when it has no file
+constant result = 0x1e00            // one byte per BIOS slot: 0 untried, else its check code, 0x10 | region when usable
+constant entry = 0x1e10             // one word per BIOS slot: its table size word (from slot_table), 0 for none
+constant card_size = 0x1e30         // the memory card's size from the table pass, 0xffffffff when not in it
+constant size_block = 0x2c0001c0    // psx_cue_mount RAM 0x21C0: "SIZE", slots 0, 99, 100, 101, 102, 98
+constant size_magic = 0x53495a45
+constant size_slot0 = 0x2c0001c4    // (named: bass encodes #size_block+n as a 16-bit immediate)
+constant size_slot99 = 0x2c0001c8
+constant size_slot100 = 0x2c0001cc
+constant size_slot101 = 0x2c0001d0
+constant size_slot102 = 0x2c0001d4
+constant size_slot98 = 0x2c0001d8
 
 // check codes (r5); a usable file's region is in r6
 constant ok = 0
@@ -70,21 +92,27 @@ first_run:
                 ld r0,#core_id
                 core r0
                 ld r11,#0
-                // Opening a slot with no file faults, so check only BIOS slots
-                // the table pass found a file in (all count as present when the
-                // package lists no table).
-                ld r3,#present
-                ld r4,#1
-present_fill:
+                // Clear the per-BIOS results and table offsets; the card's
+                // size is unknown until the table pass meets its slot.
+                ld r3,#result
+                ld r4,#0
+clear_next:
                 ld.b (r3),r4
                 add r3,#1
-                cmp r3,#present+16
-                jp nz,present_fill
+                cmp r3,#card_size
+                jp nz,clear_next
+                ld r4,#0xffffffff
+                ld.l (card_size),r4
+                ld r7,#no_region
 
                 // The ID/size table: one entry (ID, then size) per data.json
-                // slot, size 0 for an empty slot.
+                // slot, size 0 for an empty slot. A BIOS slot is not opened
+                // here: the BIOS pass opens the ones it tries and writes
+                // their sizes (r10: this entry's size word, from slot_table).
+                // The disc image's licence is read while it is open.
                 ld r9,#table_slots
                 ld r8,#slot_table
+                ld r10,#4
 table_next:
                 ld.w r1,(r9)
                 cmp r1,#0xffff
@@ -93,12 +121,25 @@ table_next:
                 pmpw r8,r1
                 add r8,#4
                 ld r2,#0
+                ld r3,r1
+                sub r3,#bios_first
+                cmp r3,#16
+                jp nc,table_open
+                asl r3,#1
+                add r3,#entry
+                ld.w (r3),r10
+                jp table_size
+table_open:
                 queryslot r1
                 jp nz,table_size
                 ld r11,#1                   // an empty slot's open faults
                 open r1,r2
                 jp nz,table_empty
                 ld r11,#0
+                cmp r1,#disc_slot
+                jp nz,table_close
+                call licence
+table_close:
                 close
                 jp table_size
 table_empty:
@@ -106,73 +147,18 @@ table_empty:
                 ld r2,#0
 table_size:
                 pmpw r8,r2
+                call fw_size
                 add r8,#4
-                ld r3,r1
-                sub r3,#bios_first
-                cmp r3,#16
-                jp nc,table_next            // not a BIOS slot
-                add r3,#present
-                ld r4,#0
-                cmp r2,#0
-                jp z,table_mark
-                ld r4,#1
-table_mark:
-                ld.b (r3),r4
+                add r10,#8
+                cmp r1,#memcard_slot
+                jp nz,table_next
+                ld.l (card_size),r2
                 jp table_next
 table_done:
-                ld r1,#send_complete
-                cmp r1,#0
-                jp z,table_run
-                ld r1,#bridge_host
-                ld r2,#cmd_allcomplete
+                ld r1,#size_block
+                ld r2,#size_magic
                 pmpw r1,r2
-table_run:
 
-                // r7: the disc's region (0 USA, 1 Japan, 2 Europe) from the
-                // licence text in its sector 4, or no_region.
-                ld r7,#no_region
-                ld r1,#disc_slot
-                cmp r1,#0xffff
-                jp z,disc_done
-                queryslot r1
-                jp nz,disc_done
-                ld r11,#2                   // an open fault: no disc file
-                open r1,r2
-                jp nz,disc_none
-                ld r11,#0
-                ld r3,#licence_seek
-                seek r3
-                jp nz,disc_close
-                ld r3,#buf
-                ld r4,#4
-                read r3,r4
-                jp nz,disc_close
-                ld r3,#buf+4
-                ld r4,#0
-                ld.b (r3),r4
-                ld r3,#buf
-                ld r4,#licence_usa
-                test r3,r4
-                jp z,disc_usa
-                ld r4,#licence_japan
-                test r3,r4
-                jp z,disc_japan
-                ld r4,#licence_europe
-                test r3,r4
-                jp nz,disc_close
-                ld r7,#2
-                jp disc_close
-disc_usa:
-                ld r7,#0
-                jp disc_close
-disc_japan:
-                ld r7,#1
-disc_close:
-                close
-                jp disc_done
-disc_none:
-                ld r11,#0
-disc_done:
                 // No licence text read (a game file's disc is its cue, whose
                 // track files only the core opens): take the region from the
                 // cue's or the disc's file name instead ("(Europe)", "(Japan)").
@@ -186,40 +172,111 @@ disc_done:
                 call name_region
 region_done:
 
-                // First pass: a usable BIOS of the disc's region.
+                // BIOS passes. Every BIOS slot is opened at most once (its
+                // result kept in result), so the BIOS load, and the Pocket's
+                // loading bar with it, starts after as few SD card opens as
+                // possible. With the disc's region known, the first pass
+                // tries only the names of that region (bios_expect) and
+                // loads the first one whose version line agrees; the second
+                // tries the rest in slot order, loading one of the disc's
+                // region, or with no region the first usable file.
+                ld r10,#0
                 cmp r7,#no_region
-                jp z,any_region
+                jp z,bios_pass
+                ld r10,#1
+bios_pass:
                 ld r9,#bios_slots
-match_slot:
+                ld r14,#bios_expect
+bios_next:
                 ld.w r1,(r9)
                 cmp r1,#0
-                jp z,any_region
+                jp z,bios_done
                 add r9,#2
+                ld.w r4,(r14)
+                add r14,#2
+                cmp r10,#0
+                jp z,bios_try
+                cmp r4,r7
+                jp nz,bios_next
+bios_try:
+                ld r3,r1
+                sub r3,#bios_first
+                add r3,#result
+                ld.b r4,(r3)
+                cmp r4,#0
+                jp nz,bios_next             // tried in the first pass
+                ld r5,#absent
+                queryslot r1
+                jp nz,bios_store
+                ld r11,#3                   // an empty BIOS slot's open faults
+                open r1,r2
+                jp nz,bios_none
+                ld r11,#0
+                ld r3,r1                    // its size into the table
+                sub r3,#bios_first
+                asl r3,#1
+                add r3,#entry
+                ld.w r4,(r3)
+                cmp r4,#0
+                jp z,bios_check
+                ld r3,#slot_table
+                add r3,r4
+                pmpw r3,r2
+bios_check:
                 call check
+                jp bios_store
+bios_none:
+                ld r11,#0
+                ld r5,#absent
+bios_store:
+                ld r4,r5
                 cmp r5,#ok
-                jp nz,match_slot
+                jp nz,bios_keep
+                ld r4,r6
+                or r4,#0x10
+bios_keep:
+                ld r3,r1
+                sub r3,#bios_first
+                add r3,#result
+                ld.b (r3),r4
+                cmp r5,#ok
+                jp nz,bios_next
+                cmp r7,#no_region
+                jp z,load_bios
                 cmp r6,r7
                 jp z,load_bios
-                jp match_slot
+                jp bios_next
+bios_done:
+                cmp r10,#0
+                jp z,any_region
+                ld r10,#0
+                jp bios_pass
 
-                // Otherwise the first usable BIOS in slot order.
+                // Otherwise the first usable BIOS in slot order; r12 the
+                // first unusable file's slot.
 any_region:
-                ld r12,#0                   // first unusable file's slot
+                ld r12,#0
                 ld r9,#bios_slots
-next_slot:
+any_next:
                 ld.w r1,(r9)
                 cmp r1,#0
                 jp z,none_usable
                 add r9,#2
-                call check
-                cmp r5,#ok
-                jp z,load_bios
-                cmp r5,#bad_size
-                jp c,next_slot              // absent
+                ld r3,r1
+                sub r3,#bios_first
+                add r3,#result
+                ld.b r4,(r3)
+                cmp r4,#0x10
+                jp nc,any_usable
+                cmp r4,#bad_size
+                jp c,any_next               // absent
                 cmp r12,#0
-                jp nz,next_slot
+                jp nz,any_next
                 ld r12,r1
-                jp next_slot
+                jp any_next
+any_usable:
+                ld r6,r4
+                and r6,#3
 
 load_bios:
                 loadf r1
@@ -233,42 +290,119 @@ load_bios:
                 asl r2,#8
                 or r2,r6
                 pmpw r1,r2
+                // The GPU's PAL video mode at reset comes from this pin
+                // (references/PSX_MiSTer/rtl/gpu.vhd: GPUSTAT_PalVideoMode <=
+                // isPal), so a PAL BIOS left with isPal 0 gets NTSC timing:
+                // vtotal 262 instead of 312/313 and vDisplayMax 240 instead of
+                // 288, cutting the bottom of its own screens (0.5.5 hardware:
+                // the SCPH-5502 Sony Computer Entertainment screen and the
+                // PlayStation logo after it). Only Europe drives a 50 Hz
+                // screen; games set the bit themselves with GP1(08). The core
+                // takes bit 0, so the 1 goes in both byte lanes like the region.
+                ld r1,#ispal_reg
+                ld r2,#0                    // USA and Japan: NTSC
+                cmp r6,#2
+                jp nz,ispal_done
+                ld r2,#0x01000001           // Europe: PAL
+ispal_done:
+                pmpw r1,r2
                 ld r1,#biosregion_reg       // the BIOS writer always fills bank 0
                 ld r6,#0
                 pmpw r1,r6
 
-                // The memory card: loaded when its file exists.
+                // The memory card: loaded when its file exists. The table
+                // pass has its size; a card slot outside the table is opened
+                // to find out.
                 ld r1,#memcard_slot
                 cmp r1,#0xffff
                 jp z,start_core
+                ld.l r2,(card_size)
+                cmp r2,#0
+                jp z,start_core
+                cmp r2,#0xffffffff
+                jp nz,card_load
                 open r1,r2
                 jp nz,start_core
                 close
+card_load:
                 loadf r1
                 jp nz,card_error
 
 start_core:
+                // After every table write (BIOS sizes come from the passes).
+                ld r1,#send_complete
+                cmp r1,#0
+                jp z,host_start
+                ld r1,#bridge_host
+                ld r2,#cmd_allcomplete
+                pmpw r1,r2
+host_start:
                 or r13,#flag_started
                 ld r0,#host_init
                 host r0,r0
                 exit 0
 
-// check: r1 = slot. Returns r5 (codes above); buf holds the version line.
+// fw_size: slot r1's size r2 into the cue reader's size block when it is one
+// the boot mount would otherwise measure with ~19 APF reads (r3).
+fw_size:
+                ld r3,#size_slot0
+                cmp r1,#0
+                jp z,fw_put
+                ld r3,#size_slot99
+                cmp r1,#99
+                jp z,fw_put
+                ld r3,#size_slot100
+                cmp r1,#100
+                jp z,fw_put
+                ld r3,#size_slot101
+                cmp r1,#101
+                jp z,fw_put
+                ld r3,#size_slot102
+                cmp r1,#102
+                jp z,fw_put
+                ld r3,#size_slot98
+                cmp r1,#98
+                jp nz,fw_none
+fw_put:
+                pmpw r3,r2
+fw_none:
+                ret
+
+// licence: the open disc image's region (sector 4 licence text) into r7,
+// left at no_region when unreadable (r3, r4).
+licence:
+                ld r3,#licence_seek
+                seek r3
+                ret nz
+                ld r3,#buf
+                ld r4,#4
+                read r3,r4
+                ret nz
+                ld r3,#buf+4
+                ld r4,#0
+                ld.b (r3),r4
+                ld r3,#buf
+                ld r4,#licence_usa
+                test r3,r4
+                jp z,licence_usa_hit
+                ld r4,#licence_japan
+                test r3,r4
+                jp z,licence_japan_hit
+                ld r4,#licence_europe
+                test r3,r4
+                ret nz
+                ld r7,#2
+                ret
+licence_usa_hit:
+                ld r7,#0
+                ret
+licence_japan_hit:
+                ld r7,#1
+                ret
+
+// check: slot r1 open, r2 its size. Returns r5 (codes above), a usable
+// file's region in r6, and closes it; buf holds the version line.
 check:
-                ld r5,#absent
-                ld r3,r1
-                sub r3,#bios_first
-                cmp r3,#16
-                jp nc,check_query
-                add r3,#present
-                ld.b r4,(r3)
-                cmp r4,#0
-                ret z                       // no file: opening it would fault
-check_query:
-                queryslot r1
-                ret nz
-                open r1,r2
-                ret nz
                 ld r5,#bad_size
                 cmp r2,#bios_bytes
                 jp nz,check_close
@@ -336,8 +470,8 @@ fail:
                 exit 1
 
 internal_error:
-                cmp r11,#2
-                jp z,disc_none              // the disc slot has no file
+                cmp r11,#3
+                jp z,bios_none              // the BIOS slot has no file
                 cmp r11,#0
                 jp nz,table_empty           // the slot has no file
                 ld r14,#msg_internal

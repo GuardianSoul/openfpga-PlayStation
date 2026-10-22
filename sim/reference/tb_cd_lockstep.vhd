@@ -13,7 +13,8 @@ use std.textio.all;
 
 entity tb_cd_lockstep is
    generic (SEED : integer := 1; RUN_CYCLES : integer := 2000000; SECTORS : integer := 40;
-            METADATA : string := "metadata.hex"; FASTCD_IN : integer := 0);
+            METADATA : string := "metadata.hex"; FASTCD_IN : integer := 0;
+            PAUSE_READ : integer := 0);   -- 1: also Pause mid-sector while reading or playing
 end entity;
 
 architecture sim of tb_cd_lockstep is
@@ -253,6 +254,27 @@ begin
                wr(0, 1); rd(3); uniform(s1, s2, r);
                for j in 0 to pick(r, 10) loop rd(1); end loop;
                wr(3, 31); wr(0, 0);
+            end loop;
+         elsif PAUSE_READ = 1 and r < 0.80 then   -- Pause while reading (data track) or playing (audio track)
+            uniform(s1, s2, r); n := pick(r, 2);
+            uniform(s1, s2, r);
+            if n = 0 then sec := 150 + pick(r, 30); else sec := 150 + 40 + 150 + pick(r, 30); end if;
+            wr(0, 0);
+            wr(2, ((sec / 4500) / 10) * 16 + (sec / 4500) mod 10);
+            wr(2, (((sec / 75) mod 60) / 10) * 16 + ((sec / 75) mod 60) mod 10);
+            wr(2, ((sec mod 75) / 10) * 16 + (sec mod 75) mod 10);
+            wr(1, 16#02#); n_cmds <= n_cmds + 1;
+            tick(40000); wr(0, 1); wr(3, 31); wr(0, 0);
+            if n = 0 then wr(1, 16#06#); else wr(1, 16#03#); end if; n_cmds <= n_cmds + 1;
+            uniform(s1, s2, r);
+            for i in 0 to 2 + pick(r, 12) loop   -- let sectors pass, at a random point in one
+               uniform(s1, s2, r); tick(2000 + pick(r, 30000));
+               wr(0, 1); rd(3); rd(1); wr(3, 31); wr(0, 0);
+            end loop;
+            wr(1, 16#09#); n_cmds <= n_cmds + 1;
+            for i in 0 to 20 loop
+               uniform(s1, s2, r); tick(2000 + pick(r, 20000));
+               wr(0, 1); rd(3); rd(1); wr(3, 31); wr(0, 0);
             end loop;
          elsif r < 0.995 then   -- idle
             uniform(s1, s2, r); tick(pick(r * r, 60000));

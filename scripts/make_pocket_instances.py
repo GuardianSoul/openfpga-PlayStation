@@ -156,10 +156,46 @@ def parse_cue(path):
             mm, ss, ff = int(m.group(3)), int(m.group(4)), int(m.group(5))
             key = int(m.group(2)) if m.group(2) else 'pregap'
             files[-1][1][-1][2][key] = (mm*60+ss)*75+ff
-    return files
+    names = [name for name, _ in files]
+    return [(resolve_file(path, name, names), tracks) for name, tracks in files]
 
 
-TRACK_FILE = re.compile(r'\(Track \d+\)', re.I)
+def resolve_file(cue, name, names):
+    """The file in cue's folder that FILE name means: name itself when it is
+    there, else the one file that matches it ignoring case (or its folders),
+    else for a one-file cue "<cue name>.bin" (renamed along with its cue, as
+    the core's cue reader also takes), else the one .bin with the same
+    "(Track n)" when the cue is the only one in its folder and its .bin files
+    are exactly the cue's tracks, one per "(Track n)". Without any of these,
+    name (reported as missing)."""
+    folder = cue.parent
+    if (folder/name.replace('\\', '/')).is_file(): return name
+    files = sorted(p.name for p in folder.iterdir() if p.is_file() and not p.name.startswith('._'))
+    def one(test):
+        found = [f for f in files if test(f)]
+        return found[0] if len(found) == 1 else None
+    base = re.split(r'[\\/]', name)[-1]
+    track = TRACK_FILE.search(base)
+    def same_track(f):
+        m = TRACK_FILE.search(f)
+        return f.lower().endswith('.bin') and m and int(m.group(1)) == int(track.group(1))
+    bins = [f for f in files if f.lower().endswith('.bin') and not f.endswith(' (one file).bin')]
+    numbers = [track_number(re.split(r'[\\/]', n)[-1]) for n in names]
+    bin_numbers = [track_number(f) for f in bins]
+    by_track = (sum(f.lower().endswith('.cue') for f in files) == 1 and None not in numbers + bin_numbers
+                and len(set(numbers)) == len(numbers) and sorted(numbers) == sorted(bin_numbers))
+    return (one(lambda f: f == base) or one(lambda f: f.lower() == base.lower())
+            or (len(names) == 1 and one(lambda f: f.lower() == cue.stem.lower() + '.bin'))
+            or (track and by_track and one(same_track))
+            or name)
+
+
+TRACK_FILE = re.compile(r'\(Track (\d+)\)', re.I)
+
+
+def track_number(name):
+    m = TRACK_FILE.search(name)
+    return int(m.group(1)) if m else None
 
 
 def lone_bin_cue(text_name):

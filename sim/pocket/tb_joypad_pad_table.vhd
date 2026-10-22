@@ -75,6 +75,7 @@ begin
       variable errs, valids, acks : natural := 0;
       variable gap : natural := 0;
       variable ds_now, toggle : std_logic := '1';
+      variable ds2_now, toggle2 : std_logic := '1';   -- PAD2=2: pad 2 is a DualShock / digital pad too
       variable f3s, s73s, longs, ffs : natural := 0;
       impure function rnd return real is begin uniform(s1, s2, r); return r; end function;
       impure function bit_r(p : real) return std_logic is begin if rnd < p then return '1'; else return '0'; end if; end function;
@@ -147,10 +148,12 @@ begin
          transmitting <= bit_r(0.9);
          slotIdle <= bit_r(0.95);
          if rnd < 0.0005 then ds_now := not ds_now; end if;
+         if PAD2 = 2 and rnd < 0.0005 then ds2_now := not ds2_now; end if;
          if rnd < 0.001 then toggle := not toggle; end if;
+         if PAD2 = 2 and rnd < 0.001 then toggle2 := not toggle2; end if;
          if rnd < 0.01 then rand_pad(j1, '1', ds_now, toggle); end if;
          if rnd < 0.01 then
-            if PAD2 /= 0 then rand_pad(j2, '1'); else rand_pad(j2, '0'); end if;
+            if PAD2 = 2 then rand_pad(j2, '1', ds2_now, toggle2); elsif PAD2 /= 0 then rand_pad(j2, '1'); else rand_pad(j2, '0'); end if;
          end if;
          wait until rising_edge(clk);
          wait for 0 ns; wait for 0 ns;

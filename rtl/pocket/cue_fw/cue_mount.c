@@ -175,6 +175,35 @@ static u32 probe(u32 slot, u32 unit, int k) {
     return n;
 }
 
+// Slot sizes from the Chip32 loader (support/chip32/psx_bios_check.asm): its
+// table pass writes "SIZE" and the sizes of slots 0, 99, 100, 101, 102 and
+// 98 (0 for no file) into the path struct's last 64 bytes, which APF never
+// uses. Each probe costs about 19 APF commands of some 45 ms on the Pocket
+// (docs/pocket-launch-timing.md), so the boot mount takes a size from here
+// when it has one. Only the boot mount: a Load disc pick or a menu Disc may
+// hold another file. The words may arrive byte-swapped (Chip32 pmpw).
+#define SIZES      ((volatile u32 *)0x21C0)
+#define SIZE_MAGIC 0x53495A45u
+static u32 boot_sizes;
+static u32 bswap(u32 v) { return v >> 24 | (v >> 8 & 0xff00u) | (v << 8 & 0xff0000u) | v << 24; }
+static u32 known(u32 slot) {
+    if (!boot_sizes) return 0;
+    u32 m = SIZES[0], i;
+    if (m != SIZE_MAGIC && m != bswap(SIZE_MAGIC)) return 0;
+    switch (slot) { case 0: i = 1; break; case 99: i = 2; break; case 100: i = 3; break;
+                    case 101: i = 4; break; case 102: i = 5; break; case 98: i = 6; break; default: return 0; }
+    u32 v = SIZES[i];
+    return m == SIZE_MAGIC ? v : bswap(v);
+}
+// probe()'s answer from a known size, else probe().
+NOINLINE static u32 measure(u32 slot, u32 unit, int k) {
+    u32 size = known(slot);
+    if (!size) return probe(slot, unit, k);
+    if (size < 4) return 0;
+    u32 n = unit == 1 ? size : __udivsi3(size, unit), most = (2u << k) - 1;
+    return n > most ? most : n;
+}
+
 // ---------------- cue text ----------------
 NOINLINE static int getb(void) {
     if (cpos >= cue_size) return -1;
@@ -399,7 +428,7 @@ static void game_json(void) {
     }
     bin = 0; open_file = NONE;
     json = 1;
-    cue(CUE_SLOT, probe(CUE_SLOT, 1, 13), M_LAUNCH);
+    cue(CUE_SLOT, measure(CUE_SLOT, 1, 13), M_LAUNCH);
     json = 0;
 }
 
@@ -419,7 +448,7 @@ static void mount(u32 slot) {
         // A raw sector: an ordinary disc image, found by size. Picked with
         // Load disc it goes to the stream; from the launch list it is read
         // through LAUNCH_SLOT.
-        u32 n = probe(slot, 2352, 18);
+        u32 n = measure(slot, 2352, 18);
         if (!n) { fail(M_LAUNCH); return; }
         if (mode == M_PICK) { setf(flags & ~F_FAILED); IO[W_UPD] = sectors_to_bytes(n); return; }
         IO[W_DISC] = sectors_to_bytes(n);
@@ -427,7 +456,7 @@ static void mount(u32 slot) {
         setf((flags & ~F_FAILED) | F_VDISC | F_ALLC);
         return;
     }
-    cue(slot, probe(slot, 1, 13), mode);
+    cue(slot, measure(slot, 1, 13), mode);
 }
 
 // Where base names its disc number ("(Disc d)" in the folder and the file
@@ -483,7 +512,7 @@ NOINLINE static u32 sbi_mask(u32 n) {
         slot = FILE_SLOT;
     }
     u32 save_pick = pick, save_size = cue_size;
-    pick = slot; cue_size = probe(slot, 1, 11);
+    pick = slot; cue_size = measure(slot, 1, 11);
     clen = 0;
     for (cpos = 4; cpos + 3 <= cue_size; cpos += 11) {
         int a = getb(), b = getb(), c3 = getb();
@@ -544,7 +573,7 @@ static void cue(u32 slot, u32 size, int mode) {
         u32 b = fseg[k] & 0xffffff, n;
         if (!b) {   // a file's first segment: its size
             if (rd == FILE_SLOT && open(k)) { fail(mode); return; }
-            psize = probe(rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24), 2352, 18);
+            psize = measure(rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24), 2352, 18);
         }
         // up to the next segment of the same file, else its end
         n = k + 1 < nfiles && fseg[k + 1] >> 24 == fseg[k] >> 24 ? fseg[k + 1] & 0xffffff : psize;
@@ -691,7 +720,7 @@ static int hexval(int x) { x = upper(x); return digit(x) ? x - '0' : x >= 'A' &&
 NOINLINE static void load_cheats(void) {
     ncheat = 0;
     if (cmd(K_READ, CHT_SLOT, 0, 4)) return;
-    pick = CHT_SLOT; cue_size = probe(CHT_SLOT, 1, 14);
+    pick = CHT_SLOT; cue_size = measure(CHT_SLOT, 1, 14);
     cbase = clen = cpos = 0;
     u32 run = 0, val = 0, a8 = 0, have = 0, last4 = 0, en = 0, mark = 0;
     int line = 1;
@@ -785,6 +814,7 @@ void main(void) {
             // read; a later try reads cached data.
             IO[W_CLR] = ST_BOOT | CLR_MENU;
             setf(flags & ~F_FAILED);
+            boot_sizes = 1;
             for (retry = 2;; retry--) {
                 mount(LAUNCH_SLOT);
                 if (!(flags & F_FAILED) || !retry) break;
@@ -796,5 +826,6 @@ void main(void) {
         setf((flags & ~F_DISC) | m << 8 | F_IDLE | (flags & F_MOUNTED ? 0 : F_ACCEPT));
         // The launched game's cheat list, read while the stream may run.
         if (s & ST_BOOT) load_cheats();
+        boot_sizes = 0;
     }
 }

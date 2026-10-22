@@ -314,11 +314,12 @@ architecture table of joypad_pad is
    signal dsConfigModeSave : std_logic := '0';
    signal dsAnalogModeSave : std_logic := '0';
 
-   -- Port 1's DualShock state (as joypad_pad_dualshock)
-   signal dsConfigMode    : std_logic := '0';
-   signal dsAnalogMode    : std_logic := '0';
-   signal dsAnalogLock    : std_logic := '0';
-   signal analogLevelSeen : std_logic := '0';
+   -- each port's DualShock state (upstream portStates(portNr))
+   type tbits is array (0 to 1) of std_logic;
+   signal dsConfigMode    : tbits := (others => '0');
+   signal dsAnalogMode    : tbits := (others => '0');
+   signal dsAnalogLock    : tbits := (others => '0');
+   signal analogLevelSeen : tbits := (others => '0');
 
    signal reply : std_logic_vector(7 downto 0);
 
@@ -326,7 +327,7 @@ begin
 
    assert not RUMBLE_ECHO report "joypad_pad_table: RUMBLE_ECHO is not supported" severity failure;
 
-   padMode <= '0' & dsAnalogMode;
+   padMode <= dsAnalogMode(1) & dsAnalogMode(0);
    ss_out  <= (others => '0');
    joypad1_rumble <= (others => '0');
    joypad2_rumble <= (others => '0');
@@ -403,10 +404,10 @@ begin
             state           <= std_logic_vector(to_unsigned(S_IDLE, 7));
             isActive        <= '0';
 
-            dsConfigMode    <= '0';
-            dsAnalogMode    <= '0';
-            dsAnalogLock    <= '0';
-            analogLevelSeen <= '0';
+            dsConfigMode    <= (others => '0');
+            dsAnalogMode    <= (others => '0');
+            dsAnalogLock    <= (others => '0');
+            analogLevelSeen <= (others => '0');
 
          elsif (ce = '1') then
 
@@ -414,24 +415,23 @@ begin
                isActive <= '0';
                state    <= std_logic_vector(to_unsigned(S_IDLE, 7));
             elsif (joypad.PadPortDS = '1') then
-               -- only port 1 can be a DualShock
-               if (dsAnalogLock = '0') then
-                  if (ANALOG_LEVEL and joypad.ToggleDS /= analogLevelSeen) then
-                     dsAnalogMode    <= joypad.ToggleDS;
-                     analogLevelSeen <= joypad.ToggleDS;
+               if (dsAnalogLock(portNr) = '0') then
+                  if (ANALOG_LEVEL and joypad.ToggleDS /= analogLevelSeen(portNr)) then
+                     dsAnalogMode(portNr)    <= joypad.ToggleDS;
+                     analogLevelSeen(portNr) <= joypad.ToggleDS;
                   end if;
                   -- switch from button combo
                   if (joypad.KeyL3 = '1' and joypad.KeyR3 = '1' and joypad.KeyUp = '1') then
-                     dsAnalogMode <= '1';
+                     dsAnalogMode(portNr) <= '1';
                   end if;
                   if (joypad.KeyL3 = '1' and joypad.KeyR3 = '1' and joypad.KeyDown = '1') then
-                     dsAnalogMode <= '0';
+                     dsAnalogMode(portNr) <= '0';
                   end if;
                end if;
-            elsif (portNr = 0) then
-               dsConfigMode   <= '0';
-               dsAnalogMode   <= '0';
-               dsAnalogLock   <= '0';
+            else
+               dsConfigMode(portNr)   <= '0';
+               dsAnalogMode(portNr)   <= '0';
+               dsAnalogLock(portNr)   <= '0';
             end if;
 
             if (action = '1') then
@@ -443,18 +443,13 @@ begin
                   isActive       <= '1';
                   digitalPadSave <= joypad.PadPortDigital;
                   dsSave         <= joypad.PadPortDS;
-                  if (portNr = 0) then
-                     dsConfigModeSave <= dsConfigMode;
-                     dsAnalogModeSave <= dsAnalogMode;
-                  else
-                     dsConfigModeSave <= '0';
-                     dsAnalogModeSave <= '0';
-                  end if;
+                  dsConfigModeSave <= dsConfigMode(portNr);
+                  dsAnalogModeSave <= dsAnalogMode(portNr);
                end if;
                case to_integer(unsigned(romWord(9 downto 8))) is
-                  when E_CFG  => dsConfigMode <= transmitValue(0);
-                  when E_ANA  => dsAnalogMode <= transmitValue(0);
-                  when E_LCK  => dsAnalogLock <= transmitValue(0);
+                  when E_CFG  => dsConfigMode(portNr) <= transmitValue(0);
+                  when E_ANA  => dsAnalogMode(portNr) <= transmitValue(0);
+                  when E_LCK  => dsAnalogLock(portNr) <= transmitValue(0);
                   when others => null;
                end case;
             end if;

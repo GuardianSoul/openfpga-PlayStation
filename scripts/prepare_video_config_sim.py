@@ -16,7 +16,7 @@ from ghdl_verilog import normalize_generated_verilog
 from prepare_resource_targets import hardware_text,digest
 
 
-def prepare(directory):
+def prepare(directory,edit=None):
     root=ROOT
     dest=Path(directory).resolve();dest.mkdir(parents=True,exist_ok=False)
     ghdl=find_tool('ghdl')
@@ -35,6 +35,7 @@ def prepare(directory):
     if compat['original_sha256']!=protected[str(root/'references/PSX_MiSTer/rtl/gpu_videoout_async.vhd')]:
         raise ValueError('Video reference changed before compatible conversion')
     original=Path(compat['path']).read_text()
+    if edit:original=edit(original)  # a prepare option's source edit, e.g. prepare_pal_line_rate.patch
     with (dest/'build.log').open('w') as log:
         dummy=dest/'dummy.vhd';dummy.write_text('package dummy is end package;')
         subprocess.run([ghdl,'-a','--std=08','--work=mem',str(dummy)],cwd=dest,stdout=log,stderr=subprocess.STDOUT,check=True)

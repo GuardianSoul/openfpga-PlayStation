@@ -62,6 +62,25 @@ def make_card(card):
     (common/'Short').mkdir()
     (common/'Short/Short.bin').write_bytes(b'x' * 100)
     (common/'Short/Short.cue').write_text('﻿FILE "Short.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    # Cues whose FILE names differ from the files: another case, a .bin
+    # renamed along with its one-file cue, track files renamed keeping their
+    # "(Track n)". A file that is really gone is still skipped.
+    one_track(common/'Case', 'Case Game (USA)')
+    (common/'Case/Case Game (USA).cue').unlink()
+    (common/'Case/Case.cue').write_text('FILE "CASE GAME (usa).BIN" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    one_track(common/'Renamed', 'Renamed (USA)')
+    (common/'Renamed/Renamed (USA).bin').rename(common/'Renamed/Renamed.bin')
+    (common/'Renamed/Renamed (USA).cue').rename(common/'Renamed/Renamed.cue')
+    with_audio(common/'Tracks Renamed', 'Tracks Renamed (USA)', 2)
+    for k in (1, 2, 3):
+        (common/f'Tracks Renamed/Tracks Renamed (USA) (Track {k}).bin').rename(common/f'Tracks Renamed/TR (Track 0{k}).bin')
+    # Renamed tracks next to a .bin of another game: not matched by "(Track n)".
+    with_audio(common/'Stray', 'Stray (USA)', 1)
+    for k in (1, 2):
+        (common/f'Stray/Stray (USA) (Track {k}).bin').rename(common/f'Stray/ST (Track {k}).bin')
+    (common/'Stray/Other (Track 3).bin').write_bytes(sectors(3, 160))
+    with_audio(common/'Gone', 'Gone (USA)', 1)
+    (common/'Gone/Gone (USA) (Track 2).bin').unlink()
     # A .bin that came without a .cue gets a one-track cue; a track file without its cue doesn't.
     (common/'Bin Only').mkdir()
     (common/'Bin Only/Bin Only (USA).bin').write_bytes(sectors(1, 4))

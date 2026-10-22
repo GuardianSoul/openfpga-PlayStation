@@ -113,6 +113,13 @@ and Analog at any time, like the controller's Analog button; games that
 use the analog sticks also switch it themselves, and L3 + R3 + Up does too.
 Controllers connected to the Dock keep their own L2, R2, L3 and R3.
 
+### Second controller (Dock)
+
+With the Pocket in the Dock, connect a second controller to play with two
+players. Use one with all the PlayStation buttons and two sticks, because the
+SELECT shortcuts and button settings only work for player 1. Controller Mode
+sets both players to Digital or Analog.
+
 ## Settings
 
 Under **Core Settings** in the Pocket menu. Defaults are in bold; the Pocket
@@ -122,6 +129,7 @@ remembers your choices.
 | --- | --- | --- |
 | Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
 | Skip BIOS Logo | On, **Off** | Starts the game without the PlayStation intro |
+| Fast BIOS Boot | **On**, Off | Runs the BIOS's own start-up faster, so games reach the Sony screen about 2 seconds sooner; the Sony screen and every game keep the console's timing |
 | Aspect Ratio | **Original**, Fill Screen | Original shows the console's 4:3 picture; Fill Screen fills the Pocket's whole screen |
 | Hide Overscan | **On**, Off | In Original, blacks out the lines at the top and bottom that a TV hides; Fill Screen always crops them |
 | Controller Mode | **Digital**, Analog | The DualShock's mode, switched at once (see [Controls](#controls)) |
@@ -164,8 +172,6 @@ copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
 - Some games may run slower than on a real console.
 - A thin diagonal line can split the white Sony screen while it fades.
-- The picture can jump sideways for one frame when a game switches video
-  mode.
 - Stray lines can show on some screens.
 
 ## Building from source
@@ -192,6 +198,13 @@ by hardware tests. Even so, review it with that origin in mind.
   (Laxer3a).
 - Adam Gastineau (agg23) and [MIRLO64](https://github.com/tortugaveloz/MIRLO64)
   by tortuga: Pocket platform glue and audio output.
+
+## Contributors
+
+- [bhendo](https://github.com/bhendo): found that an odd number of lines per
+  frame causes the red line at the top of the screen, and fixed it by keeping
+  every frame's line count even
+  ([issue #5](https://github.com/GuardianSoul/openfpga-PlayStation/issues/5)).
 
 ## License
 

@@ -16,6 +16,7 @@ import shutil
 import zipfile
 
 import build_chip32_loader
+import pocket_image
 from instance_packager import instance_packager
 from prepare_resource_targets import digest
 from tool_paths import ROOT
@@ -51,6 +52,7 @@ def main():
     parser.add_argument('--one-file-disc', action='store_true', help='prepare --one-file-disc: disc n is one .bin in slot 100*n+1 and its track table (.trk) in 100*n+2 (make_pocket_instances.py merges track files)')
     parser.add_argument('--multi-track', type=int, default=0, help='Discs as instance JSONs: cue slot 100, track bins 101..100+N (prepare --multi-track N)')
     parser.add_argument('--logo-skip-setting', action='store_true', help='Menu checkbox "Skip BIOS Logo" (prepare --logo-skip-setting)')
+    parser.add_argument('--fast-bios-setting', action='store_true', help='Menu checkbox "Fast BIOS Boot" (scripts/prepare_fast_bios.py, bridge 0x50000070)')
     parser.add_argument('--field-swap-setting', action='store_true', help='Menu checkbox to swap the 480i field order (prepare --field-swap-setting)')
     parser.add_argument('--shoulder-setting', action='store_true', help='Menu lists for what L and R press (prepare --shoulder-setting)')
     parser.add_argument('--weave-setting', action='store_true', help='Menu checkbox for 480i weave (prepare --weave-setting)')
@@ -63,6 +65,14 @@ def main():
     parser.add_argument('--dither-setting', action='store_true', help='Core Settings "Dithering" checkbox, on by default (prepare --dither-setting)')
     parser.add_argument('--aspect-setting', action='store_true', help='With --hybrid-slots: Core Settings "Aspect Ratio" list (4:3 = Fit / Fill Screen = Stretch) and its slots: 640/320/256 x 240, 640x480 and 640x288 at 4:3, then 640x240, 640x480 and 640x288 at 10:9 (prepare --aspect-setting)')
     parser.add_argument('--dbl-320', action='store_true', help='With --fit-368: slot 1 is 640x480 at 10:9 instead of 320x240 (prepare --dbl-320)')
+    parser.add_argument('--pal-shape', action='store_true', help='prepare --pal-shape: the PAL Fill slot is 640x512')
+    parser.add_argument('--analogizer', action='store_true', help='prepare --analogizer: Core Settings "Analogizer Video" and "Analogizer SNAC"')
+    parser.add_argument('--fill-blend-panel', action='store_true', help='prepare --fill-blend-panel: Core Settings "Fill Phase"')
+    parser.add_argument('--fill-blend', action='store_true', help='prepare --fill-blend: the Fill slots are 800 wide')
+    parser.add_argument('--wide-blend', action='store_true', help='prepare --wide-blend: slot 2 is 800x240, Core Settings "Wide Pixels"')
+    parser.add_argument('--dock-test', action='store_true', help='prepare --dock-test: Core Settings "Dock test" list')
+    parser.add_argument('--weave-576', action='store_true', help='prepare --weave-576 slot table: 640x576 PAL 480i Fit, 640x536 PAL Fill, 640x448 NTSC Fill')
+    parser.add_argument('--height-slots', action='store_true', help='With --fill-detect: slots by height only, slot = {Fill, PAL, 480i}: 640x240/480/288/576 at 4:3, 640x224/448/268/536 at 10:9 (prepare --height-slots)')
     parser.add_argument('--fill-detect', action='store_true', help='With --aspect-setting: the Fill Screen slots are 640x224, 640x448 and 640x268 for the overscan crop (prepare --fill-detect)')
     parser.add_argument('--overscan-setting', action='store_true', help='Core Settings "Hide Overscan" checkbox, on by default (prepare --overscan-setting)')
     parser.add_argument('--fit-368', action='store_true', help='With --aspect-setting: slot 6 is 368x240 at 4:3 instead of 640x480 at 10:9 (prepare --fit-368)')
@@ -106,6 +116,13 @@ def main():
     converted = original.translate(table)
     if converted.translate(table) != original: raise ValueError('Bit reversal round trip failed')
     (core/'bitstream.rbf_r').write_bytes(converted)
+    # A core folder without icon.bin makes pupdate and Pocket Sync fail to parse
+    # the core inventory (the 2026-10-20 probe2 package hit exactly that), so every
+    # packaged core carries the 36x36 RGB565 icon, the same art the release
+    # packager writes: 2592 bytes.
+    icon_png = ROOT/'support/pocket-art/core-icon.png'
+    if not icon_png.is_file(): parser.error(f'core icon art missing: {icon_png}')
+    (core/'icon.bin').write_bytes(pocket_image.encode(icon_png, (36, 36)))
     def write(name, value): (core/name).write_text(json.dumps(value, indent=2)+'\n')
     write('core.json', {'core': {'magic': 'APF_VER_1', 'metadata': {
         'platform_ids': [args.platform], 'shortname': name,
@@ -248,7 +265,20 @@ def main():
         # prepare --fill-detect sends Fill Screen without the overscan: 224
         # lines (448 woven in 480i) and 268 at PAL, so its slots are that high.
         fill = (224, 448, 268) if args.fill_detect else (240, 480, 288)
+        # prepare --weave-576: PAL 480i woven in 640x576 (Fit) / 640x536 (Fill);
+        # progressive Fill lines doubled into the Fill 480i slots.
+        fw = 800 if args.fill_blend else 640   # prepare --fill-blend: Fill lines 800 wide
+        w576 = ((640, 240, 4, 3), (fw, 448, 10, 9), (800 if args.wide_blend else 256, 240, 4, 3), (640, 480, 4, 3), (640, 288, 4, 3),
+                (640, 576, 4, 3), (368, 240, 4, 3), (fw, 512 if args.pal_shape else 536, 10, 9))
+        # prepare --height-slots: slot = {Fill, PAL, 480i}, every line at 640.
+        heights = ((240, 4, 3), (480, 4, 3), (288, 4, 3), (576, 4, 3), (224, 10, 9), (448, 10, 9), (268, 10, 9), (536, 10, 9))
+        # Fill (10:9, the Pocket's own screen) fills a 16:9 TV when docked.
         write('video.json', {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
+            dict({'width': w, 'height': h, 'aspect_w': a, 'aspect_h': b, 'rotation': 0, 'mirror': 0},
+                 **({'dock_aspect_w': 16, 'dock_aspect_h': 9} if (a, b) == (10, 9) else {}))
+            for w, h, a, b in w576]}} if args.weave_576 else {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
+            {'width': 640, 'height': h, 'aspect_w': a, 'aspect_h': b, 'rotation': 0, 'mirror': 0}
+            for h, a, b in heights]}} if args.height_slots else {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
             {'width': 640, 'height': h, 'aspect_w': 4, 'aspect_h': 3, 'rotation': 0, 'mirror': 0}
             for h in (240, 480, 288)]}} if not args.hybrid_slots else {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
             {'width': w, 'height': h, 'aspect_w': a, 'aspect_h': b, 'rotation': 0, 'mirror': 0}
@@ -284,6 +314,12 @@ def main():
         # prepare --logo-skip-setting: off by default (the PlayStation logo shows).
         variables.append({'name': 'Skip BIOS Logo', 'id': 2, 'type': 'check', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x50000004', 'defaultval': 0, 'value': 1, 'value_off': 0})
+    if args.fast_bios_setting:
+        # scripts/prepare_fast_bios.py: on by default (2026-10-22: 10.31 -> 8.36 s
+        # from the pick to the Sony screen on hardware); the BIOS start-up before
+        # its shell runs at full speed. Off gives the console's own timing.
+        variables.append({'name': 'Fast BIOS Boot', 'id': 36, 'type': 'check', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000070', 'defaultval': 1, 'value': 1, 'value_off': 0})
     if args.analog_setting:
         if not args.dualshock: parser.error('--analog-setting needs --dualshock')
         # prepare --analog-setting: always a DualShock; Digital or Analog mode,
@@ -360,6 +396,8 @@ def main():
                           'writeonly': True, 'address': '0x50000050', 'defaultval': 1, 'value': 1, 'value_off': 0})
     if args.fit_368 and not args.aspect_setting: parser.error('--fit-368 needs --aspect-setting')
     if args.dbl_320 and not args.fit_368: parser.error('--dbl-320 needs --fit-368')
+    if args.height_slots and (not args.fill_detect or args.fit_368 or args.dbl_320):
+        parser.error('--height-slots needs --fill-detect, without --fit-368 or --dbl-320')
     if args.fill_detect and (not args.aspect_setting or args.fit_368 and not args.dbl_320):
         parser.error('--fill-detect needs --aspect-setting, and --dbl-320 with --fit-368 (Stretch 480i then shares the Fit 640x480 slot)')
     if args.aspect_setting:
@@ -374,6 +412,31 @@ def main():
         # overscan lines (black, as Fill Screen crops them) or all of it.
         variables.append({'name': 'Hide Overscan', 'id': 32, 'type': 'check', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x5000005C', 'defaultval': 1, 'value': 1, 'value_off': 0})
+    if args.analogizer:
+        # prepare --analogizer: the Analogizer's analog video mode and SNAC port (both off by default).
+        variables.append({'name': 'Analogizer Video', 'id': 40, 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000078', 'defaultval': 0,
+                          'options': [{'value': 0, 'name': 'Off'}, {'value': 1, 'name': 'RGBS'},
+                                      {'value': 2, 'name': 'RGsB'}, {'value': 3, 'name': 'YPbPr'}]})
+        variables.append({'name': 'Analogizer SNAC', 'id': 41, 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x5000007C', 'defaultval': 0,
+                          'options': [{'value': 0, 'name': 'Off'}, {'value': 1, 'name': 'Port 1'}, {'value': 2, 'name': 'Port 2'}]})
+    if args.fill_blend_panel:
+        # prepare --fill-blend-panel: the Pocket's 2/3 panel-pixel phase for Fill (test).
+        variables.append({'name': 'Fill Phase', 'id': 35, 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000068', 'defaultval': 0,
+                          'options': [{'value': 0, 'name': 'A'}, {'value': 1, 'name': 'B'}]})
+    if args.wide_blend:
+        # prepare --wide-blend: 368-wide screens (FFVII's menus) in the native
+        # slot (Sharp: columns of 4 or 5 panel pixels) or blended at 800 (Even).
+        variables.append({'name': 'Wide Pixels', 'id': 34, 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000064', 'defaultval': 0,
+                          'options': [{'value': 0, 'name': 'Sharp'}, {'value': 1, 'name': 'Even'}]})
+    if args.dock_test:
+        variables.append({'name': 'Dock test', 'id': 33, 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000060', 'defaultval': 0,
+                          'options': [{'value': 0, 'name': 'Normal'}, {'value': 1, 'name': 'Paced pixels'},
+                                      {'value': 2, 'name': 'Black tail'}, {'value': 3, 'name': 'Both'}]})
     if args.video_test_setting:
         variables.append({'name': 'Video test', 'id': 8, 'type': 'list', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x5000004C', 'defaultval': 0,
@@ -390,7 +453,7 @@ def main():
     # Discs, Skip BIOS Logo, Cheats), then the picture, then the controller
     # (its mode, then the button lists in their 2026-10-17 order). Ids and
     # values stay as they were, so saved settings and game files still work.
-    MENU_ORDER = (21, 2, 30, 27, 32, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8)
+    MENU_ORDER = (21, 2, 36, 30, 27, 35, 32, 34, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
     variables.sort(key=lambda v: MENU_ORDER.index(v['id']))
     write('interact.json', {'interact': {'magic': 'APF_VER_1', 'variables': variables, 'messages': []}})
     write('variants.json', {'variants': {'magic': 'APF_VER_1', 'variant_list': []}})

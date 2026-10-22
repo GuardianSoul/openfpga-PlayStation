@@ -18,11 +18,12 @@ class Halt(Exception):
 
 
 class Chip32:
-    def __init__(self, program, slots, pmp_reads=None, selected_slot=0, regs=None, soft_open=(0x10,)):
+    def __init__(self, program, slots, pmp_reads=None, selected_slot=0, regs=None, soft_open=(0x10,), query_declared=()):
         self.ram = bytearray(0x2000)
         self.ram[:len(program)] = program
         self.slots = dict(slots)             # id -> Path or None
         self.soft_open = set(soft_open)      # slots whose empty open does not fault
+        self.query_declared = set(query_declared)   # queryslot passes with no file (a fixed-name BIOS slot on hardware: test6b)
         self.pmp_reads = dict(pmp_reads or {})
         self.r = list(regs) if regs else [0]*16
         self.r[0] = selected_slot
@@ -174,7 +175,7 @@ class Chip32:
             return
         if op == 0x5d:                                         # queryslot Rx
             path = self.slots.get(r[x])
-            self.zero = path is not None and Path(path).is_file()
+            self.zero = (path is not None and Path(path).is_file()) or r[x] in self.query_declared
             self.events.append(('queryslot', r[x])); return
         if op == 0x5b:                                         # core Rx
             self.events.append(('core', r[x])); return

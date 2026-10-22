@@ -7,11 +7,11 @@
 --   joypad1: PadPortEnable='1', PadPortDS and PadPortDigital dynamic (the
 --   menu checkbox drives one and its inverse), keys and both sticks dynamic,
 --   every other PadPort* flag, ToggleDS and WheelMap '0';
---   joypad2..4 disabled or digital pads (never DualShock);
+--   joypad2: disabled, digital or a DualShock (as joypad1); joypad3..4 disabled;
 --   isMultitap, multitapDigital, multitapAnalog, DSAltSwitchMode,
 --   neGconRumble, MouseEvent/Left/Right = '0'; ss_in = 0; portNr only
 --   changes while no port is selected (as the SIO does).
--- Only port 1 can be a DualShock, so only its state is kept. Rumble motors
+-- Each port keeps its own DualShock state, as upstream. Rumble motors
 -- and save-state words are not produced (the Pocket has neither): the rumble
 -- outputs and ss_out are zero. Every other output (receiveValid,
 -- receiveBuffer, ack, isActive, padMode, JustifierIrqEnable) is cycle-exact
@@ -144,13 +144,15 @@ architecture dualshock of joypad_pad is
 
    signal analogLarge     : std_logic_vector(7 downto 0); -- table output
 
-   -- Port 1's DualShock state (upstream portStates(0)); port 2 is never a
-   -- DualShock, so upstream's portStates(1) stays at its defaults.
-   signal dsConfigMode    : std_logic := '0';
-   signal dsAnalogMode    : std_logic := '0';
-   signal dsAnalogLock    : std_logic := '0';
-   signal analogLevelSeen : std_logic := '0';   -- ANALOG_LEVEL: last applied ToggleDS level
-   signal dsRumbleConfig  : std_logic_vector(47 downto 0) := (others => '1'); -- RUMBLE_ECHO only
+   -- Each port's DualShock state (upstream portStates(portNr)), indexed by
+   -- the selected port as upstream does.
+   type tbits is array (0 to 1) of std_logic;
+   type trumbleconfig is array (0 to 1) of std_logic_vector(47 downto 0);
+   signal dsConfigMode    : tbits := (others => '0');
+   signal dsAnalogMode    : tbits := (others => '0');
+   signal dsAnalogLock    : tbits := (others => '0');
+   signal analogLevelSeen : tbits := (others => '0');   -- ANALOG_LEVEL: last applied ToggleDS level
+   signal dsRumbleConfig  : trumbleconfig := (others => (others => '1')); -- RUMBLE_ECHO only
 
    signal dsConfigModeSave  : std_logic := '0';
    signal dsAnalogModeSave  : std_logic := '0';
@@ -200,7 +202,7 @@ architecture dualshock of joypad_pad is
 
 begin
 
-   padMode <= '0' & dsAnalogMode;
+   padMode <= dsAnalogMode(1) & dsAnalogMode(0);
    ss_out  <= (others => '0');
    joypad1_rumble <= (others => '0');
    joypad2_rumble <= (others => '0');
@@ -238,11 +240,11 @@ begin
             isActive        <= '0';
 
             -- ss_in is zero on the Pocket
-            dsConfigMode   <= '0';
-            dsAnalogMode   <= '0';
-            dsAnalogLock   <= '0';
-            dsRumbleConfig <= (others => '1');
-            analogLevelSeen <= '0';
+            dsConfigMode   <= (others => '0');
+            dsAnalogMode   <= (others => '0');
+            dsAnalogLock   <= (others => '0');
+            dsRumbleConfig <= (others => (others => '1'));
+            analogLevelSeen <= (others => '0');
 
          elsif (ce = '1') then
 
@@ -251,25 +253,24 @@ begin
                controllerState <= IDLE;
                command         <= COMMAND_NONE;
             elsif (joypad.PadPortDS = '1') then
-               -- only port 1 can be a DualShock
-               if (dsAnalogLock = '0') then
-                  if (ANALOG_LEVEL and joypad.ToggleDS /= analogLevelSeen) then
-                     dsAnalogMode    <= joypad.ToggleDS;
-                     analogLevelSeen <= joypad.ToggleDS;
+               if (dsAnalogLock(portNr) = '0') then
+                  if (ANALOG_LEVEL and joypad.ToggleDS /= analogLevelSeen(portNr)) then
+                     dsAnalogMode(portNr)    <= joypad.ToggleDS;
+                     analogLevelSeen(portNr) <= joypad.ToggleDS;
                   end if;
                   -- switch from button combo
                   if (joypad.KeyL3 = '1' and joypad.KeyR3 = '1' and joypad.KeyUp = '1') then
-                     dsAnalogMode <= '1';
+                     dsAnalogMode(portNr) <= '1';
                   end if;
                   if (joypad.KeyL3 = '1' and joypad.KeyR3 = '1' and joypad.KeyDown = '1') then
-                     dsAnalogMode <= '0';
+                     dsAnalogMode(portNr) <= '0';
                   end if;
                end if;
-            elsif (portNr = 0) then
-               dsConfigMode   <= '0';
-               dsAnalogMode   <= '0';
-               dsAnalogLock   <= '0';
-               dsRumbleConfig <= (others => '0');
+            else
+               dsConfigMode(portNr)   <= '0';
+               dsAnalogMode(portNr)   <= '0';
+               dsAnalogLock(portNr)   <= '0';
+               dsRumbleConfig(portNr) <= (others => '0');
             end if;
 
             if (actionNext = '1' and transmitting = '1') then
@@ -283,13 +284,8 @@ begin
                         dsSave          <= joypad.PadPortDS;
                         receiveValid    <= '1';
                         receiveBuffer   <= x"FF";
-                        if (portNr = 0) then
-                           dsConfigModeSave <= dsConfigMode;
-                           dsAnalogModeSave <= dsAnalogMode;
-                        else
-                           dsConfigModeSave <= '0';
-                           dsAnalogModeSave <= '0';
-                        end if;
+                        dsConfigModeSave <= dsConfigMode(portNr);
+                        dsAnalogModeSave <= dsAnalogMode(portNr);
                      end if;
                   elsif (isActive = '1') then
                      case (controllerState) is
@@ -303,13 +299,8 @@ begin
                               dsSave          <= joypad.PadPortDS;
                               receiveValid    <= '1';
                               receiveBuffer   <= x"FF";
-                              if (portNr = 0) then
-                                 dsConfigModeSave <= dsConfigMode;
-                                 dsAnalogModeSave <= dsAnalogMode;
-                              else
-                                 dsConfigModeSave <= '0';
-                                 dsAnalogModeSave <= '0';
-                              end if;
+                              dsConfigModeSave <= dsConfigMode(portNr);
+                              dsAnalogModeSave <= dsAnalogMode(portNr);
                            end if;
 
                         when READY =>
@@ -346,7 +337,7 @@ begin
                                  controllerState <= ID;
                                  ack             <= '1';
                                  receiveValid    <= '1';
-                                 dsRumbleConfig  <= (others => '1');
+                                 dsRumbleConfig(portNr)  <= (others => '1');
                               end if;
                            elsif (transmitValue = x"45") then
                               command <= COMMAND_GET_STATE;
@@ -456,11 +447,11 @@ begin
                            ack              <= '1';
                            receiveValid     <= '1';
 
-                           if (command = COMMAND_CHANGE_CONFIG_MODE and portNr = 0) then
+                           if (command = COMMAND_CHANGE_CONFIG_MODE) then
                               if (transmitValue = x"01") then
-                                 dsConfigMode <= '1';
+                                 dsConfigMode(portNr) <= '1';
                               elsif (transmitValue = x"00") then
-                                 dsConfigMode <= '0';
+                                 dsConfigMode(portNr) <= '0';
                               end if;
                            end if;
 
@@ -511,9 +502,9 @@ begin
                            receiveBuffer   <= x"00";
                            ack             <= '1';
                            if (transmitValue = x"01") then
-                              dsConfigMode <= '1';
+                              dsConfigMode(portNr) <= '1';
                            elsif (transmitValue = x"00") then
-                              dsConfigMode <= '0';
+                              dsConfigMode(portNr) <= '0';
                            end if;
                            rom_pointer     <= 0;
                            bytecount       <= 5;
@@ -522,9 +513,9 @@ begin
 
                         when SETSTATELSB =>
                            if (transmitValue = x"00") then
-                              dsAnalogMode <= '0';
+                              dsAnalogMode(portNr) <= '0';
                            elsif  (transmitValue = x"01") then
-                              dsAnalogMode <= '1';
+                              dsAnalogMode(portNr) <= '1';
                            end if;
                            receiveValid    <= '1';
                            receiveBuffer   <= x"00";
@@ -533,9 +524,9 @@ begin
 
                         when SETSTATEMSB =>
                            if (transmitValue = x"02") then
-                              dsAnalogLock <= '0';
+                              dsAnalogLock(portNr) <= '0';
                            elsif (transmitValue = x"03") then
-                              dsAnalogLock <= '1';
+                              dsAnalogLock(portNr) <= '1';
                            end if;
                            receiveValid    <= '1';
                            receiveBuffer   <= x"00";
@@ -604,8 +595,8 @@ begin
                            -- reached with RUMBLE_ECHO only
                            if (RUMBLE_ECHO) then
                               receiveValid    <= '1';
-                              receiveBuffer   <= dsRumbleConfig(((8 * rumblecount) + 7) downto (8 * rumblecount));
-                              dsRumbleConfig(((8 * rumblecount) + 7) downto (8 * rumblecount)) <= transmitValue;
+                              receiveBuffer   <= dsRumbleConfig(portNr)(((8 * rumblecount) + 7) downto (8 * rumblecount));
+                              dsRumbleConfig(portNr)(((8 * rumblecount) + 7) downto (8 * rumblecount)) <= transmitValue;
 
                               if (rumblecount < 5) then
                                  rumblecount <= rumblecount + 1;

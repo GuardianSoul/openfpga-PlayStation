@@ -158,6 +158,15 @@ CASES = [
      (('Lc.sbi', sbi_bytes()), ('Lc.cht', CHEATS))),
     ('json-cheats-retro', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-ch-lc',
      (('Lc.cht', RETRO),)),
+    # The Chip32 loader's size block (+sizes): the boot mount skips its probes.
+    ('json-sizes', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-sbi99-lc',
+     (('Lc.sbi', sbi_bytes()),)),
+    ('json-sizes-swap', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-sbi99-lc',
+     (('Lc.sbi', sbi_bytes()),)),
+    ('json-cheats-sizes', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-ch-lc',
+     (('Lc.cht', RETRO),)),
+    ('launch-sizes', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'launch-lc',
+     (('Lc.sbi', sbi_bytes()),)),
     ('launch-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'launch-lc',
      (('Lc.sbi', sbi_bytes()),)),
     ('pick-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', '-lc',
@@ -252,6 +261,12 @@ COLD = {'json-cold': 6}   # commands the host fails first: slot 0, slot 102 and 
 RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
 
 
+# Cases given the Chip32 loader's size block, and the most reads their boot
+# mount may take (the size probes alone are 13-19 reads each).
+SIZE_ARGS = {'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
+             'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36']}
+
+
 def bench_firmware(work):
     """A copy of rtl/pocket/psx_cue_fw0-3.hex with retry_wait set to BENCH_WAIT; its prefix."""
     lanes = [(ROOT/f'rtl/pocket/psx_cue_fw{k}.hex').read_text().split() for k in range(4)]
@@ -328,6 +343,7 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
         args.append('+bin')
     else:
         args.append('+fail')
+    args += SIZE_ARGS.get(name, [])
     out = subprocess.run([vvp, str(work/('tb_ch.vvp' if ch else 'tb_lc.vvp' if lc else 'tb.vvp')), *args], capture_output=True, text=True, timeout=1800)
     text = out.stdout + out.stderr
     ok = 'PASS' in text and 'FAIL' not in text

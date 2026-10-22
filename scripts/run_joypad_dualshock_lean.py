@@ -21,13 +21,16 @@ LEAN = ROOT/'rtl/pocket/joypad_pad_dualshock.vhd'
 BENCH = ROOT/'sim/pocket/tb_joypad_pad_dualshock.vhd'
 MUTATIONS = (  # (old, new, RUMBLE_ECHO)
     ('receiveBuffer   <= x"73";\n                              else', 'receiveBuffer   <= x"53";\n                              else', 1),
-    ('dsRumbleConfig <= (others => \'0\');', 'dsRumbleConfig <= (others => \'1\');', 1),
+    ('dsRumbleConfig(portNr) <= (others => \'0\');', 'dsRumbleConfig(portNr) <= (others => \'1\');', 1),
     ("joypad.KeyR3 = '1' and joypad.KeyUp = '1'", "joypad.KeyR3 = '1' and joypad.KeyLeft = '1'", 1),
     ('v := v + v / 8;', 'v := v + v / 4;', 1),
     ('x"00", x"01", x"02", x"00", x"0A",', 'x"00", x"01", x"02", x"00", x"0B",', 1),
     ('rom_pointer     <= 36;', 'rom_pointer     <= 35;', 0),
     ('bytecount       <= 6;', 'bytecount       <= 5;', 0),
+    # port 2's L3+R3+Up combo lands in port 1's state (needs a second DualShock: PAD2=2)
+    ("joypad.KeyUp = '1') then\n                     dsAnalogMode(portNr) <= '1';", "joypad.KeyUp = '1') then\n                     dsAnalogMode(0) <= '1';", 1),
 )
+PAD2_MUTATIONS = {len(MUTATIONS) - 1}
 
 
 def run(ghdl, folder, lean, runs):
@@ -74,24 +77,24 @@ def main():
     text = text.replace('entity joypad_pad is', 'entity joypad_pad_ref is')
     text = text.replace('architecture arch of joypad_pad is', 'architecture arch of joypad_pad_ref is')
     (folder/'joypad_pad_ref.vhd').write_text(text)
-    for valids, acks, config, analog, ffs, errs in run(ghdl, folder, LEAN, [(p, s, 1) for p in (0, 1) for s in (1, 2, 3)]):
+    for valids, acks, config, analog, ffs, errs in run(ghdl, folder, LEAN, [(p, s, 1) for p in (0, 1, 2) for s in (1, 2, 3)]):
         if errs or valids < 1000 or config < 20 or analog < 20:
             raise SystemExit(f'Lockstep failed: receiveValid={valids} config={config} analog={analog} errs={errs}')
         print(f'lockstep: receiveValid={valids} config-mode bytes={config} analog-mode bytes={analog} errs=0')
-    print('joypad_pad_dualshock lockstep (RUMBLE_ECHO): 6 runs x 400000 cycles, 0 mismatches')
+    print('joypad_pad_dualshock lockstep (RUMBLE_ECHO): 9 runs x 400000 cycles (pad 2 off, digital, DualShock), 0 mismatches')
     ffs_total = 0
-    for valids, acks, config, analog, ffs, errs in run(ghdl, folder, LEAN, [(0, 4, 0), (1, 5, 0)]):
+    for valids, acks, config, analog, ffs, errs in run(ghdl, folder, LEAN, [(0, 4, 0), (1, 5, 0), (2, 6, 0)]):
         if errs or valids < 1000 or config < 20 or analog < 20:
             raise SystemExit(f'Lockstep (fixed 0x4D reply) failed: receiveValid={valids} config={config} analog={analog} errs={errs}')
         ffs_total += ffs
     if ffs_total < 5: raise SystemExit(f'Too few 0x4D config bytes that differ: {ffs_total}')
-    print(f'joypad_pad_dualshock lockstep (Pocket build): 2 runs, 0 mismatches, {ffs_total} 0x4D bytes read 0xFF instead of the old config')
+    print(f'joypad_pad_dualshock lockstep (Pocket build): 3 runs, 0 mismatches, {ffs_total} 0x4D bytes read 0xFF instead of the old config')
     replay(ghdl, folder)
     lean = LEAN.read_text()
     for index, (old, new, echo) in enumerate(MUTATIONS):
         if lean.count(old) != 1: raise SystemExit(f'Mutation anchor missing: {old}')
         mutant = folder/f'mutant{index}.vhd'; mutant.write_text(lean.replace(old, new))
-        (_, _, _, _, _, errs), = run(ghdl, folder, mutant, [(1, 1, echo)])
+        (_, _, _, _, _, errs), = run(ghdl, folder, mutant, [(2 if index in PAD2_MUTATIONS else 1, 1, echo)])
         if not errs: raise SystemExit(f'Mutation not caught: {new}')
         print(f'mutation {index} caught: {errs} mismatching cycles')
     print('PASS joypad dualshock lean')

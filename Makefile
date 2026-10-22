@@ -666,6 +666,28 @@ test: test-pad-combo
 test-joypad-replay:
 	python3 scripts/run_joypad_replay.py
 
+.PHONY: test-snac-lockstep
+test: test-snac-lockstep
+test-snac-lockstep:
+	python3 scripts/run_snac_lockstep.py
+
+.PHONY: test-dma-wd-default
+test: test-dma-wd-default
+test-dma-wd-default:
+	python3 scripts/run_dma_wd_default.py
+
+.PHONY: test-spu-adsr-ticks
+test: test-spu-adsr-ticks
+test-spu-adsr-ticks:
+	python3 scripts/run_spu_adsr_ticks.py
+	! python3 scripts/run_spu_adsr_ticks.py --fault > build/spu-adsr-ticks-fault.log 2>&1
+	! ADSR_TICKS_FAULT=step python3 scripts/run_spu_adsr_ticks.py --fault --output build/sim/spu-adsr-ticks-step > build/spu-adsr-ticks-step.log 2>&1
+
+.PHONY: test-pal-line-rate
+test: test-pal-line-rate
+test-pal-line-rate:
+	python3 scripts/run_pal_line_rate.py
+
 .PHONY: test-ntsc-fixed-vblank
 test-ntsc-fixed-vblank:
 	python3 scripts/run_ntsc_fixed_vblank.py

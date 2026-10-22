@@ -279,6 +279,18 @@ module tb_cue_mount;
             if($value$plusargs("slot98=%d",mi)) slot_of[98]=mi;    // its cheat list
             // Its .bin files in 101, 102, ... (pupdate, Pocket Sync, 0.5.2)
             for(sk=101;sk<120;sk=sk+1) begin $sformat(pname,"slot%0d=%%d",sk); if($value$plusargs(pname,mi)) slot_of[sk]=mi; end
+            // +sizes / +sizes_swap: the Chip32 loader's size block (psx_bios_check.asm
+            // fw_size) for slots 0, 99, 100, 101, 102, 98, then "SIZE"; _swap writes
+            // every word byte-swapped, as a Chip32 pmpw may arrive.
+            if($test$plusargs("sizes") || $test$plusargs("sizes_swap")) begin
+                sw=$test$plusargs("sizes_swap");
+                for(mi=0;mi<6;mi=mi+1) begin
+                    sk=mi==0 ? 0 : mi==1 ? 99 : mi==2 ? 100 : mi==3 ? 101 : mi==4 ? 102 : 98;
+                    w=slot_of[sk]!=255 ? fs_meta[2*slot_of[sk]+1] : 0;
+                    bwrite(32'h2C0001C4+4*mi, sw ? {w[7:0],w[15:8],w[23:16],w[31:24]} : w);
+                end
+                bwrite(32'h2C0001C0, sw ? 32'h455A4953 : 32'h53495A45);
+            end
             @(negedge clk); allcomplete=1; last_cmd=$time;
             tries=0;
             while(!s_allcomplete && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
@@ -304,6 +316,7 @@ module tb_cue_mount;
         end
         mount_time=$time; mount_commands=commands; mount_opens=opens; mount_reads=reads;
         $display("mount_cost: cycles=%0d reads=%0d opens=%0d commands=%0d",mount_time/10,mount_reads,mount_opens,mount_commands);
+        if($value$plusargs("maxreads=%d",mi) && mount_reads>mi) fail("boot mount probed sizes the Chip32 loader gave");
         $display("mount: size %0d after %0d commands (%0d opens), cue_mounted %0d failed %0d",got_size,commands,opens,cue_mounted,mount_failed);
         $display("probe: %h forms %h mask %h fail line %0d forms err %h, last cmd %h, last failed %h, path \"%s\" .. \"%s\"",dbg_words[31:27],dbg_words[26:16],dbg_words[15:0],dbg_words[43:32],dbg_words[61:44],dbg_words[95:64],dbg_words[127:96],{dbg_words[159:128],dbg_words[191:160]},{dbg_words[223:192],dbg_words[255:224]});
         if(expect_json) begin

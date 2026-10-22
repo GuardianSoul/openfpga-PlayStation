@@ -152,7 +152,40 @@
 
   async function readCue(card, path) {
     const file = await fileAt(card, path);
-    return parseCue(new TextDecoder('utf-8').decode(await file.arrayBuffer()));
+    const files = parseCue(new TextDecoder('utf-8').decode(await file.arrayBuffer()));
+    const out = [];
+    for (const [name, tracks] of files) out.push([await resolveFile(card, path, name, files.map(([n]) => n)), tracks]);
+    return out;
+  }
+
+  const trackNumber = (name) => { const m = /\(Track (\d+)\)/i.exec(name); return m ? parseInt(m[1], 10) : null; };
+
+  // The file in cue's folder that FILE name means: name itself when it is
+  // there, else the one file that matches it ignoring case (or its folders),
+  // else for a one-file cue "<cue name>.bin" (renamed along with its cue, as
+  // the core's cue reader also takes), else the one .bin with the same
+  // "(Track n)" when the cue is the only one in its folder and its .bin files
+  // are exactly the cue's tracks, one per "(Track n)". Without any of these,
+  // name (reported as missing).
+  async function resolveFile(card, cue, name, names) {
+    const folder = cue.slice(0, -1);
+    if (await fileAt(card, join(folder, name.replace(/\\/g, '/')))) return name;
+    const dir = await dirAt(card, folder);
+    const files = (dir ? await list(dir) : []).filter(([f, kind]) => kind === 'file' && !f.startsWith('._')).map(([f]) => f).sort();
+    const one = (test) => { const found = files.filter(test); return found.length === 1 ? found[0] : null; };
+    const base = name.split(/[\\/]/).pop();
+    const track = trackNumber(base);
+    const renamed = stem(cue[cue.length - 1]).toLowerCase() + '.bin';
+    const bins = files.filter((f) => f.toLowerCase().endsWith('.bin') && !f.endsWith(' (one file).bin'));
+    const numbers = names.map((n) => trackNumber(n.split(/[\\/]/).pop()));
+    const sorted = (list) => [...list].sort((a, b) => a - b).join(',');
+    const byTrack = files.filter((f) => f.toLowerCase().endsWith('.cue')).length === 1
+      && !numbers.includes(null) && new Set(numbers).size === numbers.length
+      && bins.length === numbers.length && sorted(numbers) === sorted(bins.map(trackNumber));
+    return one((f) => f === base) || one((f) => f.toLowerCase() === base.toLowerCase())
+      || (names.length === 1 && one((f) => f.toLowerCase() === renamed))
+      || (track !== null && byTrack && one((f) => f.toLowerCase().endsWith('.bin') && trackNumber(f) === track))
+      || name;
   }
 
   const rawTrack = (kind) => kind === 'AUDIO' || kind.endsWith('/2352') || kind.endsWith('/RAW');
