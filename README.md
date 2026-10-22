@@ -172,7 +172,6 @@ copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
 - Some games may run slower than on a real console.
 - A thin diagonal line can split the white Sony screen while it fades.
-- Stray lines can show on some screens.
 
 ## Building from source
 
