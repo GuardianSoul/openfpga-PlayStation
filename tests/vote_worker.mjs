@@ -57,6 +57,7 @@ Date.now = realNow;
 out.badGame = await call('POST', '/vote', '4.4.4.4', { game: '<b>x</b>|USA', version: '0.5.3', status: 'Playable' });
 out.badStatus = await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '0.5.3', status: 'Great' });
 out.votes = await call('GET', '/votes', '9.9.9.9');
+out.versions = await call('GET', '/versions', '9.9.9.9');
 out.mine = await call('GET', '/mine', '1.1.1.1');
 let limited = null;
 for (let i = 0; i < 40 && limited === null; i++) {

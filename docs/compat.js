@@ -302,10 +302,20 @@
     return issues;
   }
 
-  // Released core versions, newest first ("0.5.3"), from the repo's releases.
-  // GitHub sometimes answers the release list with [] for signed-out visitors,
-  // which would drop every vote; the version tags ("v0.5.3") stand in then.
-  async function fetchVersions(fetchImpl = fetch, repo = REPO) {
+  // Released core versions, newest first ("0.5.3"). The vote service's list
+  // comes first: votes are checked against it, so the page can't offer a
+  // version the service refuses, and it doesn't depend on GitHub's API, which
+  // allows each visitor only 60 requests an hour. If the service can't answer,
+  // the repo's releases stand in; GitHub sometimes answers that list with []
+  // for signed-out visitors, and then the version tags ("v0.5.3") do.
+  async function fetchVersions(fetchImpl = fetch, repo = REPO, base = VOTES) {
+    if (base) {
+      try {
+        const response = await fetchImpl(`${base}/versions`);
+        const listed = response.ok ? (await response.json()).versions : null;
+        if (Array.isArray(listed) && listed.length) return listed.map(String).sort((a, b) => compareVersions(b, a));
+      } catch (e) { /* GitHub below */ }
+    }
     const get = async (path) => {
       const response = await fetchImpl(`https://api.github.com/repos/${repo}/${path}?per_page=30`,
                                        { headers: { Accept: 'application/vnd.github+json' } });

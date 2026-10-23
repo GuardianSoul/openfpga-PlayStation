@@ -180,11 +180,16 @@ class CompatPage(unittest.TestCase):
                               str(DOCS/'compatibility.json')], check=True, capture_output=True, text=True).stdout
         self.assertEqual(json.loads(out), [])
 
-    def fetch_versions(self, releases, tags):
+    def fetch_versions(self, releases, tags, service=None):
+        # service: the vote service's /versions answer; None = it can't be reached.
         script = f"""
 const Compat = require({json.dumps(str(DOCS/'compat.js'))});
-const answers = {{ releases: {json.dumps(releases)}, tags: {json.dumps(tags)} }};
-const fake = async (url) => ({{ ok: true, json: async () => answers[url.split('/').pop().split('?')[0]] }});
+const answers = {{ releases: {json.dumps(releases)}, tags: {json.dumps(tags)}, versions: {json.dumps(service)} }};
+const fake = async (url) => {{
+  const answer = answers[url.split('/').pop().split('?')[0]];
+  if (answer === null) throw new Error('unreachable');
+  return {{ ok: true, json: async () => answer }};
+}};
 Compat.fetchVersions(fake).then((v) => console.log(JSON.stringify(v)), (e) => console.log(JSON.stringify(null)));
 """
         return json.loads(subprocess.run([NODE, '-e', script], check=True, capture_output=True, text=True).stdout)
@@ -197,6 +202,9 @@ Compat.fetchVersions(fake).then((v) => console.log(JSON.stringify(v)), (e) => co
         self.assertEqual(self.fetch_versions([], [{'name': 'v0.5.5'}, {'name': 'v0.5.4'}, {'name': 'test6'}]),
                          ['0.5.5', '0.5.4'])
         self.assertIsNone(self.fetch_versions([], []))
+        # The vote service's list wins, so the page offers what the service accepts.
+        self.assertEqual(self.fetch_versions([release('v0.5.4')], [], {'versions': ['0.5.5', '0.5.6']}), ['0.5.6', '0.5.5'])
+        self.assertEqual(self.fetch_versions([release('v0.5.4')], [], {'versions': []}), ['0.5.4'])
 
 if __name__ == '__main__':
     unittest.main()

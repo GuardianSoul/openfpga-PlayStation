@@ -5,6 +5,7 @@
 // vote per game and version (a newer vote replaces it) and a few dozen votes
 // an hour. Addresses are kept only as a salted hash.
 //
+//   GET  /versions -> { "versions": ["0.5.6", ...] }   (released, newest first)
 //   GET  /votes -> { "<game>|<version>": { "<status>": count } }
 //   GET  /mine  -> { "<game>|<version>": "<status>" }   (this address's votes)
 //   POST /vote  <- { game, version, status }             (status "" withdraws it)
@@ -58,6 +59,17 @@ async function isReleased(version, fetchImpl) {
   return versions ? versions.has(version) : VERSION.test(version);
 }
 
+// The page takes its version list from here too, so it always offers the
+// version votes are checked against.
+const newestFirst = (a, b) => {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0);
+  return 0;
+};
+async function versionList(fetchImpl) {
+  return { versions: [...((await releasedVersions(fetchImpl)) || [])].filter((v) => VERSION.test(v)).sort(newestFirst) };
+}
+
 async function tallies(env) {
   const { results } = await env.DB.prepare(
     'SELECT game, version, status, COUNT(*) AS n FROM votes GROUP BY game, version, status').all();
@@ -104,6 +116,9 @@ export default {
       const fresh = answer(await tallies(env), 200, { 'Cache-Control': 'public, max-age=30' });
       if (cache) ctx.waitUntil(cache.put(key, fresh.clone()));
       return fresh;
+    }
+    if (request.method === 'GET' && url.pathname === '/versions') {
+      return answer(await versionList(fetchImpl), 200, { 'Cache-Control': 'public, max-age=60' });
     }
     if (request.method === 'GET' && url.pathname === '/mine') {
       return answer(await mine(await voterOf(request, env), env), 200, { 'Cache-Control': 'no-store' });

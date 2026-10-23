@@ -25,6 +25,8 @@ class VoteWorker(unittest.TestCase):
         for refused in ('badVersion', 'unreleased', 'badGame', 'badStatus'):
             self.assertEqual(out[refused]['status'], 400, refused)
         self.assertEqual(out['newRelease']['status'], 200)
+        # The page reads the version list from the service, newest first.
+        self.assertEqual(out['versions']['body'], {'versions': ['0.6.0', '0.5.3', '0.5.2']})
         self.assertEqual(out['limitedAt'], 30)
         self.assertEqual(out['votes']['cors'], 'https://guardiansoul.github.io')
         self.assertEqual(out['missing']['status'], 404)
