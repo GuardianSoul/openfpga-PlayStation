@@ -123,7 +123,13 @@ export default {
     if (request.method === 'GET' && url.pathname === '/mine') {
       return answer(await mine(await voterOf(request, env), env), 200, { 'Cache-Control': 'no-store' });
     }
-    if (request.method === 'POST' && url.pathname === '/vote') return vote(request, await voterOf(request, env), env, fetchImpl);
+    if (request.method === 'POST' && url.pathname === '/vote') {
+      const response = await vote(request, await voterOf(request, env), env, fetchImpl);
+      // A new vote shows at once: drop the saved counts so the next load counts again.
+      const cache = globalThis.caches?.default;
+      if (cache && response.ok) await cache.delete(new Request(new URL('/votes', url).toString()));
+      return response;
+    }
     return answer({ error: 'not found' }, 404);
   },
 };

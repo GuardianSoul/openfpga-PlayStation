@@ -66,6 +66,15 @@ for (let i = 0; i < 40 && limited === null; i++) {
 }
 out.limitedAt = limited;
 out.missing = await call('GET', '/nothing', '1.1.1.1');
+// Counts are saved for half a minute, but a vote clears them so a reload shows it.
+const saved = new Map();
+globalThis.caches = { default: {
+  match: async (r) => saved.get(r.url)?.clone(), put: async (r, res) => { saved.set(r.url, res); },
+  delete: async (r) => saved.delete(r.url) } };
+await call('GET', '/votes', '9.9.9.9');
+await call('POST', '/vote', '7.7.7.7', { game: tekken, version: '0.5.3', status: 'Boots' });
+out.afterVote = (await call('GET', '/votes', '9.9.9.9')).body[`${tekken}|0.5.3`];
+delete globalThis.caches;
 // A worker that has never reached GitHub still takes plain version numbers.
 const fresh = (await import(pathToFileURL(path.join(dir, 'vote.js')) + '?fresh')).default;
 githubDown = true;

@@ -380,7 +380,8 @@
   const VOTES = 'https://playstation-game-list.guardiansoul.workers.dev';
 
   async function fetchVotes(fetchImpl = fetch, base = VOTES) {
-    const response = await fetchImpl(`${base}/votes`);
+    // no-cache: the browser asks again each load, so a reload shows a vote just cast.
+    const response = await fetchImpl(`${base}/votes`, { cache: 'no-cache' });
     if (!response.ok) throw new Error(`the vote service answered ${response.status}`);
     return response.json();
   }

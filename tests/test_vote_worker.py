@@ -30,6 +30,7 @@ class VoteWorker(unittest.TestCase):
         self.assertEqual(out['limitedAt'], 30)
         self.assertEqual(out['votes']['cors'], 'https://guardiansoul.github.io')
         self.assertEqual(out['missing']['status'], 404)
+        self.assertEqual(out['afterVote'], {'Boots': 1, 'Minor issues': 1, 'Playable': 1})
         self.assertEqual((out['downPlain'], out['downJunk']), (200, 400))
         for voter in out['voters']:   # addresses only as a salted hash
             self.assertRegex(voter, '^[0-9a-f]{64}$')
