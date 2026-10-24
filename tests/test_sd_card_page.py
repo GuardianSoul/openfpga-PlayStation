@@ -267,6 +267,69 @@ class SdCardPage(unittest.TestCase):
             legend = json.loads((out/'Legend (USA).json').read_text())['instance']['data_slots']
             self.assertIn({'id': 98, 'filename': 'Legend (Disc 1)/Legend (USA).cht'}, legend)
 
+    def test_other_disc_namings_match_the_script(self):
+        # "X.cue" with "X Disc2.cue" (a user's Star Wars Rebel Assault II),
+        # "CD1"/"CD2", " - Disc 1"/" - Disc 2" group as the script groups them;
+        # sequel numbers stay apart.
+        for reader in (False, True):
+            with self.subTest(reader=reader), TemporaryDirectory() as tmp:
+                script, page = Path(tmp)/'script', Path(tmp)/'page'
+                if reader:
+                    cue_reader_card(script)
+                    declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
+                    (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+                else:
+                    make_card(script)
+                common = script/'Assets/playstation/common'
+                for folder, stem, audio in (('Star Wars Rebel Assault II', 'Star Wars Rebel Assault II', 0),
+                                            ('Star Wars Rebel Assault II Disc2', 'Star Wars Rebel Assault II Disc2', 0),
+                                            ('Riven', 'Riven CD1', 0), ('Riven', 'Riven CD2', 1),
+                                            ('Myst', 'Myst - Disc 1 (USA)', 0), ('Myst', 'Myst - Disc 2 (USA)', 0),
+                                            ('Tekken 2', 'Tekken 2', 0), ('Tekken 2 Demo', 'Tekken 2 Demo', 0)):
+                    with_audio(common/folder, stem, audio)
+                shutil.copytree(script, page)
+                py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                     '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+                js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                    check=True, capture_output=True, text=True)
+                self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+                self.assertEqual(tree(script).keys(), tree(page).keys())
+                for name, data in tree(script).items():
+                    self.assertEqual(tree(page)[name], data, name)
+                out = page/'Assets/playstation'/CORE
+                self.assertTrue((out/'Star Wars Rebel Assault II.json').exists())
+                self.assertFalse((out/'Star Wars Rebel Assault II Disc2.json').exists())
+                self.assertTrue((out/'Tekken 2.json').exists() and (out/'Tekken 2 Demo.json').exists())
+
+    def test_track_sizes_match_the_script(self):
+        # A cue-reader core that declares slot 97: cues opened by path (more
+        # files than 101-104) get <cue>.tsz and their game files name it,
+        # disc 1's for a grouped or playlist game file.
+        for playlist in (False, True):
+            with self.subTest(playlist=playlist), TemporaryDirectory() as tmp:
+                script, page = Path(tmp)/'script', Path(tmp)/'page'
+                cue_reader_card(script)
+                declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 and playlist else s for s in CUE_READER] + [{'id': 97}]
+                # Disc names that differ by more than their number: a playlist
+                # game file when slot 100 takes .m3u, disc 1 with five files.
+                with_audio(script/'Assets/playstation/common/Odd (USA)', 'Odd (Disc 1) (v1.1)', 4)
+                with_audio(script/'Assets/playstation/common/Odd (USA)', 'Odd (USA) (Disc 2) (Rev 1)', 1)
+                (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+                shutil.copytree(script, page)
+                py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                     '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+                js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                    check=True, capture_output=True, text=True)
+                self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+                self.assertEqual(tree(script).keys(), tree(page).keys())
+                for name, data in tree(script).items():
+                    self.assertEqual(tree(page)[name], data, name)
+                legend = json.loads((page/'Assets/playstation'/CORE/'Legend (USA).json').read_text())['instance']['data_slots']
+                self.assertIn({'id': 97, 'filename': 'Legend (Disc 1)/Legend (USA) (Disc 1).tsz'}, legend)
+                self.assertTrue(any(n.endswith('.tsz') for n in tree(page)))
+                odd = json.loads((page/'Assets/playstation'/CORE/('Odd (v1.1).json' if playlist else 'Odd (Disc 1) (v1.1).json')).read_text())['instance']['data_slots']
+                self.assertIn({'id': 97, 'filename': 'Odd (USA)/Odd (Disc 1) (v1.1).tsz'}, odd)
+
     def test_cue_reader_core_matches_the_script(self):
         # --cue-mount core: game files name the cue and disc 1's files; nothing is joined.
         with TemporaryDirectory() as tmp:

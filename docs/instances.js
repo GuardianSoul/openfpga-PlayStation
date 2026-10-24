@@ -15,9 +15,23 @@
   const LIBCRYPT_SLOT = 99;
   const CHEAT_SLOT = 98;
   const CARD_SLOT = 16;
+  const TSZ_SLOT = 97;   // track sizes (--track-sizes cores): see trackSizes()
   const DISC = / \(Disc \d+\)/;
   const DISC_N = /\s*\(Disc (\d+)\)/i;
   const DISC_N_ALL = /\s*\(Disc (\d+)\)/gi;
+  // Disc tags beyond redump's "(Disc N)": "(CD 2)", "(Disc2)", and at the end
+  // of the title (before any release tags) "X Disc2", "X - Disc 1", "X_CD2".
+  // Only the words Disc and CD with a number: "Tekken 2" is not a disc.
+  const DISC_PAREN = /\s*\((?:Disc|CD)\s*(\d{1,2})\)/i;
+  const DISC_PAREN_ALL = /\s*\((?:Disc|CD)\s*(\d{1,2})\)/gi;
+  const DISC_END = /[\s_-]+(?:Disc|CD)[\s_]*(\d{1,2})((?:\s*\([^()]*\))*)\s*$/i;
+  // [disc number, stem without its disc tag], or null.
+  function discTag(s) {
+    let m = DISC_PAREN.exec(s);
+    if (m) return [parseInt(m[1], 10), s.replace(DISC_PAREN_ALL, '')];
+    m = DISC_END.exec(s);
+    return m ? [parseInt(m[1], 10), s.slice(0, m.index) + m[2]] : null;
+  }
   // Files a cue-reader core reads from the game file's slots 101+ (disc 1).
   const CUE_FILE_SLOTS = 19;
   // Other tags in parentheses (region, release, languages) can differ between
@@ -126,6 +140,17 @@
 
   // A cue's FILE names are relative to its folder.
   const join = (folder, name) => [...folder, ...name.split('/').filter((s) => s && s !== '.')];
+
+  // The cue reader's track sizes for a game file whose files it opens by path
+  // (slot 97), as make_pocket_instances.py track_sizes(): "TSZ1", the cue's
+  // bytes, the FILE count, then each FILE's 2,352-byte sectors, little-endian.
+  async function trackSizes(card, cue, files) {
+    const words = [0x315A5354, (await fileAt(card, cue)).size, files.length];
+    for (const [name] of files) words.push(Math.floor((await fileAt(card, join(cue.slice(0, -1), name))).size / SECTOR));
+    const bytes = new Uint8Array(4 * words.length), view = new DataView(bytes.buffer);
+    words.forEach((w, i) => view.setUint32(4 * i, w >>> 0, true));
+    return bytes;
+  }
 
   // ---- cue sheets ----------------------------------------------------------
 
@@ -401,7 +426,13 @@
   // ---- game files ----------------------------------------------------------
 
   // 'Game (USA) (Disc 2)' -> 'Game (USA).sav'; null for single-disc games.
-  const sharedCardName = (s) => (DISC.test(s) ? s.replace(DISC, '') + '.sav' : null);
+  const sharedCardName = (s) => {
+    if (DISC.test(s)) return s.replace(DISC, '') + '.sav';
+    const tag = discTag(s);
+    return tag ? tag[1].trim() + '.sav' : null;
+  };
+  // A multi-disc game's shared card: from the first disc whose name has a disc tag.
+  const groupCard = (stems) => stems.map(sharedCardName).find((c) => c) || null;
 
   // Python's json.dumps(value, indent=2): non-ASCII as \uXXXX.
   const jsonDumps = (value) => JSON.stringify(value, null, 2)
@@ -519,6 +550,7 @@
     const sharedCards = declared === null || ids.includes(CARD_SLOT);
     const libcrypt = declared !== null && ids.includes(LIBCRYPT_SLOT);
     const cheats = declared !== null && ids.includes(CHEAT_SLOT);
+    const sizesFiles = new Map();   // cue path -> its track sizes file (cores that declare slot 97)
     // --one-file-disc cores: one .bin plus a .trk table per disc (slots 100n+1, 100n+2).
     // --cue-mount cores read the cue themselves (their launch slot takes .cue files).
     const cueReader = declared !== null && declared.some((s) => s && s.id === 0 && (s.extensions || []).includes('cue'));
@@ -526,6 +558,7 @@
     // them means a game file can name one.
     const playlistSlot = declared !== null && declared.some((s) => s && s.id === 100 && (s.extensions || []).includes('m3u'));
     const oneFile = !cueReader && declared !== null && declared.some((s) => s && s.id === 102 && (s.extensions || []).includes('trk'));
+    const trackSizesSlot = cueReader && ids.includes(TSZ_SLOT);
     const common = ['Assets', platform, 'common'];
     const out = ['Assets', platform, core];
     const commonDir = await dirAt(card, common);
@@ -552,6 +585,7 @@
       const folder = cue.slice(0, -1), cueName = cue[cue.length - 1], cueStem = stem(cueName);
       const dataPath = posix(folder.slice(common.length));
       const slots = [{ id: 100, filename: cueName }, ...files.map(([n], k) => ({ id: 101 + k, filename: n }))];
+      if (sizesFiles.has(cue.join('/'))) slots.push({ id: TSZ_SLOT, filename: sizesFiles.get(cue.join('/')) });
       let sbi = null;
       if (cueReader) sbi = await fileAt(card, [...folder, cueStem + '.sbi']) ? cueStem + '.sbi' : null;
       else if (libcrypt || oneFile) sbi = await findSbi(card, cue);
@@ -573,6 +607,13 @@
       const kind = oneFile ? ', one file' : cueReader ? ', cue' : '';
       say(`wrote ${cueStem}.json (${count} track${count > 1 ? 's' : ''}${kind}${sbi ? ', LibCrypt ' + sbi : ''}${cht ? ', cheats ' + cht : ''})`);
     };
+    // An untagged cue counts as disc 1 when another cue of the same title has a
+    // disc 2+ tag and none has disc 1's ("X.cue" with "X Disc2.cue").
+    const later = new Set(), first = new Set();
+    for (const rel of await walk(commonDir, (n) => /\.cue$/i.test(n))) {
+      const tag = discTag(stem(rel[rel.length - 1]));
+      if (tag) (tag[0] === 1 ? first : later).add(tag[1].replace(RELEASE, '').trim());
+    }
     for (const rel of await walk(commonDir, (n) => /\.cue$/i.test(n))) {
       const cue = [...common, ...rel];
       const folder = cue.slice(0, -1), cueName = cue[cue.length - 1], cueStem = stem(cueName);
@@ -589,17 +630,24 @@
       }
       if (!reason && cueReader) {   // disc 1 boots from its slots, the rest by path
         trackCount = files.reduce((n, [, tracks]) => n + tracks.length, 0);
-        if (files.length > Math.min(CUE_FILE_SLOTS, maxTracks)) files = [];   // only slots the core declares
+        if (files.length > Math.min(CUE_FILE_SLOTS, maxTracks)) {
+          if (trackSizesSlot) {   // its files are opened by path: their sizes for the boot mount
+            await writeFile(card, [...folder, cueStem + '.tsz'], await trackSizes(card, cue, files));
+            sizesFiles.set(cue.join('/'), cueStem + '.tsz');
+          }
+          files = [];   // only slots the core declares
+        }
       }
       if (!reason && !oneFile && !cueReader && files.length > maxTracks) reason = `${files.length} track files (core takes ${maxTracks})`;
       if (reason && await fileAt(card, [...folder, cueStem, cueStem + '.cue'])) continue;   // converted copy is listed
       if (reason) { say(`skip ${rel.join('/')}: ${reason}`); summary.skipped++; continue; }
-      const disc = DISC_N.exec(cueStem);
-      if (disc && discsDeclared > 1) {
-        const name = cueStem.replace(DISC_N_ALL, '');
+      let tag = discTag(cueStem);
+      if (!tag && later.has(cueStem.replace(RELEASE, '').trim()) && !first.has(cueStem.replace(RELEASE, '').trim())) tag = [1, cueStem];
+      if (tag && discsDeclared > 1) {
+        const [number, name] = tag;
         const game = name.replace(RELEASE, '').trim();
         if (!games.has(game)) games.set(game, new Map());
-        const found = games.get(game), number = parseInt(disc[1], 10);
+        const found = games.get(game);
         if (!found.has(number)) found.set(number, []);
         found.get(number).push([cue, files, name.match(RELEASE) || [], trackCount]);
         continue;
@@ -621,13 +669,13 @@
       }
       if (cueReader && !siblingPaths(parts.get(1)[0], numbers.slice(1).map((n) => [n, parts.get(n)[0]]))) {
         // The core can't find the other discs by name: a playlist lists them.
-        const stem1 = stem(parts.get(1)[0].slice(-1)[0]), name = stem1.replace(DISC_N_ALL, '').trim();
+        const stem1 = stem(parts.get(1)[0].slice(-1)[0]), name = discTag(stem1) ? discTag(stem1)[1].trim() : stem1;
         const folders = numbers.map((n) => parts.get(n)[0].slice(0, -1));
         let depth = 0;
         while (folders.every((f) => depth < f.length && f[depth] === folders[0][depth])) depth++;
         const root = folders[0].slice(0, depth), m3u = [...root, name + '.m3u'];
         const shown = m3u.slice(common.length).join('/');
-        const shared = sharedCardName(stem1);
+        const shared = groupCard(numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
         if (numbers.length <= 4) {
           await writeFile(card, m3u, numbers.map((n) => parts.get(n)[0].slice(root.length).join('/') + '\n').join(''));
         }
@@ -637,6 +685,8 @@
           const [cue1, files1] = parts.get(1);
           const slots = [{ id: 100, filename: name + '.m3u' },
                          ...files1.map(([f], k) => ({ id: 101 + k, filename: join(cue1.slice(0, -1), f).slice(root.length).join('/') }))];
+          const sizes1 = sizesFiles.get(cue1.join('/'));
+          if (sizes1) slots.push({ id: TSZ_SLOT, filename: join(cue1.slice(0, -1), sizes1).slice(root.length).join('/') });
           if (useShared) {
             for (const s of slots) s.filename = prefix + s.filename;
             slots.push({ id: CARD_SLOT, filename: shared });
@@ -682,9 +732,10 @@
       if (sbi) slots.push({ id: LIBCRYPT_SLOT, filename: rel(cue1, sbi) });
       const cht = cheats ? await findCht(card, cue1) : null;
       if (cht) slots.push({ id: CHEAT_SLOT, filename: rel(cue1, cht) });
+      if (sizesFiles.has(cue1.join('/'))) slots.push({ id: TSZ_SLOT, filename: rel(cue1, sizesFiles.get(cue1.join('/'))) });   // disc 1's, for the boot mount
       const dataPath = posix(root.slice(common.length));
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
-      const shared = sharedCards ? sharedCardName(cue1Stem) : null;
+      const shared = sharedCards ? groupCard(numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0]))) : null;
       if (shared) {   // the same shared card as the per-disc files would use
         for (const s of slots) s.filename = prefix + s.filename;
         slots.push({ id: CARD_SLOT, filename: shared });
@@ -693,7 +744,7 @@
         prefix = '';
       }
       // Named after disc 1 without its disc tag ("Final Fantasy VII (USA).json").
-      const name = cue1Stem.replace(DISC_N_ALL, '').trim();
+      const name = discTag(cue1Stem) ? discTag(cue1Stem)[1].trim() : cue1Stem;
       await writeInstance(name, slots, prefix);
       for (const n of numbers) {   // per-disc files from earlier runs
         const s = stem(parts.get(n)[0].slice(-1)[0]);

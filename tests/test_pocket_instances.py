@@ -168,6 +168,64 @@ class LibCryptSlot(unittest.TestCase):
 
 
 
+class TrackSizes(unittest.TestCase):
+    def test_cue_only_game_file_gets_its_track_sizes(self):
+        # A cue-reader core opens the files of a cue with more files than it
+        # declares slots by path; with slot 97 the game file carries their
+        # sizes (cue_mount.c tsz_word).
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); game = card/'Assets/playstation/common/Many'; game.mkdir(parents=True)
+            cue = 'FILE "Many (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+            (game/'Many (Track 1).bin').write_bytes(sectors(1, 40))
+            for k in range(2, 7):
+                (game/f'Many (Track {k}).bin').write_bytes(sectors(k, 150 + k))
+                cue += f'FILE "Many (Track {k}).bin" BINARY\n  TRACK {k:02d} AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n'
+            (game/'Many.cue').write_text(cue)
+            core = card/'Cores/GuardianSoul.PSXEarlyTS'; core.mkdir(parents=True)
+            reader = [{'id': 0, 'extensions': ['json', 'cue', 'm3u']}, {'id': 100, 'extensions': ['cue', 'm3u']}] + [{'id': n} for n in range(101, 105)]
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyTS/Many.json'
+            for slots, want in ((reader + [{'id': 97}], True), (reader, False)):
+                (game/'Many.tsz').unlink(missing_ok=True)
+                (core/'data.json').write_text(json.dumps({'data': {'data_slots': slots}}))
+                subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyTS'],
+                               check=True, capture_output=True)
+                instance = json.loads(out.read_text())['instance']
+                self.assertEqual(instance['data_path'], 'Many/')
+                if not want:
+                    self.assertEqual(instance['data_slots'], [{'id': 100, 'filename': 'Many.cue'}])
+                    self.assertFalse((game/'Many.tsz').exists())
+                    continue
+                self.assertEqual(instance['data_slots'], [{'id': 100, 'filename': 'Many.cue'}, {'id': 97, 'filename': 'Many.tsz'}])
+                words = [int.from_bytes((game/'Many.tsz').read_bytes()[i:i+4], 'little') for i in range(0, 36, 4)]
+                self.assertEqual(words, [0x315A5354, len(cue.encode()), 6, 40, 152, 153, 154, 155, 156])
+
+
+    def test_multi_disc_game_file_gets_disc_1_track_sizes(self):
+        # A Disc-menu core groups "(Disc N)" cues into one game file (Street
+        # Fighter Collection (USA) (Disc 1) (Rev 1), with a shared card): its
+        # boot mount is disc 1's, so slot 97 holds disc 1's sizes.
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); stem = 'Fight (USA) (Disc 1) (Rev 1)'
+            game = card/'Assets/playstation/common'/stem; game.mkdir(parents=True)
+            cue = f'FILE "{stem} (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+            (game/f'{stem} (Track 1).bin').write_bytes(sectors(1, 40))
+            for k in range(2, 7):
+                (game/f'{stem} (Track {k}).bin').write_bytes(sectors(k, 150 + k))
+                cue += f'FILE "{stem} (Track {k}).bin" BINARY\n  TRACK {k:02d} AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n'
+            (game/f'{stem}.cue').write_text(cue)
+            core = card/'Cores/GuardianSoul.PSXEarlyTM'; core.mkdir(parents=True)
+            slots = ([{'id': 0, 'extensions': ['json', 'cue', 'm3u']}, {'id': 16}, {'id': 100, 'extensions': ['cue', 'm3u']}, {'id': 97}]
+                     + [{'id': n} for n in range(101, 105)] + [{'id': 201}, {'id': 202}])
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': slots}}))
+            subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyTM'],
+                           check=True, capture_output=True)
+            instance = json.loads((card/'Assets/playstation/GuardianSoul.PSXEarlyTM/Fight (USA) (Rev 1).json').read_text())['instance']
+            self.assertEqual(instance['data_path'], '')
+            self.assertEqual([s for s in instance['data_slots'] if s['id'] in (97, 100)],
+                             [{'id': 100, 'filename': f'{stem}/{stem}.cue'}, {'id': 97, 'filename': f'{stem}/{stem}.tsz'}])
+            self.assertEqual((game/f'{stem}.tsz').read_bytes()[8:12], (6).to_bytes(4, 'little'))
+
+
 class MultiDiscGroup(unittest.TestCase):
     def test_discs_of_a_game_share_one_instance(self):
         with TemporaryDirectory() as tmp:
@@ -190,6 +248,39 @@ class MultiDiscGroup(unittest.TestCase):
                                                       {'id': 101, 'filename': 'Game (Disc 1)/Game (Disc 1).bin'},
                                                       {'id': 201, 'filename': 'Game (Disc 2)/Game (Disc 2).bin'}])
 
+
+    def test_other_disc_namings_group(self):
+        # Disc tags as other rippers write them: an untagged disc 1 with
+        # "Disc2" (Star Wars Rebel Assault II, from a user's card), "CD1"/"CD2",
+        # " - Disc 1"/" - Disc 2". Sequel numbers and lone titles stay apart.
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); common = card/'Assets/playstation/common'
+            stems = {'Star Wars Rebel Assault II': 1, 'Star Wars Rebel Assault II Disc2': 2,
+                     'Riven CD1': 1, 'Riven CD2': 2, 'Myst - Disc 1 (USA)': 1, 'Myst - Disc 2 (USA)': 2,
+                     'Tekken 2': 1, 'Tekken 3': 1, 'Discworld II': 1}
+            for stem, n in stems.items():
+                game = common/stem; game.mkdir(parents=True)
+                (game/f'{stem}.bin').write_bytes(sectors(n, 4))
+                (game/f'{stem}.cue').write_text(f'FILE "{stem}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            core = card/'Cores/GuardianSoul.PSXEarlyMD'; core.mkdir(parents=True)
+            declared = [{'id': 0}, {'id': 16}, {'id': 100}] + [{'id': 101+k} for k in range(19)] + [{'id': 201}, {'id': 202}]
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
+                           check=True, capture_output=True)
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
+            self.assertEqual(sorted(p.name for p in out.iterdir()),
+                             ['Discworld II.json', 'Myst (USA).json', 'Riven.json', 'Star Wars Rebel Assault II.json', 'Tekken 2.json', 'Tekken 3.json'])
+            ra2 = json.loads((out/'Star Wars Rebel Assault II.json').read_text())['instance']
+            self.assertEqual(ra2['data_slots'], [{'id': 100, 'filename': 'Star Wars Rebel Assault II/Star Wars Rebel Assault II.cue'},
+                                                 {'id': 101, 'filename': 'Star Wars Rebel Assault II/Star Wars Rebel Assault II.bin'},
+                                                 {'id': 201, 'filename': 'Star Wars Rebel Assault II Disc2/Star Wars Rebel Assault II Disc2.bin'},
+                                                 {'id': 16, 'filename': 'Star Wars Rebel Assault II.sav'}])
+            riven = json.loads((out/'Riven.json').read_text())['instance']['data_slots']
+            self.assertEqual([s['id'] for s in riven], [100, 101, 201, 16])
+            self.assertIn({'id': 16, 'filename': 'Riven.sav'}, riven)
+            myst = json.loads((out/'Myst (USA).json').read_text())['instance']['data_slots']
+            self.assertIn({'id': 16, 'filename': 'Myst (USA).sav'}, myst)
+            self.assertEqual([s['id'] for s in json.loads((out/'Tekken 2.json').read_text())['instance']['data_slots']], [100, 101])
 
     def test_release_tags_do_not_split_a_game(self):
         with TemporaryDirectory() as tmp:

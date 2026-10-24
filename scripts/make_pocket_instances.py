@@ -91,9 +91,22 @@ PREGAP = 150
 LIBCRYPT_SLOT = 99
 CHEAT_SLOT = 98
 CARD_SLOT = 16
+TSZ_SLOT = 97   # track sizes (--track-sizes cores): see track_sizes()
 HELP_ENTRY = '! How to add games (see README).json'   # package_release.py's placeholder
 DISC = re.compile(r' \(Disc \d+\)')
 DISC_N = re.compile(r'\s*\(Disc (\d+)\)', re.I)
+# Disc tags beyond redump's "(Disc N)": "(CD 2)", "(Disc2)", and at the end of
+# the title (before any release tags) "X Disc2", "X - Disc 1", "X_CD2". Only
+# the words Disc and CD with a number: "Tekken 2" is not a disc.
+DISC_PAREN = re.compile(r'\s*\((?:Disc|CD)\s*(\d{1,2})\)', re.I)
+DISC_END = re.compile(r'[\s_-]+(?:Disc|CD)[\s_]*(\d{1,2})((?:\s*\([^()]*\))*)\s*$', re.I)
+
+
+def disc_tag(stem):
+    """(disc number, stem without its disc tag), or None."""
+    if m := DISC_PAREN.search(stem): return int(m[1]), DISC_PAREN.sub('', stem)
+    if m := DISC_END.search(stem): return int(m[1]), stem[:m.start()] + m[2]
+    return None
 # Files a cue-reader core reads from the game file's slots 101+ (disc 1).
 CUE_FILE_SLOTS = 19
 # Other tags in parentheses (region, release, languages) can differ between
@@ -103,8 +116,15 @@ RELEASE = re.compile(r'\s*\([^()]*\)')
 
 
 def shared_card_name(stem):
-    """'Game (USA) (Disc 2)' -> 'Game (USA).sav'; None for single-disc games."""
-    return DISC.sub('', stem, count=1) + '.sav' if DISC.search(stem) else None
+    """'Game (USA) (Disc 2)' -> 'Game (USA).sav' ('Game Disc2' -> 'Game.sav'); None for single-disc games."""
+    if DISC.search(stem): return DISC.sub('', stem, count=1) + '.sav'
+    tag = disc_tag(stem)
+    return tag[1].strip() + '.sav' if tag else None
+
+
+def group_card(stems):
+    """A multi-disc game's shared card: from the first disc whose name has a disc tag."""
+    return next((c for c in map(shared_card_name, stems) if c), None)
 
 
 def seed_shared_card(card, platform, core, stems, name):
@@ -139,6 +159,17 @@ def find_sbi(cue):
     if same.is_file(): return same
     found = sorted(cue.parent.glob('*.sbi'))
     return found[0] if len(found) == 1 else None
+
+
+def track_sizes(cue):
+    """The cue reader's track sizes for a game JSON whose files it opens by
+    path (slot 97): "TSZ1", the cue's bytes, the FILE count, then each FILE's
+    2,352-byte sectors, as little-endian words. The boot mount takes these
+    instead of opening and probing every file (cue_mount.c tsz_word)."""
+    files = parse_cue(cue)
+    words = [0x315A5354, cue.stat().st_size, len(files)]
+    words += [(cue.parent/name.replace('\\', '/')).stat().st_size // SECTOR for name, _ in files]
+    return b''.join(w.to_bytes(4, 'little') for w in words)
 
 
 def parse_cue(path):
@@ -298,12 +329,14 @@ def split_cue(cue, dest, move=False):
     return out_cue
 
 
-def one_file_plan(files, folder):
+def one_file_plan(files, folder, data=None):
     """(sources, tracks) for a one-file disc, or a reason string.
 
     sources: [(path, sectors)] concatenated in order; tracks: [(start,
     index01)] in sectors from the start of the image (start is INDEX 00, or
-    INDEX 01 without one)."""
+    INDEX 01 without one). data: a list to take the indexes of data tracks
+    after track 1 (the cue reader's table, Breath of Fire IV); without it
+    such a track is refused."""
     if not files: return 'no FILE entries'
     sources, tracks, offset = [], [], 0
     for name, entries in files:
@@ -315,7 +348,9 @@ def one_file_plan(files, folder):
             if not raw_track(kind): return f'track {number}: {kind} is not 2352-byte sectors'
             if 1 not in index: return f'track {number}: no INDEX 01'
             if index.get('pregap'): return f'track {number}: PREGAP outside the image'
-            if tracks and kind != 'AUDIO': return f'track {number}: data after track 1'
+            if tracks and kind != 'AUDIO':
+                if data is None: return f'track {number}: data after track 1'
+                data.append(len(tracks))
             tracks.append((offset + index.get(0, index[1]), offset + index[1]))
         sources.append((path, size//SECTOR)); offset += size//SECTOR
     if not tracks or files[0][1][0][1] == 'AUDIO' or tracks[0] != (0, 0): return 'track 1 must be data with INDEX 01 at 00:00:00'
@@ -344,8 +379,9 @@ def libcrypt_mask(sbi):
     return mask
 
 
-def track_table(tracks, sectors, region=2, mask=0):
-    """The core's 400 track-info words (scripts/psx_disc_host.py layout)."""
+def track_table(tracks, sectors, region=2, mask=0, data=()):
+    """The core's 400 track-info words (scripts/psx_disc_host.py layout);
+    data: indexes of later tracks that are data (audio bit 0)."""
     end = sectors + PREGAP
     minutes, seconds = divmod(end//75, 60)
     words = [0]*400
@@ -353,7 +389,7 @@ def track_table(tracks, sectors, region=2, mask=0):
     for k, (start, index01) in enumerate(tracks):
         minutes, seconds = divmod((index01 + PREGAP)//75, 60)
         last = (tracks[k+1][0] if k+1 < len(tracks) else sectors) + PREGAP - 1
-        words[4*k+4:4*k+8] = [0 if k == 0 else start + PREGAP, last, ((k != 0) << 16) | (bcd(minutes) << 8) | bcd(seconds), 0]
+        words[4*k+4:4*k+8] = [0 if k == 0 else start + PREGAP, last, ((k != 0 and k not in data) << 16) | (bcd(minutes) << 8) | bcd(seconds), 0]
     return words
 
 
@@ -504,12 +540,15 @@ def main():
     skipped += write_lone_cues(common)[1]
     discs = {}
     games = {}   # --disc-menu cores: game name -> {disc number: (cue, files, tracks)}
+    sizes_files = {}   # cue -> its track sizes file (cores that declare slot 97)
+    track_sizes_slot = args.cue_reader and any(s.get('id') == TSZ_SLOT for s in (declared or []))
 
     def single(cue, files, tracks_n, shared_card=None):
         """Write cue's own game file (shared_card: its game's shared card name, if set)."""
         folder = cue.parent
         data_path = folder.relative_to(common).as_posix()
         slots = [{'id': 100, 'filename': cue.name}] + [{'id': 101+k, 'filename': name} for k, (name, _) in enumerate(files)]
+        if cue in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': sizes_files[cue]})
         if args.cue_reader: sbi = cue.with_suffix('.sbi') if cue.with_suffix('.sbi').is_file() else None
         else: sbi = find_sbi(cue) if args.libcrypt or args.one_file else None
         # Cue-reader cores read a cue's .sbi by its path, which a game JSON's
@@ -532,6 +571,12 @@ def main():
         kind = ', one file' if args.one_file else ', cue' if args.cue_reader else ''
         print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{kind}{", LibCrypt " + sbi.name if sbi else ""}{", cheats " + cht.name if cht else ""})')
 
+    # An untagged cue counts as disc 1 when another cue of the same title has a
+    # disc 2+ tag and none has disc 1's ("X.cue" with "X Disc2.cue").
+    later, first = set(), set()
+    for cue in visible(common, '*.cue'):
+        if tag := disc_tag(cue.stem): (first if tag[0] == 1 else later).add(RELEASE.sub('', tag[1]).strip())
+    untagged_first = later - first
     for cue in visible(common, '*.cue'):
         folder = cue.parent
         try: files = parse_cue(cue)
@@ -544,18 +589,22 @@ def main():
             else: files = [(made[0].relative_to(folder).as_posix(), None), (made[1].relative_to(folder).as_posix(), None)]; tracks_n = made[2]
         if reason is None and args.cue_reader:   # disc 1 boots from its slots, the rest by path
             tracks_n = sum(len(tracks) for _, tracks in files)
-            if len(files) > min(CUE_FILE_SLOTS, args.max_tracks): files = []   # only slots the core declares
+            if len(files) > min(CUE_FILE_SLOTS, args.max_tracks):
+                files = []   # only slots the core declares
+                if track_sizes_slot:   # its files are opened by path: their sizes for the boot mount
+                    sizes = cue.with_suffix('.tsz'); sizes.write_bytes(track_sizes(cue)); sizes_files[cue] = sizes.name
         if reason is None and not (args.one_file or args.cue_reader) and len(files) > args.max_tracks: reason = f'{len(files)} track files (core takes {args.max_tracks})'
         if reason and (folder/cue.stem/(cue.stem + '.cue')).is_file(): continue  # converted copy is listed
         if reason:
             print(f'skip {cue.relative_to(common)}: {reason}'); skipped += 1; continue
-        disc = DISC_N.search(cue.stem)
-        if disc and discs_declared > 1:
-            name = DISC_N.sub('', cue.stem)
+        tag = disc_tag(cue.stem)
+        if not tag and RELEASE.sub('', cue.stem).strip() in untagged_first: tag = (1, cue.stem)
+        if tag and discs_declared > 1:
+            number, name = tag
             game = RELEASE.sub('', name).strip()
             # Two releases of the same disc: keep the one whose release tags
             # match disc 1's (decided below), else the first.
-            games.setdefault(game, {}).setdefault(int(disc.group(1)), []).append((cue, files, RELEASE.findall(name), tracks_n if args.one_file or args.cue_reader else None))
+            games.setdefault(game, {}).setdefault(number, []).append((cue, files, RELEASE.findall(name), tracks_n if args.one_file or args.cue_reader else None))
             continue
         single(cue, files, tracks_n if args.one_file or args.cue_reader else None); written += 1
     for game, found in sorted(games.items()):
@@ -569,7 +618,7 @@ def main():
             print(f'skip {game}: disc {too_long[0]} has more track files than the core declares'); skipped += 1; continue
         if args.cue_reader and not sibling_paths(parts[1][0], {n: parts[n][0] for n in numbers[1:]}):
             # The core can't find the other discs by name: a playlist lists them.
-            name = DISC_N.sub('', parts[1][0].stem).strip()
+            name = disc_tag(parts[1][0].stem)[1].strip() if disc_tag(parts[1][0].stem) else parts[1][0].stem
             root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
             m3u = root/(name + '.m3u')
             if len(numbers) <= 4:
@@ -579,8 +628,9 @@ def main():
                 cue1 = parts[1][0]
                 slots = [{'id': 100, 'filename': m3u.name}] + [
                     {'id': 101+k, 'filename': (cue1.parent/f).relative_to(root).as_posix()} for k, (f, _) in enumerate(parts[1][1])]
+                if cue1 in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': (cue1.parent/sizes_files[cue1]).relative_to(root).as_posix()})
                 prefix = data_path + '/' if data_path != '.' else ''
-                shared = shared_card_name(parts[1][0].stem) if args.shared_cards else None
+                shared = group_card(parts[n][0].stem for n in numbers) if args.shared_cards else None
                 if shared:
                     for s in slots: s['filename'] = prefix + s['filename']
                     slots.append({'id': CARD_SLOT, 'filename': shared})
@@ -589,7 +639,8 @@ def main():
                 instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
                 out.mkdir(parents=True, exist_ok=True)
                 (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
-                for n in numbers: (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
+                for n in numbers:
+                    if parts[n][0].stem != name: (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
                 print(f'wrote {name}.json ({len(numbers)} discs, playlist {m3u.relative_to(common).as_posix()})'); written += 1
                 continue
             if len(numbers) <= 4:
@@ -597,7 +648,7 @@ def main():
                       f'{m3u.relative_to(common).as_posix()} (pick it in the core\'s file list to swap discs); each disc also gets its own game file')
             else:
                 print(f'{game}: the discs\' names differ by more than their number, so each disc gets its own game file')
-            for n in numbers: single(*parts[n], shared_card=shared_card_name(parts[1][0].stem)); written += 1
+            for n in numbers: single(*parts[n], shared_card=group_card(parts[k][0].stem for k in numbers)); written += 1
             continue
         root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
         rel = lambda cue, name: (cue.parent/name).relative_to(root).as_posix()
@@ -611,9 +662,10 @@ def main():
         if sbi: slots.append({'id': LIBCRYPT_SLOT, 'filename': rel(cue1, sbi.name)})
         cht = find_cht(cue1) if cheats else None
         if cht: slots.append({'id': CHEAT_SLOT, 'filename': rel(cue1, cht.name)})
+        if cue1 in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': rel(cue1, sizes_files[cue1])})   # disc 1's, for the boot mount
         data_path = root.relative_to(common).as_posix()
         prefix = data_path + '/' if data_path != '.' else ''
-        shared = shared_card_name(cue1.stem) if args.shared_cards else None
+        shared = group_card(parts[n][0].stem for n in numbers) if args.shared_cards else None
         if shared:   # the same shared card as the per-disc files would use
             for s in slots: s['filename'] = prefix + s['filename']
             slots.append({'id': CARD_SLOT, 'filename': shared})
@@ -623,10 +675,10 @@ def main():
         out.mkdir(parents=True, exist_ok=True)
         # Named after disc 1 without its disc tag, as before tags were ignored
         # ("Final Fantasy VII (USA).json").
-        name = DISC_N.sub('', cue1.stem).strip()
+        name = disc_tag(cue1.stem)[1].strip() if disc_tag(cue1.stem) else cue1.stem
         (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
-        for n in numbers:   # per-disc files from earlier runs
-            (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
+        for n in numbers:   # per-disc files from earlier runs (not this one: an untagged disc 1 has its name)
+            if parts[n][0].stem != name: (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
         print(f'wrote {name}.json ({len(numbers)} disc{"s" if len(numbers) > 1 else ""})'); written += 1
     if written:   # the release's "how to add games" placeholder
         (out/HELP_ENTRY).unlink(missing_ok=True)
