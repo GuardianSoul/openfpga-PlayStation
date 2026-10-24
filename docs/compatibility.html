@@ -116,7 +116,7 @@
         <select id="sort" aria-label="Sort">
           <option value="name">Sort: name</option><option value="best">Sort: runs best</option>
           <option value="worst">Sort: runs worst</option><option value="votes">Sort: most votes</option>
-          <option value="core">Sort: newest core</option>
+          <option value="recent">Sort: newest vote</option>
         </select>
       </div>
     </div>
@@ -143,7 +143,7 @@
     <a href="https://github.com/libretro/libretro-database">libretro-database</a>
     (<a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>), which builds on redump.org.</footer>
 </main>
-<script src="compat.js"></script>
+<script src="compat.js?v=2"></script>
 <script>
 (function () {
   'use strict';
@@ -152,7 +152,7 @@
   const CLASSES = { 'Playable': 's-playable', 'Minor issues': 's-minor', 'Major issues': 's-major',
                     'Boots': 's-boots', "Doesn't boot": 's-none' };
   const voting = Boolean(Compat.VOTES);
-  let games = null, entries = [], data = { issues: [], seeds: [], versions: null }, votes = {}, mine = {};
+  let games = null, entries = [], data = { issues: [], seeds: [], versions: null }, votes = {}, mine = {}, latest = {};
   const opened = new Set();   // entries the reader has open, kept open across redraws
   const notes = new Map();    // a vote's outcome, shown under that game's buttons
 
@@ -246,11 +246,15 @@
     const region = $('region').value, sort = $('sort').value, core = $('core').value;
     const rank = (e) => (e.status ? Compat.STATUSES.indexOf(e.status) : Compat.STATUSES.length);
     const count = (e) => Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0);
+    const voted = (e) => Object.values(votes[`${e.key}|${core}`] || {}).some((n) => n > 0);
+    // The game's newest vote, on the picked version or any.
+    const newest = (e) => Math.max(0, ...Object.entries(latest)
+      .filter(([k]) => e.key && (core ? k === `${e.key}|${core}` : k.startsWith(e.key + '|'))).map(([, at]) => Number(at) || 0));
     const order = { best: (a, b) => rank(a) - rank(b), worst: (a, b) => (!a.status - !b.status) || rank(b) - rank(a),
                     votes: (a, b) => count(b) - count(a),
-                    core: (a, b) => (!a.version - !b.version) || Compat.compareVersions(b.version, a.version) }[sort];
-    // With a core version picked, only games rated on that version.
-    const shown = entries.filter((e) => opened.has(e.key) || ((!core || e.status) && (!status || e.status === status) && (!region || e.region === region) &&
+                    recent: (a, b) => newest(b) - newest(a) }[sort];
+    // With a core version picked, only games with votes on that version.
+    const shown = entries.filter((e) => opened.has(e.key) || ((!core || voted(e)) && (!status || e.status === status) && (!region || e.region === region) &&
       words.every((w) => (e.name + ' ' + e.serials.join(' ') + ' ' + e.region).toLowerCase().includes(w))))
       .sort((a, b) => (order ? order(a, b) : 0) || a.sortName.localeCompare(b.sortName) || a.region.localeCompare(b.region));
     $('list').innerHTML = shown.map((e) => {
@@ -271,7 +275,7 @@
         `</span></span>${badge(e.status)}</summary>` + voteBlock(e) +
         (reports ? `<ul class="reports plain">${reports}</ul>` : '') + problemLinks(e) + '</details>';
     }).join('');
-    const rated = core ? entries.filter((e) => e.status) : entries;
+    const rated = core ? entries.filter(voted) : entries;
     const counts = Compat.STATUSES.map((s) => [s, rated.filter((e) => e.status === s).length]).filter(([, n]) => n);
     const allVotes = Object.values(votes).reduce((sum, v) => sum + Object.values(v).reduce((a, b) => a + b, 0), 0);
     // Votes on the latest release, for every game (not each game's newest votes).
@@ -281,7 +285,7 @@
       counts.map(([s, n]) => `<div class="stat ${CLASSES[s]}"><b>${n}</b><span>${escape(s)}</span></div>`).join('') +
       `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>` +
       (voting && allVotes ? `<p class="votes">${voteCount} ${voteCount === 1 ? 'vote' : 'votes'} on the latest core, ${allVotes} in total</p>` : '');
-    $('summary').innerHTML = `${rated.length} games${core ? ' rated on core ' + escape(core) : ''}` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
+    $('summary').innerHTML = `${rated.length} games${core ? ' with votes on core ' + escape(core) : ''}` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
       (shown.length < rated.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '') +
       (words.length && !shown.length && games && !Compat.search(games, $('filter').value, $('region').value, 1).length ? ' No game matches that name.' : '');
     showMatches();
@@ -297,6 +301,7 @@
       if (mine[k]) counts[mine[k]] = Math.max(0, (counts[mine[k]] || 1) - 1);
       if (status) counts[status] = (counts[status] || 0) + 1;
       mine[k] = status;
+      if (status) latest[k] = Date.now();
       notes.set(key, status ? 'Thanks, your vote is in. Tap it again to take it back.' : 'Your vote is taken back.');
       rebuild();
     } catch (error) {
@@ -333,18 +338,19 @@
 
 
   (async () => {
-    const [gameText, seeds, versions, reports, counts, own] = await Promise.all([
+    const [gameText, seeds, versions, reports, counts, own, times] = await Promise.all([
       fetch('games.tsv').then((r) => (r.ok ? r.text() : '')).catch(() => ''),
       fetch('compatibility.json').then((r) => (r.ok ? r.json() : [])).catch(() => []),
       Compat.fetchVersions().catch(() => null),
       issues().catch(() => []),
       voting ? Compat.fetchVotes().catch(() => { $('summary').dataset.note = ' <span class="warn">Votes couldn’t be loaded; try again later.</span>'; return {}; }) : {},
       voting ? Compat.fetchMine().catch(() => ({})) : {},
+      voting ? Compat.fetchLatest().catch(() => ({})) : {},
     ]);
     games = gameText ? Compat.loadGames(gameText) : null;
     data = { issues: reports, seeds, versions };
     for (const v of versions || []) $('core').append(new Option(`Core ${v}`, v));
-    votes = counts; mine = own;
+    votes = counts; mine = own; latest = times;
     rebuild();
     showMatches();
   })();

@@ -7,6 +7,7 @@
 //
 //   GET  /versions -> { "versions": ["0.5.6", ...] }   (released, newest first)
 //   GET  /votes -> { "<game>|<version>": { "<status>": count } }
+//   GET  /latest -> { "<game>|<version>": <newest vote's time, ms> }
 //   GET  /mine  -> { "<game>|<version>": "<status>" }   (this address's votes)
 //   POST /vote  <- { game, version, status }             (status "" withdraws it)
 //
@@ -78,6 +79,12 @@ async function tallies(env) {
   return out;
 }
 
+// When each game last got a vote on each version, so the page can list the newest first.
+async function latest(env) {
+  const { results } = await env.DB.prepare('SELECT game, version, MAX(at) AS at FROM votes GROUP BY game, version').all();
+  return Object.fromEntries(results.map((row) => [`${row.game}|${row.version}`, row.at]));
+}
+
 async function mine(voter, env) {
   const { results } = await env.DB.prepare('SELECT game, version, status FROM votes WHERE voter = ?').bind(voter).all();
   return Object.fromEntries(results.map((row) => [`${row.game}|${row.version}`, row.status]));
@@ -108,12 +115,13 @@ export default {
   async fetch(request, env, ctx, fetchImpl = fetch) {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
-    if (request.method === 'GET' && url.pathname === '/votes') {
+    if (request.method === 'GET' && (url.pathname === '/votes' || url.pathname === '/latest')) {
       // Counted at most every 30 seconds, to stay well inside the free plan's database reads.
       const cache = globalThis.caches?.default, key = new Request(url.toString());
       const hit = cache && await cache.match(key);
       if (hit) return hit;
-      const fresh = answer(await tallies(env), 200, { 'Cache-Control': 'public, max-age=30' });
+      const body = url.pathname === '/votes' ? await tallies(env) : await latest(env);
+      const fresh = answer(body, 200, { 'Cache-Control': 'public, max-age=30' });
       if (cache) ctx.waitUntil(cache.put(key, fresh.clone()));
       return fresh;
     }
@@ -127,7 +135,9 @@ export default {
       const response = await vote(request, await voterOf(request, env), env, fetchImpl);
       // A new vote shows at once: drop the saved counts so the next load counts again.
       const cache = globalThis.caches?.default;
-      if (cache && response.ok) await cache.delete(new Request(new URL('/votes', url).toString()));
+      if (cache && response.ok) {
+        for (const path of ['/votes', '/latest']) await cache.delete(new Request(new URL(path, url).toString()));
+      }
       return response;
     }
     return answer({ error: 'not found' }, 404);

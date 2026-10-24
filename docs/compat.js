@@ -387,6 +387,12 @@
     return response.json();
   }
 
+  // When each game last got a vote: { "<key>|<version>": ms }. {} if the service can't tell.
+  async function fetchLatest(fetchImpl = fetch, base = VOTES) {
+    const response = await fetchImpl(`${base}/latest`, { cache: 'no-cache' });
+    return response.ok ? response.json() : {};
+  }
+
   async function fetchMine(fetchImpl = fetch, base = VOTES) {
     const response = await fetchImpl(`${base}/mine`, { cache: 'no-store' });
     return response.ok ? response.json() : {};
@@ -415,5 +421,5 @@
 
   Object.assign(exports, { REPO, STATUSES, REGIONS, parseBody, normalSerial, regionOfSerial, normalStatus,
                            baseName, nameKey, compareVersions, loadGames, search, lookup, fromIssue, fromSeed,
-                           group, build, decide, entryFor, fetchIssues, fetchVersions, fetchVotes, fetchMine, sendVote, reportUrl, VOTES });
+                           group, build, decide, entryFor, fetchIssues, fetchVersions, fetchVotes, fetchLatest, fetchMine, sendVote, reportUrl, VOTES });
 })(typeof module === 'object' && module.exports ? module.exports : (globalThis.Compat = {}));

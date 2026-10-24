@@ -21,6 +21,9 @@ class VoteWorker(unittest.TestCase):
                                         capture_output=True, text=True).stdout)
         self.assertEqual(out['first']['status'], 200)
         self.assertEqual(out['votes']['body'], {'tekken3|USA|0.5.3': {'Minor issues': 1, 'Playable': 1}})
+        # Newest vote per game and version: only versions that still have a vote.
+        self.assertEqual(list(out['latest']['body']), ['tekken3|USA|0.5.3'])
+        self.assertIsInstance(out['latest']['body']['tekken3|USA|0.5.3'], int)
         self.assertEqual(out['mine']['body'], {'tekken3|USA|0.5.3': 'Minor issues'})
         for refused in ('badVersion', 'unreleased', 'badGame', 'badStatus'):
             self.assertEqual(out[refused]['status'], 400, refused)
