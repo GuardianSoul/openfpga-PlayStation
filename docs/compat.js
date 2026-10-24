@@ -268,18 +268,19 @@
   // An entry's status: the most votes on the newest released version anyone
   // voted or reported on. Each vote counts once, each report once plus its
   // net 👍; a tie goes to the worse status. votes: { "<key>|<version>": { status: n } }.
-  function decide(entry, votes, released) {
+  // only: a core version; the status on that version alone ("" if nobody rated it there).
+  function decide(entry, votes, released, only = '') {
     const known = released ? new Set(released) : null;
     const versions = Object.keys(votes || {}).filter((k) => entry.key && k.startsWith(entry.key + '|'))
       .map((k) => k.slice(entry.key.length + 1)).filter((v) => !known || known.has(v));
     const rated = entry.reports.filter((r) => r.status && !r.resolved);
-    const all = [...versions, ...rated.map((r) => r.rank)];
+    const all = [...versions, ...rated.map((r) => r.rank)].filter((v) => !only || (v && !compareVersions(v, only)));
     const newest = all.sort((a, b) => compareVersions(b, a))[0] ?? '';
     const tally = {};
     for (const [status, n] of Object.entries((votes || {})[`${entry.key}|${newest}`] || {})) {
       if (STATUSES.includes(status)) tally[status] = (tally[status] || 0) + (Number(n) || 0);
     }
-    for (const r of rated) if (!compareVersions(r.rank, newest)) tally[r.status] = (tally[r.status] || 0) + (r.votes || 1);
+    for (const r of rated) if (!compareVersions(r.rank, newest) && (!only || all.length)) tally[r.status] = (tally[r.status] || 0) + (r.votes || 1);
     const status = Object.entries(tally).filter(([, n]) => n > 0)
       .sort((a, b) => b[1] - a[1] || STATUSES.indexOf(b[0]) - STATUSES.indexOf(a[0]))[0]?.[0] || '';
     return Object.assign(entry, { status, version: all.length ? newest : '', tally });
@@ -331,8 +332,8 @@
   // released: the published core versions. A report naming any other version
   // is listed but ranks below them, so a made-up "9.9" can't set a status.
   // votes: the vote service's counts; a game nobody reported yet gets an entry
-  // from its votes, if the game list knows it.
-  function build(issues, seeds, games, released, votes) {
+  // from its votes, if the game list knows it. only: rate every game on that core version alone.
+  function build(issues, seeds, games, released, votes, only = '') {
     const known = released ? new Set(released) : null;
     const reports = [...(seeds || []).map(fromSeed), ...(issues || []).map(fromIssue).filter(Boolean).map((r) =>
       ({ ...r, rank: !known || known.has(r.version.replace(/^v/i, '')) ? r.version : '' }))];
@@ -366,7 +367,7 @@
       for (const t of targets) t.reports = [...t.reports, ...e.reports].sort((a, b) => compareVersions(b.rank, a.rank));
       return false;
     });
-    return entries.map((e) => decide(e, votes, released))
+    return entries.map((e) => decide(e, votes, released, only))
       .sort((a, b) => a.sortName.localeCompare(b.sortName) || a.region.localeCompare(b.region));
   }
 

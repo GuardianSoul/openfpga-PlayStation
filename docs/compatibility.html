@@ -77,7 +77,6 @@
   #list details:hover:not([open]) { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
   @media (max-width: 560px) {
     .row select { flex: 1 1 40%; min-width: 0; }
-    .row #sort { flex-basis: 100%; }
     .toolbar { margin: 0 -16px 4px; padding: 8px 16px 0; }
     .toolbar::after { left: 0; right: 0; }
     #list details { scroll-margin-top: 230px; }
@@ -109,6 +108,7 @@
         <input id="filter" type="search" placeholder="Find or add a game by name or serial" autocomplete="off" aria-label="Find a game">
       </div>
       <div class="row">
+        <select id="core" aria-label="Core version"><option value="">Any core</option></select>
         <select id="status" aria-label="Status"><option value="">Any status</option></select>
         <select id="region" aria-label="Region">
           <option value="">Any region</option><option>USA</option><option>Europe</option><option>Japan</option><option>Other</option>
@@ -116,6 +116,7 @@
         <select id="sort" aria-label="Sort">
           <option value="name">Sort: name</option><option value="best">Sort: runs best</option>
           <option value="worst">Sort: runs worst</option><option value="votes">Sort: most votes</option>
+          <option value="core">Sort: newest core</option>
         </select>
       </div>
     </div>
@@ -179,7 +180,7 @@
   }
 
   function rebuild() {
-    entries = Compat.build(data.issues, data.seeds, games, data.versions, votes);
+    entries = Compat.build(data.issues, data.seeds, games, data.versions, votes, $('core').value);
     showList();
   }
 
@@ -204,11 +205,11 @@
       const old = entries.findIndex((e) => !e.region && Compat.nameKey(e.name) === Compat.nameKey(game.name));
       if (old >= 0) entry.reports = entries[old].reports;
       if (old >= 0) entries.splice(old, 1);
-      entries.push(Compat.decide(entry, votes, data.versions));
+      entries.push(Compat.decide(entry, votes, data.versions, $('core').value));
     }
     opened.add(key);
     $('filter').value = ''; $('status').value = ''; $('region').value = '';
-    showList();
+    if ($('core').value) { $('core').value = ''; rebuild(); } else showList();
     document.getElementById(id(key))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -242,12 +243,14 @@
 
   function showList() {
     const words = $('filter').value.toLowerCase().split(/\s+/).filter(Boolean), status = $('status').value;
-    const region = $('region').value, sort = $('sort').value;
+    const region = $('region').value, sort = $('sort').value, core = $('core').value;
     const rank = (e) => (e.status ? Compat.STATUSES.indexOf(e.status) : Compat.STATUSES.length);
     const count = (e) => Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0);
     const order = { best: (a, b) => rank(a) - rank(b), worst: (a, b) => (!a.status - !b.status) || rank(b) - rank(a),
-                    votes: (a, b) => count(b) - count(a) }[sort];
-    const shown = entries.filter((e) => opened.has(e.key) || ((!status || e.status === status) && (!region || e.region === region) &&
+                    votes: (a, b) => count(b) - count(a),
+                    core: (a, b) => (!a.version - !b.version) || Compat.compareVersions(b.version, a.version) }[sort];
+    // With a core version picked, only games rated on that version.
+    const shown = entries.filter((e) => opened.has(e.key) || ((!core || e.status) && (!status || e.status === status) && (!region || e.region === region) &&
       words.every((w) => (e.name + ' ' + e.serials.join(' ') + ' ' + e.region).toLowerCase().includes(w))))
       .sort((a, b) => (order ? order(a, b) : 0) || a.sortName.localeCompare(b.sortName) || a.region.localeCompare(b.region));
     $('list').innerHTML = shown.map((e) => {
@@ -264,21 +267,22 @@
       const total = Object.values(votes[`${e.key}|${e.version}`] || {}).reduce((a, b) => a + b, 0);
       return `<details id="${id(e.key || e.name)}" data-key="${escape(e.key)}"${opened.has(e.key) ? ' open' : ''}>` +
         `<summary><span class="name">${escape(e.name)} <span class="muted">${escape(e.region)}` +
-        `${e.version && e.version !== version() ? (e.region ? ' · ' : '') + 'on core ' + escape(e.version) : ''}${total ? ' · ' + total + (total === 1 ? ' vote' : ' votes') : ''}` +
+        `${e.version && e.version !== version() && !core ? (e.region ? ' · ' : '') + 'on core ' + escape(e.version) : ''}${total ? ' · ' + total + (total === 1 ? ' vote' : ' votes') : ''}` +
         `</span></span>${badge(e.status)}</summary>` + voteBlock(e) +
         (reports ? `<ul class="reports plain">${reports}</ul>` : '') + problemLinks(e) + '</details>';
     }).join('');
-    const counts = Compat.STATUSES.map((s) => [s, entries.filter((e) => e.status === s).length]).filter(([, n]) => n);
+    const rated = core ? entries.filter((e) => e.status) : entries;
+    const counts = Compat.STATUSES.map((s) => [s, rated.filter((e) => e.status === s).length]).filter(([, n]) => n);
     const allVotes = Object.values(votes).reduce((sum, v) => sum + Object.values(v).reduce((a, b) => a + b, 0), 0);
     // Votes on the latest release, for every game (not each game's newest votes).
     const voteCount = Object.entries(votes).filter(([k]) => k.endsWith(`|${version()}`))
       .reduce((sum, [, v]) => sum + Object.values(v).reduce((a, b) => a + b, 0), 0);
-    $('stats').innerHTML = `<div class="stat"><b>${entries.length}</b><span>games</span></div>` +
+    $('stats').innerHTML = `<div class="stat"><b>${rated.length}</b><span>games</span></div>` +
       counts.map(([s, n]) => `<div class="stat ${CLASSES[s]}"><b>${n}</b><span>${escape(s)}</span></div>`).join('') +
       `<div class="bar">${counts.map(([s, n]) => `<i class="${CLASSES[s]}" style="flex:${n}"></i>`).join('')}</div>` +
       (voting && allVotes ? `<p class="votes">${voteCount} ${voteCount === 1 ? 'vote' : 'votes'} on the latest core, ${allVotes} in total</p>` : '');
-    $('summary').innerHTML = `${entries.length} games` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
-      (shown.length < entries.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '') +
+    $('summary').innerHTML = `${rated.length} games${core ? ' rated on core ' + escape(core) : ''}` + (counts.length ? ': ' + counts.map(([s, n]) => `${n} ${escape(s.toLowerCase())}`).join(', ') : '') +
+      (shown.length < rated.length ? `. Showing ${shown.length}.` : '.') + ($('summary').dataset.note || '') +
       (words.length && !shown.length && games && !Compat.search(games, $('filter').value, $('region').value, 1).length ? ' No game matches that name.' : '');
     showMatches();
   }
@@ -325,6 +329,7 @@
   $('status').addEventListener('change', showList);
   $('region').addEventListener('change', showList);
   $('sort').addEventListener('change', showList);
+  $('core').addEventListener('change', rebuild);
 
 
   (async () => {
@@ -338,6 +343,7 @@
     ]);
     games = gameText ? Compat.loadGames(gameText) : null;
     data = { issues: reports, seeds, versions };
+    for (const v of versions || []) $('core').append(new Option(`Core ${v}`, v));
     votes = counts; mine = own;
     rebuild();
     showMatches();

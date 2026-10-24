@@ -36,7 +36,7 @@ def issue(number, labels=(), state_reason=None, user=None, **fields):
 
 @unittest.skipUnless(NODE, 'needs node')
 class CompatPage(unittest.TestCase):
-    def run_page(self, issues, seeds, games=GAMES, released=None, votes=None):
+    def run_page(self, issues, seeds, games=GAMES, released=None, votes=None, core=None):
         with TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp/'issues.json').write_text(json.dumps(issues))
@@ -48,6 +48,8 @@ class CompatPage(unittest.TestCase):
             if released is not None:
                 (tmp/'released.json').write_text(json.dumps(released))
                 args.append('--released=' + str(tmp/'released.json'))
+            if core is not None:
+                args.append('--core=' + core)
             if games is not None:
                 (tmp/'games.tsv').write_text(games)
                 args.append(str(tmp/'games.tsv'))
@@ -125,6 +127,16 @@ class CompatPage(unittest.TestCase):
         self.assertEqual((crash['status'], crash['numbers']), ('Boots', []))
         self.assertNotIn(('notalistedgame', 'USA'), entries)
         self.assertEqual(entries[('Tekken 3', 'USA')]['status'], 'Minor issues')
+
+    def test_status_on_one_core_version(self):
+        reports = [issue(1, game='Final Fantasy VII', serial='SCUS-94163', region='USA', status="Doesn't boot", version='0.5.2')]
+        votes = {'finalfantasy7|USA|0.5.3': {'Playable': 3}, 'tekken3|USA|0.5.3': {'Boots': 1}}
+        entries, _ = self.run_page(reports, [], released=['0.5.3', '0.5.2'], votes=votes, core='0.5.2')
+        ff7, tekken = entries[('Final Fantasy VII', 'USA')], entries[('Tekken 3', 'USA')]
+        self.assertEqual((ff7['status'], ff7['version']), ("Doesn't boot", '0.5.2'))   # the newer votes don't count
+        self.assertEqual((tekken['status'], tekken['version']), ('', ''))              # nobody rated it on 0.5.2
+        entries, _ = self.run_page(reports, [], released=['0.5.3', '0.5.2'], votes=votes, core='0.5.1')
+        self.assertEqual(entries[('Final Fantasy VII', 'USA')]['status'], '')
 
     def test_regional_entry_replaces_one_without_region(self):
         entries, _ = self.run_page([], [
