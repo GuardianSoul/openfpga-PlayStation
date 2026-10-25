@@ -8,9 +8,10 @@ independent decoders written here:
 - "rtl": psx-spx ADPCM with the arithmetic cd_xa uses ((sum+32)/64 truncated
   toward zero, unclamped 24-bit history, zigzag products truncated toward
   zero, 18.9 kHz by sample doubling). The RTL must match it exactly.
-- "duckstation": DuckStation's decoder (each filter product >>6, clamped
-  history, zigzag products >>15). The difference is reported, not failed:
-  it measures how far the MiSTer arithmetic is from the emulator reference.
+- "psx-spx": psx-spx's decode_28_nibbles and zigzag interpolation as
+  written there (clamped history, the divisions as arithmetic shifts). The
+  difference is reported, not failed: it measures how far the MiSTer
+  arithmetic is from the documented console behaviour.
 
 Synthetic sectors cover every format (4/8-bit, mono/stereo, 37.8/18.9 kHz,
 all filters and shifts, clipping). If the FFVII disc 1 image is present
@@ -18,7 +19,7 @@ all filters and shifts, clipping). If the FFVII disc 1 image is present
 too. A planted fault (filter 2 coefficient 115 -> 116) must fail.
 
 The cd-xa-history-clamp variant (clamped filter history, as psx-spx,
-DuckStation and Mednafen do) runs the same sectors against an "rtl-clamp"
+Mednafen does) runs the same sectors against an "rtl-clamp"
 reference: the MiSTer arithmetic with clamped history.
 """
 import os
@@ -34,24 +35,44 @@ from tool_paths import ROOT, find_tool
 
 UPSTREAM = ROOT / 'references/PSX_MiSTer'
 SECTOR = 2352
+# psx-spx "CDROM XA Audio ADPCM Compression": the four XA filters
+# (pos_xa_adpcm_table / neg_xa_adpcm_table; XA has no fifth filter).
 POS = (0, 60, 115, 98)
 NEG = (0, 0, -52, -55)
-ZIGZAG = (
-    (0, 0, 0, 0, 0, -0x2, 0xA, -0x22, 0x41, -0x54, 0x34, 0x9, -0x10A, 0x400, -0xA78, 0x234C, 0x6794, -0x1780, 0xBCD,
-     -0x623, 0x350, -0x16D, 0x6B, 0xA, -0x10, 0x11, -0x8, 0x3, -0x1),
-    (0, 0, 0, -0x2, 0, 0x3, -0x13, 0x3C, -0x4B, 0xA2, -0xE3, 0x132, -0x43, -0x267, 0xC9D, 0x74BB, -0x11B4, 0x9B8,
-     -0x5BF, 0x372, -0x1A8, 0xA6, -0x1B, 0x5, 0x6, -0x8, 0x3, -0x1, 0),
-    (0, 0, -0x1, 0x3, -0x2, -0x5, 0x1F, -0x4A, 0xB3, -0x192, 0x2B1, -0x39E, 0x4F8, -0x5A6, 0x7939, -0x5A6, 0x4F8,
-     -0x39E, 0x2B1, -0x192, 0xB3, -0x4A, 0x1F, -0x5, -0x2, 0x3, -0x1, 0, 0),
-    (0, -0x1, 0x3, -0x8, 0x6, 0x5, -0x1B, 0xA6, -0x1A8, 0x372, -0x5BF, 0x9B8, -0x11B4, 0x74BB, 0xC9D, -0x267, -0x43,
-     0x132, -0xE3, 0xA2, -0x4B, 0x3C, -0x13, 0x3, 0, -0x2, 0, 0, 0),
-    (-0x1, 0x3, -0x8, 0x11, -0x10, 0xA, 0x6B, -0x16D, 0x350, -0x623, 0xBCD, -0x1780, 0x6794, 0x234C, -0xA78, 0x400,
-     -0x10A, 0x9, 0x34, -0x54, 0x41, -0x22, 0xA, -0x1, 0, 0x1, 0, 0, 0),
-    (0x2, -0x8, 0x10, -0x23, 0x2B, 0x1A, -0xEB, 0x27B, -0x548, 0xAFA, -0x16FA, 0x53E0, 0x3C07, -0x1249, 0x80E, -0x347,
-     0x15B, -0x44, -0x17, 0x46, -0x23, 0x11, -0x5, 0, 0, 0, 0, 0, 0),
-    (-0x5, 0x11, -0x23, 0x46, -0x17, -0x44, 0x15B, -0x347, 0x80E, -0x1249, 0x3C07, 0x53E0, -0x16FA, 0xAFA, -0x548,
-     0x27B, -0xEB, 0x1A, 0x2B, -0x23, 0x10, -0x8, 0x2, 0, 0, 0, 0, 0, 0),
+# psx-spx "25-point Zigzag Interpolation": index 1..29 (rows), Table1..Table7
+# (columns), as printed there. ZIGZAG[k][i-1] is TableK+1[i].
+_ZIGZAG_ROWS = (
+    (0, 0, 0, 0, -0x0001, +0x0002, -0x0005),
+    (0, 0, 0, -0x0001, +0x0003, -0x0008, +0x0011),
+    (0, 0, -0x0001, +0x0003, -0x0008, +0x0010, -0x0023),
+    (0, -0x0002, +0x0003, -0x0008, +0x0011, -0x0023, +0x0046),
+    (0, 0, -0x0002, +0x0006, -0x0010, +0x002B, -0x0017),
+    (-0x0002, +0x0003, -0x0005, +0x0005, +0x000A, +0x001A, -0x0044),
+    (+0x000A, -0x0013, +0x001F, -0x001B, +0x006B, -0x00EB, +0x015B),
+    (-0x0022, +0x003C, -0x004A, +0x00A6, -0x016D, +0x027B, -0x0347),
+    (+0x0041, -0x004B, +0x00B3, -0x01A8, +0x0350, -0x0548, +0x080E),
+    (-0x0054, +0x00A2, -0x0192, +0x0372, -0x0623, +0x0AFA, -0x1249),
+    (+0x0034, -0x00E3, +0x02B1, -0x05BF, +0x0BCD, -0x16FA, +0x3C07),
+    (+0x0009, +0x0132, -0x039E, +0x09B8, -0x1780, +0x53E0, +0x53E0),
+    (-0x010A, -0x0043, +0x04F8, -0x11B4, +0x6794, +0x3C07, -0x16FA),
+    (+0x0400, -0x0267, -0x05A6, +0x74BB, +0x234C, -0x1249, +0x0AFA),
+    (-0x0A78, +0x0C9D, +0x7939, +0x0C9D, -0x0A78, +0x080E, -0x0548),
+    (+0x234C, +0x74BB, -0x05A6, -0x0267, +0x0400, -0x0347, +0x027B),
+    (+0x6794, -0x11B4, +0x04F8, -0x0043, -0x010A, +0x015B, -0x00EB),
+    (-0x1780, +0x09B8, -0x039E, +0x0132, +0x0009, -0x0044, +0x001A),
+    (+0x0BCD, -0x05BF, +0x02B1, -0x00E3, +0x0034, -0x0017, +0x002B),
+    (-0x0623, +0x0372, -0x0192, +0x00A2, -0x0054, +0x0046, -0x0023),
+    (+0x0350, -0x01A8, +0x00B3, -0x004B, +0x0041, -0x0023, +0x0010),
+    (-0x016D, +0x00A6, -0x004A, +0x003C, -0x0022, +0x0011, -0x0008),
+    (+0x006B, -0x001B, +0x001F, -0x0013, +0x000A, -0x0005, +0x0002),
+    (+0x000A, +0x0005, -0x0005, +0x0003, -0x0001, 0, 0),
+    (-0x0010, +0x0006, -0x0002, 0, 0, 0, 0),
+    (+0x0011, -0x0008, +0x0003, -0x0002, +0x0001, 0, 0),
+    (-0x0008, +0x0003, -0x0001, 0, 0, 0, 0),
+    (+0x0003, -0x0001, 0, 0, 0, 0, 0),
+    (-0x0001, 0, 0, 0, 0, 0, 0),
 )
+ZIGZAG = tuple(tuple(row[k] for row in _ZIGZAG_ROWS) for k in range(7))
 
 
 def tdiv(a, b):
@@ -69,80 +90,143 @@ def clamp16(value):
     return max(-32768, min(32767, value))
 
 
-class Decoder:
-    def __init__(self, mode):
-        self.mode = mode
-        self.last = [[0, 0], [0, 0]]
-        self.ring = [[0] * 32, [0] * 32]
-        self.p = 0
-        self.six = 0
+def resize_signed(value, bits):
+    """numeric_std resize of a SIGNED to fewer bits: keeps the sign bit and the low bits-1 bits."""
+    low = value & ((1 << (bits - 1)) - 1)
+    return low - (1 << (bits - 1)) if value < 0 else low
 
-    def adpcm(self, sector):
-        """One sector -> list of (left, right) samples at the sector's input rate."""
+
+def sign_extend(value, bits):
+    return wrap(value, bits)
+
+
+class Coding:
+    """Subheader coding info (psx-spx "CDROM XA Subheader"): bits 0-1 stereo, bit 2 18.9 kHz, bits 4-5 8-bit."""
+    def __init__(self, sector):
         coding = sector[19]
-        eight = (coding >> 4) & 3 == 1
-        stereo = coding & 3 == 1
-        left, right = [], []
-        for chunk in range(18):
-            base = 24 + chunk * 128
-            for block in range(4 if eight else 8):
-                header = sector[base + 4 + block]
-                shift = header & 15
-                if shift > 12:
-                    shift = 9
-                fpos, fneg = POS[(header >> 4) & 3], NEG[(header >> 4) & 3]
-                channel = 1 if stereo and block & 1 else 0
-                last = self.last[channel]
-                for word in range(28):
-                    if eight:
-                        raw = sector[base + 16 + block + word * 4]
-                        value = wrap(raw << 8, 16) >> shift
-                    else:
-                        raw = sector[base + 16 + block // 2 + word * 4]
-                        nibble = raw >> 4 if block & 1 else raw & 15
-                        value = wrap(nibble << 12, 16) >> shift
-                    if self.mode.startswith('rtl'):
-                        sample = wrap(tdiv(last[0] * fpos + last[1] * fneg + 32, 64) + value, 24)
-                        out = clamp16(sample)
-                        if self.mode == 'rtl-clamp':
-                            sample = out
-                    else:
-                        sample = clamp16(value + ((last[0] * fpos) >> 6) + ((last[1] * fneg) >> 6))
-                        out = sample
-                    last[1], last[0] = last[0], sample
-                    if stereo:
-                        (right if block & 1 else left).append(out)
-                    else:
-                        left.append(out); right.append(out)
-        return list(zip(left, right)), bool(coding & 4)
+        self.stereo = coding & 3 == 1
+        self.half_rate = bool(coding & 4)
+        self.eight_bit = (coding >> 4) & 3 == 1
 
-    def resample(self, frames, half_rate):
-        out = []
-        for frame in frames:
-            for _ in range(2 if half_rate else 1):
-                for c in (0, 1):
-                    self.ring[c][self.p] = frame[c]
-                self.p = (self.p + 1) & 31
-                self.six += 1
-                if self.six == 6:
-                    self.six = 0
-                    for table in ZIGZAG:
-                        pair = []
-                        for c in (0, 1):
-                            total = 0
-                            for i, tap in enumerate(table):
-                                product = self.ring[c][(self.p - i) & 31] * tap
-                                total += tdiv(product, 0x8000) if self.mode.startswith('rtl') else product >> 15
-                            pair.append(clamp16(total))
-                        out.append(tuple(pair))
-        return out
+
+def sound_units(sector, coding):
+    """(unit, header byte, 28 raw sample codes) for each unit of each of the 18 sound groups, in order.
+    psx-spx: header byte 4+unit; data word j (bytes 16+4j..) holds the units' codes, 4 bits (8 units) or 8 bits
+    (4 units) each, the lowest first."""
+    for group in range(18):
+        base = 24 + group * 128
+        for unit in range(4 if coding.eight_bit else 8):
+            header = sector[base + 4 + unit]
+            if coding.eight_bit:
+                codes = [sector[base + 16 + 4 * j + unit] for j in range(28)]
+            else:
+                codes = [(sector[base + 16 + 4 * j + unit // 2] >> (4 * (unit & 1))) & 15 for j in range(28)]
+            yield unit, header, codes
+
+
+class RtlDecoder:
+    """The pinned MiSTer cd_xa arithmetic, as its VHDL computes it (the RTL must match this exactly):
+    the 4/8-bit code left-aligned in 16 bits and shifted right (shift 13-15 as 9), the filter sum
+    (last0*pos + last1*neg + 32) / 64 truncated toward zero in 32 bits and resized to 24, plus the
+    sample, in 24 bits; 16-bit clamped output, 24-bit unclamped history (clamp_history: the clamped
+    value, cd-xa-history-clamp). Resampling: a 32-entry ring per channel, after every sixth write seven
+    outputs, output k = sum over c of ring[ptr - c] * ZIGZAG[k][c] / 0x8000 (truncated, 17 bits; sum
+    22 bits) for c = 0..28 from the next write slot, clamped; 18.9 kHz writes each sample twice."""
+    def __init__(self, clamp_history=False):
+        self.clamp_history = clamp_history
 
     def decode(self, sectors):
-        out = []
+        history = {0: [0, 0], 1: [0, 0]}   # channel -> [last0, last1]
+        rings = {0: [0] * 32, 1: [0] * 32}
+        pointer, six, frames = 0, 0, []
         for sector in sectors:
-            frames, half = self.adpcm(sector)
-            out += self.resample(frames, half)
-        return out
+            coding = Coding(sector)
+            left, right = [], []
+            for unit, header, codes in sound_units(sector, coding):
+                shift = header & 15 if header & 15 < 13 else 9
+                pos, neg = POS[(header >> 4) & 3], NEG[(header >> 4) & 3]
+                channel = 1 if coding.stereo and unit & 1 else 0
+                last = history[channel]
+                for code in codes:
+                    aligned = sign_extend(code, 8) << 8 if coding.eight_bit else sign_extend(code, 4) << 12
+                    new = aligned >> shift
+                    total = wrap(wrap(last[0] * pos + last[1] * neg, 32) + 32, 32)
+                    sample = wrap(resize_signed(tdiv(total, 64), 24) + new, 24)
+                    out = clamp16(sample)
+                    last[1], last[0] = last[0], (clamp16(sample) if self.clamp_history else sample)
+                    if coding.stereo:
+                        (right if unit & 1 else left).append(out)
+                    else:
+                        left.append(out); right.append(out)
+            for pair in zip(left, right):
+                for _ in range(2 if coding.half_rate else 1):
+                    for channel in (0, 1):
+                        rings[channel][pointer] = pair[channel]
+                    pointer, six = (pointer + 1) & 31, six + 1
+                    if six == 6:
+                        six = 0
+                        for k in range(7):
+                            frame = []
+                            for channel in (0, 1):
+                                total = 0
+                                for c in range(29):
+                                    product = resize_signed(tdiv(rings[channel][(pointer - c) & 31] * ZIGZAG[k][c], 0x8000), 17)
+                                    total = wrap(total + product, 22)
+                                frame.append(clamp16(total))
+                            frames.append(tuple(frame))
+        return frames
+
+
+class PsxSpxDecoder:
+    """psx-spx's decode_28_nibbles and 25-point zigzag interpolation, as written there: sample =
+    (code << (12 - shift)) + (old*f0 + older*f1 + 32) / 64, clamped, and the clamped value is the
+    history; 44.1 kHz output = sum for i = 1..29 of ring[p - i] * TableK[i] / 8000h, clamped, seven
+    outputs after every sixth 37.8 kHz sample. psx-spx writes the divisions as '/'; they are taken as
+    arithmetic right shifts here (floor). Reserved shifts 13-15 act as 9; 8-bit codes are left-aligned
+    by 8 (psx-spx "XA-ADPCM Header Bytes"). psx-spx gives no 18.9 kHz algorithm: each sample is fed
+    twice, as in the RTL. align_rtl: the RTL's taps instead (TableK[i] on ring[p - i + 1], so the
+    newest sample takes TableK[2]); that leaves only the arithmetic differences to compare."""
+    def __init__(self, align_rtl=False):
+        self.tap = 1 if align_rtl else 0
+
+    def decode(self, sectors):
+        history = {0: [0, 0], 1: [0, 0]}   # channel -> [old, older]
+        rings = {0: [0] * 32, 1: [0] * 32}
+        p, sixstep, frames = 0, 6, []
+        for sector in sectors:
+            coding = Coding(sector)
+            left, right = [], []
+            for unit, header, codes in sound_units(sector, coding):
+                shift = header & 15 if header & 15 < 13 else 9
+                f0, f1 = POS[(header >> 4) & 3], NEG[(header >> 4) & 3]
+                channel = 1 if coding.stereo and unit & 1 else 0
+                state = history[channel]
+                for code in codes:
+                    aligned = sign_extend(code, 8) << 8 if coding.eight_bit else sign_extend(code, 4) << 12
+                    s = clamp16((aligned >> shift) + ((state[0] * f0 + state[1] * f1 + 32) >> 6))
+                    state[1], state[0] = state[0], s
+                    if coding.stereo:
+                        (right if unit & 1 else left).append(s)
+                    else:
+                        left.append(s); right.append(s)
+            for pair in zip(left, right):
+                for _ in range(2 if coding.half_rate else 1):
+                    for channel in (0, 1):
+                        rings[channel][p & 31] = pair[channel]
+                    p, sixstep = p + 1, sixstep - 1
+                    if sixstep == 0:
+                        sixstep = 6
+                        for table in ZIGZAG:
+                            frames.append(tuple(clamp16(sum((rings[channel][(p - i + self.tap) & 31] * table[i - 1]) >> 15
+                                                            for i in range(1, 30))) for channel in (0, 1)))
+        return frames
+
+
+def Decoder(mode):
+    """'rtl' / 'rtl-clamp': the pinned cd_xa (without / with cd-xa-history-clamp); 'psx-spx': psx-spx;
+    'psx-spx-taps': psx-spx's arithmetic on the RTL's zigzag taps."""
+    return {'rtl': lambda: RtlDecoder(), 'rtl-clamp': lambda: RtlDecoder(clamp_history=True),
+            'psx-spx': lambda: PsxSpxDecoder(), 'psx-spx-taps': lambda: PsxSpxDecoder(align_rtl=True)}[mode]()
 
 
 def synthetic_sectors(coding, count, seed):
@@ -228,13 +312,13 @@ def simulate(directory, name, sectors, frames_per_sector):
 
 def compare(name, sectors, got, reference='rtl'):
     expected = Decoder(reference).decode(sectors)
-    duck = Decoder('duckstation').decode(sectors)
     mismatches = [i for i, (a, b) in enumerate(zip(got, expected)) if a != b]
     exact = len(got) == len(expected) and not mismatches
-    differ = [abs(a[c] - b[c]) for a, b in zip(got, duck) for c in (0, 1)]
-    off = sum(1 for d in differ if d)
-    detail = (f'{len(got)} frames; vs DuckStation arithmetic: {off}/{len(differ)} samples differ, '
-              f'max {max(differ) if differ else 0} LSB')
+    detail = f'{len(got)} frames'
+    for label, mode in (('vs psx-spx', 'psx-spx'), ('on the RTL taps', 'psx-spx-taps')):
+        differ = [abs(a[c] - b[c]) for a, b in zip(got, Decoder(mode).decode(sectors)) for c in (0, 1)]
+        off = sum(1 for d in differ if d)
+        detail += f'; {label}: {off}/{len(differ)} samples differ, max {max(differ) if differ else 0} LSB'
     if not exact:
         first = mismatches[0] if mismatches else min(len(got), len(expected))
         detail += f'; first mismatch at frame {first}: got {got[first:first + 1]} expected {expected[first:first + 1]}'
