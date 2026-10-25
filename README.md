@@ -13,6 +13,17 @@ You need an Analogue Pocket with the latest firmware, a PlayStation BIOS
 dumped from your own console, and your own game discs as `.cue`/`.bin`
 images. The BIOS and games are not included and cannot be shared.
 
+### Disc formats
+
+Use `.cue` and `.bin` files. A program such as ImgBurn makes them from
+your own discs. `.chd` files work too: the plugin (step 4) turns them into
+`.cue` and `.bin` for you. The core can't play `.chd` files directly
+because they are compressed. Unpacking them while the game runs needs
+either a separate processor, which the Pocket doesn't have, or room on the
+Pocket's chip, which the PlayStation core already fills. Other formats,
+such as `.pbp` or `.ecm`, and zipped games don't work; turn them into
+`.cue` and `.bin` first.
+
 ### First time
 
 1. **Core:** download the latest `GuardianSoul.PlayStation_<version>_<date>.zip`
