@@ -61,6 +61,17 @@ such as `.pbp` or `.ecm`, and zipped games don't work; turn them into
      `https://github.com/GuardianSoul/openfpga-PlayStation-plugin` and press
      *Verify & install plugin*. Then press the play button next to it on the
      *Plugins* page and choose *Generate game files*.
+
+   The plugin tells you what is wrong and what to do when:
+   - the card has another developer's PlayStation core instead of this
+     one (the plugin only makes game files for GuardianSoul.PlayStation);
+   - the games are in another folder, such as `Assets/psx/common/`;
+   - a disc can't be used: a file the `.cue` names is missing or renamed,
+     the image isn't a raw CD image (such as an `.iso`), the `.cue` is
+     damaged, or a multi-disc game is missing a disc;
+   - the BIOS is missing, has the wrong name, size or content, or sits in
+     the wrong folder. Every run ends with this BIOS check, and *Check the
+     BIOS* runs it on its own.
 5. **Play:** put the card back in the Pocket, open **openFPGA →
    PlayStation** and pick the game.
 
