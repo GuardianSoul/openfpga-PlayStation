@@ -57,6 +57,19 @@ Date.now = realNow;
 out.badGame = await call('POST', '/vote', '4.4.4.4', { game: '<b>x</b>|USA', version: '0.5.3', status: 'Playable' });
 out.badStatus = await call('POST', '/vote', '4.4.4.4', { game: tekken, version: '0.5.3', status: 'Great' });
 out.votes = await call('GET', '/votes', '9.9.9.9');
+// Notes: how the game was started and what goes wrong, only on your own vote.
+out.note = await call('POST', '/note', '1.1.1.1', { game: tekken, version: '0.5.3', how: 'json', place: 'dock', text: '  Music  stops\nin stage 2 ' });
+out.noteLink = await call('POST', '/note', '1.1.1.1', { game: tekken, version: '0.5.3', how: 'json', text: 'see www.example.com' });
+out.noteLong = await call('POST', '/note', '1.1.1.1', { game: tekken, version: '0.5.3', how: 'json', text: 'x'.repeat(281) });
+out.noteHow = await call('POST', '/note', '1.1.1.1', { game: tekken, version: '0.5.3', how: 'cdrom', text: '' });
+out.notePlace = await call('POST', '/note', '1.1.1.1', { game: tekken, version: '0.5.3', how: 'json', place: 'tv', text: '' });
+out.noteNoVote = await call('POST', '/note', '8.8.8.8', { game: tekken, version: '0.5.3', how: 'cue', text: 'hi' });
+await call('POST', '/vote', '8.8.8.8', { game: tekken, version: '0.5.3', status: 'Playable' });
+await call('POST', '/note', '8.8.8.8', { game: tekken, version: '0.5.3', how: 'cue', text: '' });
+out.notes = await call('GET', '/notes', '9.9.9.9');
+out.mynotes = await call('GET', '/mynotes', '1.1.1.1');
+await call('POST', '/vote', '8.8.8.8', { game: tekken, version: '0.5.3', status: '' });   // takes the note with it
+out.notesAfter = await call('GET', '/notes', '9.9.9.9');
 out.versions = await call('GET', '/versions', '9.9.9.9');
 out.latest = await call('GET', '/latest', '9.9.9.9');
 out.mine = await call('GET', '/mine', '1.1.1.1');

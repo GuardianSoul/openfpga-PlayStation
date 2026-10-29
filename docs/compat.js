@@ -393,6 +393,26 @@
     return response.ok ? response.json() : {};
   }
 
+  // Players' notes: how they started the game and what goes wrong.
+  // { "<key>|<version>": [{ status, how, place, text, at }] }, newest first.
+  async function fetchNotes(fetchImpl = fetch, base = VOTES) {
+    const response = await fetchImpl(`${base}/notes`, { cache: 'no-cache' });
+    return response.ok ? response.json() : {};
+  }
+
+  async function fetchMyNotes(fetchImpl = fetch, base = VOTES) {
+    const response = await fetchImpl(`${base}/mynotes`, { cache: 'no-store' });
+    return response.ok ? response.json() : {};
+  }
+
+  // how: "json", "cue" or "other"; place: "handheld", "dock" or "both"; all empty removes the note.
+  async function sendNote(game, version, how, place, text, fetchImpl = fetch, base = VOTES) {
+    const response = await fetchImpl(`${base}/note`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ game, version, how, place, text }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `the vote service answered ${response.status}`);
+  }
+
   async function fetchMine(fetchImpl = fetch, base = VOTES) {
     const response = await fetchImpl(`${base}/mine`, { cache: 'no-store' });
     return response.ok ? response.json() : {};
@@ -421,5 +441,5 @@
 
   Object.assign(exports, { REPO, STATUSES, REGIONS, parseBody, normalSerial, regionOfSerial, normalStatus,
                            baseName, nameKey, compareVersions, loadGames, search, lookup, fromIssue, fromSeed,
-                           group, build, decide, entryFor, fetchIssues, fetchVersions, fetchVotes, fetchLatest, fetchMine, sendVote, reportUrl, VOTES });
+                           group, build, decide, entryFor, fetchIssues, fetchVersions, fetchVotes, fetchLatest, fetchMine, sendVote, fetchNotes, fetchMyNotes, sendNote, reportUrl, VOTES });
 })(typeof module === 'object' && module.exports ? module.exports : (globalThis.Compat = {}));

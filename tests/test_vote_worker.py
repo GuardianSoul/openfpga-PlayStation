@@ -33,6 +33,15 @@ class VoteWorker(unittest.TestCase):
         self.assertEqual(out['limitedAt'], 30)
         self.assertEqual(out['votes']['cors'], 'https://guardiansoul.github.io')
         self.assertEqual(out['missing']['status'], 404)
+        self.assertEqual(out['note']['status'], 200)
+        for refused in ('noteLink', 'noteLong', 'noteHow', 'notePlace', 'noteNoVote'):
+            self.assertEqual(out[refused]['status'], 400, refused)
+        listed = out['notes']['body']['tekken3|USA|0.5.3']
+        self.assertEqual([(n['status'], n['how'], n['place'], n['text']) for n in listed],
+                         [('Playable', 'cue', '', ''), ('Minor issues', 'json', 'dock', 'Music stops in stage 2')])
+        self.assertEqual(out['mynotes']['body'],
+                         {'tekken3|USA|0.5.3': {'how': 'json', 'place': 'dock', 'text': 'Music stops in stage 2'}})
+        self.assertEqual(len(out['notesAfter']['body']['tekken3|USA|0.5.3']), 1)
         self.assertEqual(out['afterVote'], {'Boots': 1, 'Minor issues': 1, 'Playable': 1})
         self.assertEqual((out['downPlain'], out['downJunk']), (200, 400))
         for voter in out['voters']:   # addresses only as a salted hash

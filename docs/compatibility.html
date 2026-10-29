@@ -56,6 +56,24 @@
   .chip[aria-pressed="true"] span { color: var(--surface); }
   .vote-title { margin: 0; font-weight: 550; }
   .vote-note { margin-top: -2px; }
+  .add-note { margin: 0 0 14px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--alt); }
+  .add-note p { margin: 0 0 6px; font-weight: 550; font-size: 0.92rem; }
+  .add-note .hows { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 10px; font-size: 0.9rem; }
+  .add-note label { display: inline-flex; align-items: center; gap: 6px; }
+  .add-note textarea { font: inherit; width: 100%; min-height: 64px; padding: 8px 10px; border-radius: 10px; resize: vertical;
+                       border: 1px solid var(--line); background: var(--field); color: var(--text); margin: 0 0 8px; }
+  .add-note textarea:focus { outline: none; border-color: var(--accent); }
+  .add-note .row { display: flex; align-items: center; gap: 10px; }
+  .add-note button { height: 32px; padding: 0 14px; font-size: 0.86rem; }
+  .player-notes { margin: 4px 0 14px; }
+  .pn-title { margin: 0 0 6px; font-weight: 550; font-size: 0.92rem; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+  .fact { font-size: 0.8rem; padding: 2px 10px; border-radius: 999px; background: var(--alt); border: 1px solid var(--line); color: var(--muted); }
+  .fact b { color: var(--text); font-weight: 650; margin-left: 2px; }
+  .player-notes li { margin: 0 0 10px; padding: 10px 12px; border-radius: 10px; background: var(--alt); }
+  .player-notes li p { margin: 0 0 4px; line-height: 1.5; overflow-wrap: anywhere; }
+  .player-notes .meta { font-size: 0.78rem; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; }
+  .player-notes .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 4px; }
   .open { height: 32px; padding: 0 14px; font-size: 0.86rem; }
   .levels li { display: grid; grid-template-columns: 8.5rem 1fr; gap: 12px; align-items: baseline; padding: 6px 0; }
   #summary { margin: 4px 0 10px; }
@@ -143,7 +161,7 @@
     <a href="https://github.com/libretro/libretro-database">libretro-database</a>
     (<a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>), which builds on redump.org.</footer>
 </main>
-<script src="compat.js?v=2"></script>
+<script src="compat.js?v=3"></script>
 <script>
 (function () {
   'use strict';
@@ -152,9 +170,15 @@
   const CLASSES = { 'Playable': 's-playable', 'Minor issues': 's-minor', 'Major issues': 's-major',
                     'Boots': 's-boots', "Doesn't boot": 's-none' };
   const voting = Boolean(Compat.VOTES);
-  let games = null, entries = [], data = { issues: [], seeds: [], versions: null }, votes = {}, mine = {}, latest = {};
+  let games = null, entries = [], data = { issues: [], seeds: [], versions: null }, votes = {}, mine = {}, latest = {},
+      playerNotes = {}, myNotes = {};
   const opened = new Set();   // entries the reader has open, kept open across redraws
   const notes = new Map();    // a vote's outcome, shown under that game's buttons
+  const drafts = new Map();
+  const ownNote = new Map();   // the note this visitor just saved, shown in the list until a reload   // a note being typed, kept while the list redraws
+  const HOWS = [['json', 'Game file (.json)'], ['cue', 'The .cue file'], ['other', 'Something else']];
+  const PLACES = [['handheld', 'Handheld'], ['dock', 'Dock'], ['both', 'Both']];
+  const ISSUES = ['Minor issues', 'Major issues', 'Boots', "Doesn't boot"];
 
   const version = () => data.versions?.[0] || '';   // votes count for the latest release
   for (const s of Compat.STATUSES) $('status').append(new Option(s, s));
@@ -228,7 +252,64 @@
     return `<p class="vote-title">How does it run on the latest core (${escape(v)})?</p>` +
       `<div class="chips">` + Compat.STATUSES.map((s) => `<button class="chip ${CLASSES[s]}" data-key="${escape(e.key)}" ` +
         `data-status="${escape(s)}" aria-pressed="${chosen === s}"><span>${escape(s)}${counts[s] ? ' · ' + counts[s] : ''}</span></button>`).join('') +
-      `</div><p class="muted vote-note">${note}</p>`;
+      `</div><p class="muted vote-note">${note}</p>` + (chosen ? noteForm(e, v, chosen) : '') + playerNotesBlock(e);
+  }
+
+  // After voting: how the game was started and, for a game with problems, what goes wrong.
+  function noteForm(e, v, chosen) {
+    const k = `${e.key}|${v}`, own = myNotes[k] || {}, draft = drafts.get(k) || own;
+    const radios = (list, name, picked) => list.map(([value, label]) => `<label><input type="radio" name="${name}-${escape(k)}" ` +
+      `data-field="${name}" value="${value}"${picked === value ? ' checked' : ''}>${escape(label)}</label>`).join('');
+    const issue = ISSUES.includes(chosen);
+    return `<form class="add-note" data-key="${escape(e.key)}"><p>How did you start it?</p><div class="hows">${radios(HOWS, 'how', draft.how)}</div>` +
+      `<p>Where did you play?</p><div class="hows">${radios(PLACES, 'place', draft.place)}</div>` +
+      (issue ? `<p>What goes wrong?</p><textarea name="text" maxlength="280" placeholder="For example: the music stops in the second ` +
+        `stage, or the screen goes black after the intro">${escape(draft.text || '')}</textarea>` : '') +
+      `<div class="row"><button type="submit">${own.how || own.place || own.text ? 'Update note' : 'Add note'}</button>` +
+      `<span class="muted note-state">${notes.get(`note|${k}`) || ''}</span></div></form>`;
+  }
+
+  // Players' notes for the latest core, and for the version the status comes from if that's older.
+  function playerNotesBlock(e) {
+    const versions = [...new Set([version(), e.version].filter(Boolean))];
+    const all = versions.flatMap((v) => (playerNotes[`${e.key}|${v}`] || []).map((n) => ({ ...n, version: v })));
+    if (!all.length) return '';
+    const short = { json: '.json', cue: '.cue', other: 'Other way', handheld: 'Handheld', dock: 'Dock', both: 'Handheld + Dock' };
+    // How players ran it, as small tags with counts.
+    const facts = [...HOWS, ...PLACES].map(([value]) => [value, all.filter((n) => n.how === value || n.place === value).length])
+      .filter(([, n]) => n).map(([value, n]) => `<span class="fact">${escape(short[value])} <b>${n}</b></span>`).join('');
+    const day = (at) => new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    const items = all.filter((n) => n.text).slice(0, 10).map((n) => {
+      const meta = [`<span class="dot ${CLASSES[n.status] || 's-unknown'}"></span>${escape(n.status)}`,
+        ...[n.how, n.place].filter(Boolean).map((x) => escape(short[x])),
+        ...(n.version !== version() ? [`core ${escape(n.version)}`] : []), day(n.at)].join(' · ');
+      return `<li><p>${escape(n.text)}</p><div class="meta">${meta}</div></li>`;
+    }).join('');
+    return `<div class="player-notes"><p class="pn-title">How players ran it</p>` +
+      (facts ? `<div class="facts">${facts}</div>` : '') + (items ? `<ul class="plain">${items}</ul>` : '') + '</div>';
+  }
+
+  async function saveNote(form) {
+    const key = form.dataset.key, v = version(), k = `${key}|${v}`;
+    const pick = (name) => form.querySelector(`input[data-field="${name}"]:checked`)?.value || '';
+    const how = pick('how'), place = pick('place'), text = (form.elements.text?.value || '').trim();
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      await Compat.sendNote(key, v, how, place, text);
+      const said = how || place || text;
+      if (said) myNotes[k] = { how, place, text }; else delete myNotes[k];
+      const list = (playerNotes[k] || []).filter((n) => n !== ownNote.get(k));
+      const status = mine[k];
+      const entry = { status, how, place, text: text.replace(/\s+/g, ' '), at: Date.now() };
+      if (said) { list.unshift(entry); ownNote.set(k, entry); } else ownNote.delete(k);
+      playerNotes[k] = list;
+      drafts.delete(k);
+      notes.set(`note|${k}`, said ? 'Thanks, your note is saved.' : 'Your note is removed.');
+    } catch (error) {
+      notes.set(`note|${k}`, `<span class="warn">Your note wasn’t saved: ${escape(error.message.replace(/\.$/, ''))}.</span>`);
+    }
+    showList();
   }
 
   // "Report a problem" links, one per release so the issue gets the right serial.
@@ -302,10 +383,18 @@
       if (status) counts[status] = (counts[status] || 0) + 1;
       mine[k] = status;
       if (status) latest[k] = Date.now();
+      // A note goes with its vote: it follows a new status and leaves with a withdrawn vote.
+      const said = ownNote.get(k);
+      if (status && said) said.status = status;
+      if (!status) {
+        delete myNotes[k];
+        if (said) playerNotes[k] = (playerNotes[k] || []).filter((n) => n !== said);
+        ownNote.delete(k);
+      }
       notes.set(key, status ? 'Thanks, your vote is in. Tap it again to take it back.' : 'Your vote is taken back.');
       rebuild();
     } catch (error) {
-      notes.set(key, `<span class="warn">Your vote wasn’t saved: ${escape(error.message)}.</span>`);
+      notes.set(key, `<span class="warn">Your vote wasn’t saved: ${escape(error.message.replace(/\.$/, ''))}.</span>`);
       showList();
     }
   }
@@ -326,6 +415,19 @@
     if (chip) castVote(chip);
     if (pick) openGame(pick.dataset.key);
   });
+  $('list').addEventListener('submit', (event) => {
+    const form = event.target.closest('form.add-note');
+    if (!form) return;
+    event.preventDefault();
+    saveNote(form);
+  });
+  // Keep what's typed or picked if the list redraws before it's saved.
+  $('list').addEventListener('input', (event) => {
+    const form = event.target.closest('form.add-note');
+    if (!form) return;
+    const pick = (name) => form.querySelector(`input[data-field="${name}"]:checked`)?.value || '';
+    drafts.set(`${form.dataset.key}|${version()}`, { how: pick('how'), place: pick('place'), text: form.elements.text?.value || '' });
+  });
   $('list').addEventListener('toggle', (event) => {
     const key = event.target.dataset?.key;
     if (key) event.target.open ? opened.add(key) : opened.delete(key);
@@ -338,7 +440,7 @@
 
 
   (async () => {
-    const [gameText, seeds, versions, reports, counts, own, times] = await Promise.all([
+    const [gameText, seeds, versions, reports, counts, own, times, saidNotes, ownNotes] = await Promise.all([
       fetch('games.tsv').then((r) => (r.ok ? r.text() : '')).catch(() => ''),
       fetch('compatibility.json').then((r) => (r.ok ? r.json() : [])).catch(() => []),
       Compat.fetchVersions().catch(() => null),
@@ -346,11 +448,18 @@
       voting ? Compat.fetchVotes().catch(() => { $('summary').dataset.note = ' <span class="warn">Votes couldn’t be loaded; try again later.</span>'; return {}; }) : {},
       voting ? Compat.fetchMine().catch(() => ({})) : {},
       voting ? Compat.fetchLatest().catch(() => ({})) : {},
+      voting ? Compat.fetchNotes().catch(() => ({})) : {},
+      voting ? Compat.fetchMyNotes().catch(() => ({})) : {},
     ]);
     games = gameText ? Compat.loadGames(gameText) : null;
     data = { issues: reports, seeds, versions };
     for (const v of versions || []) $('core').append(new Option(`Core ${v}`, v));
-    votes = counts; mine = own; latest = times;
+    votes = counts; mine = own; latest = times; playerNotes = saidNotes; myNotes = ownNotes;
+    // Find this visitor's own note in the list, so changing it replaces it there.
+    for (const [k, said] of Object.entries(myNotes)) {
+      const found = (playerNotes[k] || []).find((n) => n.how === said.how && n.place === said.place && n.text === said.text);
+      if (found) ownNote.set(k, found);
+    }
     rebuild();
     showMatches();
   })();

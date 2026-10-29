@@ -10,6 +10,13 @@
 //   GET  /latest -> { "<game>|<version>": <newest vote's time, ms> }
 //   GET  /mine  -> { "<game>|<version>": "<status>" }   (this address's votes)
 //   POST /vote  <- { game, version, status }             (status "" withdraws it)
+//   GET  /notes -> { "<game>|<version>": [{ status, how, place, text, at }] }   (newest first)
+//   GET  /mynotes -> { "<game>|<version>": { how, place, text } }        (this address's notes)
+//   POST /note  <- { game, version, how, place, text }   (on your own vote; all empty removes it)
+//
+// A note says how the game was started (HOWS), where it was played (PLACES)
+// and, in up to 280 characters, what goes wrong. Links aren't taken. To remove an unwanted note:
+//   npx wrangler d1 execute playstation-game-list --remote --command "DELETE FROM notes WHERE text LIKE '%...%'"
 //
 // Settings: secret SALT (any long random text).
 
@@ -18,6 +25,11 @@ const REPO = 'GuardianSoul/openfpga-PlayStation';
 const STATUSES = ['Playable', 'Minor issues', 'Major issues', 'Boots', "Doesn't boot"];
 const HOURLY_LIMIT = 30;   // votes per address per hour
 const GAME = /^[a-z0-9]{1,100}\|(USA|Europe|Japan|Other)$/;
+const HOWS = ['json', 'cue', 'other'];   // game file (.json), the .cue itself, anything else
+const PLACES = ['handheld', 'dock', 'both'];
+const NOTE_LENGTH = 280;
+const NOTES_SHOWN = 20;   // per game and version
+const LINK = /https?:|www\.|\b[a-z0-9-]+\.(com|net|org|io|gg|ru|cn|xyz|ly|me|co|tk|info|biz|link|click|top)\b/i;
 
 const cors = { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
                'Access-Control-Allow-Headers': 'Content-Type' };
@@ -90,6 +102,52 @@ async function mine(voter, env) {
   return Object.fromEntries(results.map((row) => [`${row.game}|${row.version}`, row.status]));
 }
 
+// Everyone's notes, newest first, with the status of the vote they belong to.
+async function notes(env) {
+  const { results } = await env.DB.prepare(
+    'SELECT n.game, n.version, v.status, n.how, n.place, n.text, n.at FROM notes n JOIN votes v ' +
+    'ON v.voter = n.voter AND v.game = n.game AND v.version = n.version ORDER BY n.at DESC').all();
+  const out = {};
+  for (const row of results) {
+    const list = (out[`${row.game}|${row.version}`] ||= []);
+    if (list.length < NOTES_SHOWN) list.push({ status: row.status, how: row.how, place: row.place, text: row.text, at: row.at });
+  }
+  return out;
+}
+
+async function myNotes(voter, env) {
+  const { results } = await env.DB.prepare('SELECT game, version, how, place, text FROM notes WHERE voter = ?').bind(voter).all();
+  return Object.fromEntries(results.map((row) => [`${row.game}|${row.version}`, { how: row.how, place: row.place, text: row.text }]));
+}
+
+async function note(request, voter, env) {
+  let body;
+  try { body = await request.json(); } catch (e) { return answer({ error: 'bad request' }, 400); }
+  const game = String(body.game || ''), version = String(body.version || ''), how = String(body.how ?? '');
+  const place = String(body.place ?? '');
+  const text = String(body.text ?? '').replace(/\s+/g, ' ').trim();
+  if (!GAME.test(game)) return answer({ error: 'unknown game' }, 400);
+  if (how && !HOWS.includes(how)) return answer({ error: 'unknown way of starting the game' }, 400);
+  if (place && !PLACES.includes(place)) return answer({ error: 'unknown place' }, 400);
+  if (text.length > NOTE_LENGTH) return answer({ error: `Keep it under ${NOTE_LENGTH} characters.` }, 400);
+  if (LINK.test(text)) return answer({ error: 'Links aren’t allowed.' }, 400);
+  const own = await env.DB.prepare('SELECT 1 AS ok FROM votes WHERE voter = ? AND game = ? AND version = ?')
+    .bind(voter, game, version).first();
+  if (!own) return answer({ error: 'Vote first, then add a note.' }, 400);
+  const now = Date.now();
+  const recent = await env.DB.prepare('SELECT COUNT(*) AS n FROM notes WHERE voter = ? AND at > ?')
+    .bind(voter, now - 3600000).first();
+  if (recent && recent.n >= HOURLY_LIMIT) return answer({ error: 'Too many notes in an hour; try again later.' }, 429);
+  if (how || place || text) {
+    await env.DB.prepare('INSERT INTO notes (voter, game, version, how, place, text, at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT (voter, game, version) DO UPDATE SET how = excluded.how, place = excluded.place, text = excluded.text, at = excluded.at')
+      .bind(voter, game, version, how, place, text, now).run();
+  } else {
+    await env.DB.prepare('DELETE FROM notes WHERE voter = ? AND game = ? AND version = ?').bind(voter, game, version).run();
+  }
+  return answer({ ok: true });
+}
+
 async function vote(request, voter, env, fetchImpl) {
   let body;
   try { body = await request.json(); } catch (e) { return answer({ error: 'bad request' }, 400); }
@@ -107,6 +165,7 @@ async function vote(request, voter, env, fetchImpl) {
       .bind(voter, game, version, status, now).run();
   } else {
     await env.DB.prepare('DELETE FROM votes WHERE voter = ? AND game = ? AND version = ?').bind(voter, game, version).run();
+    await env.DB.prepare('DELETE FROM notes WHERE voter = ? AND game = ? AND version = ?').bind(voter, game, version).run();
   }
   return answer({ ok: true });
 }
@@ -115,12 +174,12 @@ export default {
   async fetch(request, env, ctx, fetchImpl = fetch) {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
-    if (request.method === 'GET' && (url.pathname === '/votes' || url.pathname === '/latest')) {
+    if (request.method === 'GET' && ['/votes', '/latest', '/notes'].includes(url.pathname)) {
       // Counted at most every 30 seconds, to stay well inside the free plan's database reads.
       const cache = globalThis.caches?.default, key = new Request(url.toString());
       const hit = cache && await cache.match(key);
       if (hit) return hit;
-      const body = url.pathname === '/votes' ? await tallies(env) : await latest(env);
+      const body = await { '/votes': tallies, '/latest': latest, '/notes': notes }[url.pathname](env);
       const fresh = answer(body, 200, { 'Cache-Control': 'public, max-age=30' });
       if (cache) ctx.waitUntil(cache.put(key, fresh.clone()));
       return fresh;
@@ -131,12 +190,16 @@ export default {
     if (request.method === 'GET' && url.pathname === '/mine') {
       return answer(await mine(await voterOf(request, env), env), 200, { 'Cache-Control': 'no-store' });
     }
-    if (request.method === 'POST' && url.pathname === '/vote') {
-      const response = await vote(request, await voterOf(request, env), env, fetchImpl);
+    if (request.method === 'GET' && url.pathname === '/mynotes') {
+      return answer(await myNotes(await voterOf(request, env), env), 200, { 'Cache-Control': 'no-store' });
+    }
+    if (request.method === 'POST' && (url.pathname === '/vote' || url.pathname === '/note')) {
+      const voter = await voterOf(request, env);
+      const response = url.pathname === '/vote' ? await vote(request, voter, env, fetchImpl) : await note(request, voter, env);
       // A new vote shows at once: drop the saved counts so the next load counts again.
       const cache = globalThis.caches?.default;
       if (cache && response.ok) {
-        for (const path of ['/votes', '/latest']) await cache.delete(new Request(new URL(path, url).toString()));
+        for (const path of ['/votes', '/latest', '/notes']) await cache.delete(new Request(new URL(path, url).toString()));
       }
       return response;
     }
