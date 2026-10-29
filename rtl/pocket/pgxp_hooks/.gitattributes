@@ -1,2 +1,0 @@
-# Exact source patches retain upstream whitespace in their context/data.
-*.patch -whitespace

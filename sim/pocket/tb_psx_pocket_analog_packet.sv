@@ -24,7 +24,7 @@ module tb;
  // possible. The unchanged old sampler independently checks every lower bit.
  always @(posedge src) if(!dut.busy) begin
   if(count==16384)$fatal(1,"publication overflow");
-  published[count]={cfg,setting,((kind==3)||(kind==2&&joy!=0&&joy!=32'hffffffff))?joy:32'h80808080};
+  published[count]={cfg,setting,((kind==3||kind==2)&&joy!=0&&joy!=32'hffffffff)?joy:32'h80808080};
   count=count+1;
  end
  always @(negedge src) begin
@@ -39,6 +39,8 @@ module tb;
   setting=(seq/13)%2;
   case(seq%37)
    0:begin kind=1;joy=0;end
+   4:begin kind=3;joy=0;end
+   5:begin kind=3;joy=32'hffffffff;end
    1:begin kind=2;joy=32'hffffffff;end
    2:begin kind=2;joy=0;end
    3:kind=2;

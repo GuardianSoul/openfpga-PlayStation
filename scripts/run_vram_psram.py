@@ -8,7 +8,9 @@ several board-delay profiles and seeds, chips left synchronous by another
 core (FOREIGN), LATENCY 4, the latency/bandwidth
 measurement, then broken controller variants and broken boards that must be
 rejected. Writes build/sim/vram-psram/<run>/results.json (histograms in
-clk2x cycles) and prints a summary.
+clk2x cycles) and prints a summary. X3 runs put the controller on clk3x
+(101.6 MHz, latency code 6) behind rtl/memory/psx_vram_x3.sv (--vram-x3),
+with board profiles from the release fit's STA, and break the bridge too.
 
   python3 scripts/run_vram_psram.py            # everything
   python3 scripts/run_vram_psram.py --quick    # one seed, measurement, controls
@@ -24,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RTL = ROOT / 'rtl/memory/psx_vram_psram.sv'
+X3_RTL = ROOT / 'rtl/memory/psx_vram_x3.sv'
 SIM = ROOT / 'sim/pocket'
 BENCH = [SIM / 'psx_cram_model.sv', SIM / 'tb_psx_vram_psram.sv']
 
@@ -68,6 +71,23 @@ MUTATIONS = [
     ('parked-read-sampled-early', [("            3'd3: p_oe_n <= aux_we;",
                                     "            3'd3: begin p_oe_n <= aux_we; if (!aux_we) aux_dout <= dq_in; end"),
                                    ("                if (!aux_we) aux_dout <= FULL_RATE ? dq_r : dq_in;\n", "")], None, ['aux read mismatch']),
+    ('out-reg-word-taken-early', "localparam int CAP_DLY = (READ_PIPE != 0 ? 1 : 0) + (OUT_REG ? 1 : 0);",
+     "localparam int CAP_DLY = (READ_PIPE != 0 ? 1 : 0);", ['mismatch'],
+     dict(X3=1, OUT_REG=1, LATENCY=6, PERIOD=14.766, CLK_KHZ=101606, T_LAT_MIN=55.0, T_CLK_MIN=7.5, PHASE=4.716,
+          T_ACLK=5.5, CLK_DLY=3.9, CTL_DLY=3.9, DQ_DLY=3.9, RET_DLY=3.5)),
+]
+# broken bridges (controller on clk3x behind psx_vram_x3), same shape as MUTATIONS
+X3_MUTATIONS = [
+    ('x3-fifo-overrun', "ddr_busy <= (wptr_n - rptr_2x) >= 3'd3", "ddr_busy <= (wptr_n - rptr_2x) >= 3'd6", ['mismatch']),
+    ('x3-ready-toggle-reset-kept', "rtog_d <= reset ? 1'b0 : rtog_s;", "rtog_d <= rtog_s;", ['without an outstanding read']),
+    ('x3-reset-drops-queued-writes', "    if (reset) begin\n        rd_left <= 8'd0; ddr_busy <= 1'b1;",
+     "    if (reset) begin\n        rd_left <= 8'd0; ddr_busy <= 1'b1; wptr <= wptr;", ['mismatch'],
+     dict(SEED=25, N_OPS=1200, PARKS=2, FOREIGN=1)),
+    ('x3-word-not-held', "ddr_dout <= rhold;", "ddr_dout <= c_dout;", ['mismatch']),
+    # 0.5.7-test8's bridge: the entry read at the first clk3x edge, before the M10K holds it
+    ('x3-fifo-read-before-ram-write', "wire        have = wptr_s != rptr;", "wire        have = wptr != rptr;", ['mismatch']),
+    ('x3-aux-request-not-copied', "c_aux_we <= aux_we; c_aux_addr <= aux_addr; c_aux_din <= aux_din;",
+     "c_aux_we <= aux_we; c_aux_din <= aux_din;", ['mismatch']),
 ]
 # broken boards with the unchanged controller
 BOARD_FAULTS = [
@@ -76,11 +96,11 @@ BOARD_FAULTS = [
 ]
 
 
-def compile_and_run(work, name, params, rtl=RTL):
+def compile_and_run(work, name, params, rtl=RTL, x3_rtl=X3_RTL):
     exe = work / f'{name}.vvp'
-    args = ['iverilog', '-g2012', '-I', str(SIM), '-s', 'tb_psx_vram_psram', '-o', str(exe)]
+    args = ['iverilog', '-g2012', '-DPSX_M10K_WRITE_HALF', '-I', str(SIM), '-s', 'tb_psx_vram_psram', '-o', str(exe)]
     args += [f'-Ptb_psx_vram_psram.{k}={v}' for k, v in params.items()]
-    build = subprocess.run(args + [str(rtl), *map(str, BENCH)], capture_output=True, text=True)
+    build = subprocess.run(args + [str(rtl), str(x3_rtl), *map(str, BENCH)], capture_output=True, text=True)
     if build.returncode:
         raise SystemExit(f'{name}: compile failed\n{build.stdout}{build.stderr}')
     run = subprocess.run(['vvp', '-n', str(exe)], capture_output=True, text=True, timeout=3600)
@@ -145,6 +165,19 @@ def main():
     full = dict(FULL_RATE=1, LATENCY=5, T_CLK_MIN=14.7, PHASE=10.0, CLK_DLY=4.5, CTL_DLY=4.5, DQ_DLY=4.5, RET_DLY=2.0)
     positive['full-rate-seed1'] = dict(SEED=1, N_OPS=1500, RESETS=2, PARKS=2, **full)
     positive['full-rate-measure'] = dict(MEASURE=1, **full)
+    # --vram-x3: clk3x controller behind the bridge; chip at the 133 MHz column
+    # (tACLK 5.5 ns) and the 108 MHz one (7 ns). Board profiles from the rc1i
+    # STA paths relative to the capture register clock (slow / fast corner),
+    # phase 4.716 ns (--vram-phase default).
+    x3 = dict(X3=1, OUT_REG=1, LATENCY=6, PERIOD=14.766, CLK_KHZ=101606, T_LAT_MIN=55.0, T_CLK_MIN=7.5, PHASE=4.716)
+    x3_slow = dict(CLK_DLY=3.9, CTL_DLY=3.9, DQ_DLY=3.9, RET_DLY=3.5)
+    x3_fast = dict(CLK_DLY=1.9, CTL_DLY=2.1, DQ_DLY=2.1, RET_DLY=1.85, T_ACLK=3.5)
+    positive['x3-slow-seed1'] = dict(SEED=21, N_OPS=1500, RESETS=2, PARKS=2, T_ACLK=5.5, **x3, **x3_slow)
+    positive['x3-measure'] = dict(MEASURE=1, T_ACLK=5.5, **x3, **x3_slow)
+    if not a.quick:
+        positive['x3-fast-seed2'] = dict(SEED=22, N_OPS=1500, RESETS=2, PARKS=2, **x3, **x3_fast)
+        positive['x3-slow-tACLK7'] = dict(SEED=23, N_OPS=1200, RESETS=2, PARKS=1, T_ACLK=7.0, **x3, **x3_slow)
+        positive['x3-foreign'] = dict(SEED=24, N_OPS=1200, RESETS=2, PARKS=2, FOREIGN=1, T_ACLK=5.5, **x3, **x3_slow)
     if not a.quick:
         positive['full-rate-foreign'] = dict(SEED=2, N_OPS=1200, RESETS=2, PARKS=2, FOREIGN=1, **full)
         positive['full-rate-1ns-phase11.5'] = dict(SEED=3, N_OPS=1200, RESETS=2, PARKS=1,
@@ -170,6 +203,15 @@ def main():
             mutated.write_text(text)
             jobs[pool.submit(compile_and_run, work, 'mutated-' + name,
                              dict(SEED=5, N_OPS=900, RESETS=2, PARKS=1, **(extra[0] if extra else {})), mutated)] = ('reject', name, markers)
+        for name, before, after, markers, *extra in X3_MUTATIONS:
+            text = X3_RTL.read_text()
+            if text.count(before) != 1:
+                raise SystemExit(f'mutation {name}: anchor not found exactly once')
+            mutated = work / f'mutated-{name}.sv'
+            mutated.write_text(text.replace(before, after))
+            jobs[pool.submit(compile_and_run, work, 'mutated-' + name,
+                             {**dict(SEED=5, N_OPS=900, RESETS=2, PARKS=1, T_ACLK=5.5, **x3, **x3_slow), **(extra[0] if extra else {})},
+                             RTL, mutated)] = ('reject', name, markers)
         for name, params, markers in BOARD_FAULTS:
             jobs[pool.submit(compile_and_run, work, 'board-' + name,
                              dict(SEED=6, N_OPS=400, RESETS=0, PARKS=0, **params))] = ('reject', name, markers)

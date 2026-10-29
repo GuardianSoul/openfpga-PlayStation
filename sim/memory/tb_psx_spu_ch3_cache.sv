@@ -12,7 +12,11 @@
 `timescale 1ns/1ps
 `default_nettype none
 module tb_psx_spu_ch3_cache #(parameter integer CACHE = 1, parameter integer TICKS = 300, parameter integer LOAD = 1,
-                           parameter integer SEED = 1, parameter integer PITCH = 1, parameter integer SLOT = 0);
+                           parameter integer SEED = 1, parameter integer PITCH = 1, parameter integer SLOT = 0,
+                           parameter integer VOICE_SETS = 0,   // the slim cache's VOICE_SETS
+                           parameter integer LAYOUT = 0,       // 0: voices 2 KiB apart; 1: hash-colliding pairs, voices 0/1 share one block
+                           parameter integer WRITE_EVERY = 1); // ticks between the write rounds (the release spu_ram keeps capture in M10K,
+                                                               // so ch3 sees writes only from transfers)
     reg clk3 = 0, clk1 = 0;
     always #4.921 clk3 = ~clk3;
     always #14.763 clk1 = ~clk1;
@@ -42,15 +46,24 @@ module tb_psx_spu_ch3_cache #(parameter integer CACHE = 1, parameter integer TIC
 
     // SPU port
     reg spu_req = 0, spu_rnw = 1; reg [18:0] spu_addr = 0; reg [31:0] spu_data = 0; reg [3:0] spu_be = 4'b0011;
+    reg [4:0] spu_voice = 0; reg spu_isvoice = 0;
     wire spu_done; wire [31:0] spu_q; wire fault; wire stat_access, stat_hit;
     integer reads = 0, hits = 0;
     always @(posedge clk1) begin if (stat_access) reads <= reads + 1; if (stat_hit) hits <= hits + 1; end
     generate if (CACHE) begin : gcache
+        if (VOICE_SETS) begin : gvoice   // only the slim cache has the voice ports
+        psx_spu_ch3_cache #(.VOICE_SETS(VOICE_SETS)) dut (.clk1x(clk1), .reset(init), .discard(1'b0),
+            .spu_req(spu_req), .spu_rnw(spu_rnw), .spu_voice(spu_voice), .spu_isvoice(spu_isvoice), .spu_addr(spu_addr), .spu_data(spu_data), .spu_be(spu_be),
+            .spu_done(spu_done), .spu_q(spu_q),
+            .ch3_req(ch3_req), .ch3_rnw(ch3_rnw), .ch3_addr(ch3_addr), .ch3_din(ch3_din), .ch3_be(ch3_be),
+            .ch3_ready(ch3_ready), .ch3_dout(ch3_dout), .stat_access(stat_access), .stat_hit(stat_hit));
+        end else begin : gaddr
         psx_spu_ch3_cache dut (.clk1x(clk1), .reset(init), .discard(1'b0),
             .spu_req(spu_req), .spu_rnw(spu_rnw), .spu_addr(spu_addr), .spu_data(spu_data), .spu_be(spu_be),
             .spu_done(spu_done), .spu_q(spu_q),
             .ch3_req(ch3_req), .ch3_rnw(ch3_rnw), .ch3_addr(ch3_addr), .ch3_din(ch3_din), .ch3_be(ch3_be),
             .ch3_ready(ch3_ready), .ch3_dout(ch3_dout), .stat_access(stat_access), .stat_hit(stat_hit));
+        end
         assign fault = 0;
     end else begin : direct
         assign ch3_req = spu_req, ch3_rnw = spu_rnw, ch3_addr = 27'h1000000 + {8'b0, spu_addr};
@@ -82,14 +95,18 @@ module tb_psx_spu_ch3_cache #(parameter integer CACHE = 1, parameter integer TIC
     end
 
     task spu_access(input rnw, input [18:0] adr, input [15:0] d);
+        spu_voice_access(rnw, adr, d, 0, 0);
+    endtask
+    task spu_voice_access(input rnw, input [18:0] adr, input [15:0] d, input isv, input [4:0] voice);
         reg [26:0] full; reg [15:0] want;
         begin
             full = 27'h1000000 + {8'b0, adr};
             @(posedge clk1);
             spu_req <= 1; spu_rnw <= rnw; spu_addr <= adr; spu_data <= {16'h0, d}; spu_be <= 4'b0011;
+            spu_isvoice <= isv; spu_voice <= voice;
             if (!rnw) gold[gi(full)] = d;
             want = gold[gi(full)];
-            @(posedge clk1); spu_req <= 0;
+            @(posedge clk1); spu_req <= 0; spu_isvoice <= 0;   // isvoice is a pulse with the request, as in spu.vhd
             while (!spu_done) @(posedge clk1);
             if (rnw && spu_q[15:0] !== want) bad(spu_q, want, full);
             if (fault) begin errors = errors + 1; $display("ERROR fault"); end
@@ -100,6 +117,10 @@ module tb_psx_spu_ch3_cache #(parameter integer CACHE = 1, parameter integer TIC
     reg [18:0] blk [0:23]; integer smp [0:23];
     initial begin
         for (v = 0; v < 24; v = v + 1) begin blk[v] = 19'h1000 + v * 19'h800; smp[v] = v; end   // separate voice streams (the chip model keeps 64 KiB per bank)
+        // LAYOUT 1: odd voices on a block whose hashed set equals the even
+        // voice's (the 32-set hash XORs 5-bit address groups: flipping bits 9 and 14 keeps it),
+        // and voices 0 and 1 on the very same block (one sample, two voices)
+        if (LAYOUT == 1) for (v = 1; v < 24; v = v + 2) blk[v] = v == 1 ? blk[0] : blk[v-1] ^ 19'h04200;
         repeat (20) @(posedge clk1); init = 0;
         repeat (30000) @(posedge clk1);
         for (t = 0; t < TICKS; t = t + 1) begin
@@ -109,19 +130,26 @@ module tb_psx_spu_ch3_cache #(parameter integer CACHE = 1, parameter integer TIC
                 // MiSTer spu_ram (SDRAM mode) reads the voice's ADPCM block
                 // header and current data halfword every tick; 28 samples
                 // per 16-byte block, 4 per halfword.
-                spu_access(1, blk[v], 0);
-                spu_access(1, blk[v] + 19'd2 + {smp[v][4:2], 1'b0}, 0);
+                spu_voice_access(1, blk[v], 0, 1, v[4:0]);
+                spu_voice_access(1, blk[v] + 19'd2 + {smp[v][4:2], 1'b0}, 0, 1, v[4:0]);
                 smp[v] = smp[v] + PITCH;
                 if (smp[v] >= 28) begin smp[v] = smp[v] - 28; blk[v] = blk[v] + 19'd16; end
                 // SLOT>0: spu.vhd with useSDRAM='1' (no --spu-free-slot) holds
                 // each voice until about SLOT clk1x after its start (RAM_WAIT).
                 while (SLOT > 0 && cyc1 - vstart < SLOT) @(posedge clk1);
             end
+            if (t % WRITE_EVERY == 0) begin
             for (v = 0; v < 4; v = v + 1) spu_access(0, {8'h0, v[1:0], t[7:0], 1'b0}, $random(s2));   // capture
             if (t % 16 == 0) spu_access(1, {8'h0, 2'd1, t[7:0], 1'b0}, 0);   // read back capture
             v = t % 24;                                                 // overwrite a cached halfword
             spu_access(0, blk[v] + 19'd2 + {smp[v][4:2], 1'b0}, $random(s2));
-            spu_access(1, blk[v] + 19'd2 + {smp[v][4:2], 1'b0}, 0);
+            spu_voice_access(1, blk[v] + 19'd2 + {smp[v][4:2], 1'b0}, 0, 1, v[4:0]);
+            end
+            // the shared block: written, then read by both its voices
+            if (LAYOUT == 1 && t % 8 == 3) begin
+                spu_access(0, blk[0], $random(s2));
+                spu_voice_access(1, blk[0], 0, 1, 5'd0); spu_voice_access(1, blk[0], 0, 1, 5'd1);
+            end
             used = cyc1 - start; total = total + used; if (used > maxused) maxused = used;
             if (used > 768) late = late + 1;
             while (cyc1 - start < 768) @(posedge clk1);

@@ -16,14 +16,21 @@
 // hits until it moves to the next block.
 // spu_ram holds address, data and direction from its request until done
 // (spu.vhd waits in the request's state), so only the request is latched.
+// VOICE_SETS=1 (prepare_spu_voice_sets.py): a voice's reads use its voice
+// number as the set, so voices never evict each other; other reads use set
+// 31 (voices are 0-23), and every write clears the cache (a written word may
+// sit in any voice's set). spu.vhd reads each voice's block header every
+// tick: with the address hash, two voices on one set evicted each other's
+// header and data every tick and the SPU fell behind (tb_spu_budget).
 // CHEAT=1 (prepare --cheats): a second requester for main RAM halfwords
 // and bytes (the cheat firmware in psx_cue_mount). It is taken only when no
 // SPU request is pending, holds its fields until ch_done, and is answered
 // at once (ch_q 0) during a guest reset, when ch3 belongs to the BIOS loader.
 `default_nettype none
-module psx_spu_ch3_cache #(parameter integer SET_BITS = 5, parameter CHEAT = 0) (
+module psx_spu_ch3_cache #(parameter integer SET_BITS = 5, parameter CHEAT = 0, parameter VOICE_SETS = 0) (
     input wire clk1x, reset, discard,
     input wire spu_req, spu_rnw,
+    input wire [4:0] spu_voice, input wire spu_isvoice,   // VOICE_SETS: the request's voice (spu_isvoice with spu_req)
     input wire [18:0] spu_addr, input wire [31:0] spu_data, input wire [3:0] spu_be,
     output reg spu_done=0, output reg [31:0] spu_q=0,
     output reg ch3_req=0, output reg ch3_rnw=0,
@@ -39,7 +46,13 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5, parameter CHEAT = 0) 
     (* ramstyle="M10K, no_rw_check" *) reg [3:0][7:0] lines [0:4*LINES-1];
     reg [LINES-1:0] valid=0;
 
-    wire [SET_BITS-1:0] set_a=spu_addr[4+:SET_BITS]^spu_addr[4+SET_BITS+:SET_BITS]^(spu_addr[18:4]>>(2*SET_BITS));
+    // VOICE_SETS: spu_isvoice comes with spu_req only; the voice number holds
+    // until done (spu.vhd waits in the voice's state)
+    reg isvoice_q=0;
+    always @(posedge clk1x) if (spu_req) isvoice_q<=spu_isvoice;
+    wire isvoice=spu_req ? spu_isvoice : isvoice_q;
+    wire [SET_BITS-1:0] set_hash=spu_addr[4+:SET_BITS]^spu_addr[4+SET_BITS+:SET_BITS]^(spu_addr[18:4]>>(2*SET_BITS));
+    wire [SET_BITS-1:0] set_a=VOICE_SETS==0 ? set_hash : isvoice ? spu_voice[SET_BITS-1:0] : {SET_BITS{1'b1}};
     wire [18:0] entry=tags[set_a];
     wire line_ok=valid[set_a] && entry[18:4]==spu_addr[18:4];
     wire [3:0] word_bit=4'b0001<<spu_addr[3:2];
@@ -121,6 +134,7 @@ module psx_spu_ch3_cache #(parameter integer SET_BITS = 5, parameter CHEAT = 0) 
             end
             E_WRITE: if (ch3_ready) begin
                 spu_q<=0; spu_done<=1; eng<=E_IDLE;
+                if (VOICE_SETS!=0) valid<=0;
             end
             E_REDO: if (ch3_ready) eng<=E_IDLE;
             E_CHEAT: if (ch3_ready) begin ch_q<=ch3_dout[15:0]; ch_done<=1; eng<=E_IDLE; end

@@ -2,11 +2,12 @@
 // Runs the SD card page's logic (docs/instances.js) on a folder, through
 // a small stand-in for the browser's File System Access API.
 //   node tests/sd_card_page.cjs <card> --core GuardianSoul.PlayStation [--convert] [--remove-originals] [--card-bytes N]
+//   node tests/sd_card_page.cjs <card> --checks   (findCores, gamesElsewhere and checkBios, as the page runs them)
 'use strict';
 const fs = require('fs');
 const path = require('path');
 // docs/ in the public tree, release/docs/ in the workspace.
-const { makeInstances } = require(['../docs/instances.js', '../release/docs/instances.js']
+const { makeInstances, findCores, gamesElsewhere, checkBios } = require(['../docs/instances.js', '../release/docs/instances.js']
   .map((p) => path.join(__dirname, p)).find((p) => fs.existsSync(p)));
 
 async function asFile(full) {
@@ -89,6 +90,16 @@ async function main() {
   const args = process.argv.slice(2);
   const card = args[0];
   const option = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+  if (args.includes('--checks')) {
+    const root = new DirectoryHandle(path.resolve(card));
+    for (const core of await findCores(root)) {
+      console.log(`core ${core.id} ${core.platform} ${core.supported ? 'supported' : 'other'}`);
+      if (!core.supported) continue;
+      console.log(`elsewhere ${await gamesElsewhere(root, core.platform)}`);
+      for (const line of await checkBios(root, core.id, core.platform)) console.log(line);
+    }
+    return null;
+  }
   if (option('--card-bytes')) { cardBytes = Number(option('--card-bytes')); cardRoot = path.resolve(card); }
   const summary = await makeInstances(new DirectoryHandle(path.resolve(card)), {
     core: option('--core') || 'GuardianSoul.PlayStation',

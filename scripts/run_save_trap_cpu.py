@@ -26,6 +26,7 @@ memorymux decode.
 """
 import argparse
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -43,7 +44,7 @@ FW = ROOT / 'rtl/pocket/save_fw/save_handler.S'
 GHDL_FLAGS = ['--std=08', '-frelaxed']
 TEST_RETRY_MAX = 10     # the handler's 1,500 retries take ~1.5 s; the bench retries every 3,000 cycles
 RAM_PAGES = 8           # bench: main RAM 0..16 KiB is the "whole" RAM the handler copies
-VRAM_ROWS = 4           # bench: the GPU model's VRAM rows (tb VRAM_ROWS)
+VRAM_ROWS = 5           # bench: the GPU model's VRAM rows (tb VRAM_ROWS; row 4 stays zero)
 SPU_PAGES = 2           # bench: the SPU model's RAM pages (tb SPU_PAGES)
 ITERATIONS = 400
 
@@ -276,7 +277,7 @@ def bench_text():
         else:
             memctrl_map.append(f'{name} => {zero(kind)}')
     driven = {'bus_memc_dataRead', 'bus_memc2_dataRead', 'bus_exp1_dataRead', 'bus_gpu_dataRead', 'bus_gpu_stall',
-              'bus_spu_dataRead'} | memctrl_out
+              'bus_spu_dataRead', 'bus_cd_dataRead'} | memctrl_out
     for name, direction, kind in mux:
         if direction == 'in' and name not in shared and name not in mux_inputs and not name.startswith('mem_in_'):
             declarations.append(f'   signal {name} : {kind} := {zero(kind)};')
@@ -352,10 +353,9 @@ def build(name, cpu_fault=None, mux_fault=None, fw_fault=None, seed=1):
     (directory / 'cpu.vhd').write_text(cpu)
     (directory / 'memorymux.vhd').write_text(mux)
     fw = FW.read_text()
-    limit = '        .equ    RETRY_MAX, 1500\n'
-    if limit not in fw:
+    fw, n = re.subn(r'^        \.equ    RETRY_MAX, \d+', f'        .equ    RETRY_MAX, {TEST_RETRY_MAX}', fw, flags=re.M)
+    if n != 1:
         raise SystemExit('RETRY_MAX not found in the save handler')
-    fw = fw.replace(limit, f'        .equ    RETRY_MAX, {TEST_RETRY_MAX}\n')
     for old, new in ([fw_fault] if fw_fault and isinstance(fw_fault[0], str) else fw_fault or []):
         changed = fw.replace(old, new)
         if changed == fw:
@@ -413,6 +413,9 @@ def scenarios(directory, stop_on_failure=False):
     runs = [
         ('save', {'SAVE_AT': save_at}, dict(saves='1', loads='0'), False),
         ('save+load', {'SAVE_AT': save_at, 'LOAD_AT': None}, dict(saves='1', loads='1'), True),
+        # a wake from Sleep: the load finds the drive fresh (motor off, idle, settings reset)
+        ('save+load fresh drive', {'SAVE_AT': save_at, 'LOAD_AT': None, 'CD_FRESH': 'true'},
+         dict(saves='1', loads='1'), True),
         ('bad load', {'LOAD_AT': save_at}, dict(saves='0', loads='0', loads_failed='1'), False),
         # a state saved on disc 1 does not load while disc 2 is in the drive
         ('save+load other disc', {'SAVE_AT': save_at, 'LOAD_AT': None, 'LOAD_DISC': 1},
@@ -420,7 +423,8 @@ def scenarios(directory, stop_on_failure=False):
         # not at a quiet point: the handler retries until the GPU is idle
         ('save GPU busy', {'SAVE_AT': save_at, 'GPU_HOLD': 8000}, dict(saves='1', loads='0'), False),
         # never a quiet point: RETRY_MAX retries, then the request ends with an error
-        ('save never quiet', {'SAVE_AT': save_at, 'GPU_HOLD': 3000 * (TEST_RETRY_MAX + 4)},
+        # (a retry takes the 3,000-cycle wait plus the handler's own run, ~7,000 in all)
+        ('save never quiet', {'SAVE_AT': save_at, 'GPU_HOLD': 4 * 3000 * (TEST_RETRY_MAX + 4)},
          dict(saves='0', saves_failed='1', loads='0', retries=str(TEST_RETRY_MAX)), False),
     ]
     save_cycles = None
@@ -471,11 +475,21 @@ FAULTS = {
     # SPU: the voice records (port words 384-479) are not kept
     'fault-handler-skips-spu-records': dict(fw_fault=('320, 370, 384, 480, 0, 0', '320, 370, 0, 0')),
     # SPU: the port words are written before the guest register writes
-    'fault-handler-spu-port-first': dict(fw_fault=[('        jal     spu_load\n        nop\n', '        jal     spu_load_ss\n        nop\n'),
-                                                    ('spu_load:\n', 'spu_load_ss:\n        move    $s7, $ra\n        jal     spu_ss\n        li      $a0, 2\n        move    $ra, $s7\nspu_load:\n'),
-                                                    ('        nop\n        li      $a0, 2\n\n', '        nop\n        jr      $ra\n        nop\n\n')]),
+    'fault-handler-spu-port-first': dict(fw_fault=[('        jal     spu_load\n        nop\n',
+                                                     '        jal     spu_ss\n        li      $a0, 2\n        jal     spu_load\n        nop\n'),
+                                                    ('        nop\n        li      $a0, 2\n\n', '        nop\n        jr      $ra\n\n')]),   # (delay slot: spu_ss's first lui)
     # SPU: the last SPU RAM page is not restored
     'fault-handler-short-spu-ram': dict(fw_fault=('        bne     $s5, $s4, spu_in\n', '        addiu   $t0, $s4, -1\n        bne     $s5, $t0, spu_in\n')),
+    # CD: the load restarts the drive at the sector the save had read, not the one after
+    'fault-handler-cd-same-sector': dict(fw_fault=('1:      addiu   $s6, $s6, 1\n', '1:      addiu   $s6, $s6, 0\n')),
+    # CD: the load leaves the game's IRQENA at 0
+    'fault-handler-cd-irqena-off': dict(fw_fault=('        sb      $t0, 0x1802($t9)\n        jr      $s5\n', '        jr      $s5\n')),
+    # packed state: a load takes every logical page as stored (ignores the bitmap)
+    'fault-handler-ignores-bitmap': dict(fw_fault=('        srlv    $t2, $t2, $t0\n        andi    $t2, $t2, 1\n',
+                                                   '        srlv    $t2, $t2, $t0\n        andi    $t2, $t2, 0\n')),
+    # packed state: the save keeps no bitmap bits (a load then misplaces pages)
+    'fault-handler-no-bitmap-bit': dict(fw_fault=('        jr      $ra\n        sb      $t2, BITMAP($t1)\n',
+                                                  '        jr      $ra\n        nop\n')),
     # the trap goes to the game's interrupt vector
     'fault-cpu-normal-vector': dict(cpu_fault=('x"BF000000" when (exception > 0 and exceptionTrap', 'x"80000080" when (exception > 0 and exceptionTrap')),
     # memorymux has no EXP1 instruction fetch decode

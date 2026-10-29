@@ -13,17 +13,6 @@ You need an Analogue Pocket with the latest firmware, a PlayStation BIOS
 dumped from your own console, and your own game discs as `.cue`/`.bin`
 images. The BIOS and games are not included and cannot be shared.
 
-### Disc formats
-
-Use `.cue` and `.bin` files. A program such as ImgBurn makes them from
-your own discs. `.chd` files work too: the plugin (step 4) turns them into
-`.cue` and `.bin` for you. The core can't play `.chd` files directly
-because they are compressed. Unpacking them while the game runs needs
-either a separate processor, which the Pocket doesn't have, or room on the
-Pocket's chip, which the PlayStation core already fills. Other formats,
-such as `.pbp` or `.ecm`, and zipped games don't work; turn them into
-`.cue` and `.bin` first.
-
 ### First time
 
 1. **Core:** download the latest `GuardianSoul.PlayStation_<version>_<date>.zip`
@@ -128,11 +117,12 @@ More details are in [GAMES.md](GAMES.md).
 By default, hold Select and press L or R for L2 or R2, the D-Pad for the
 left analog stick, or A, B, X or Y for the right analog stick (X up, B
 down, Y left, A right). Tap Select on its own for Select, or hold it alone
-for a second. All of this can be changed in [Settings](#settings).
+for a quarter of a second to hold Select (for maps shown while it is held). All of this can be changed in [Settings](#settings).
 
 The pad is a DualShock. **Controller Mode** switches it between Digital
-and Analog at any time, like the controller's Analog button; games that
-use the analog sticks also switch it themselves, and L3 + R3 + Up does too.
+and Analog at any time, like the controller's Analog button, and L3 + R3 +
+Up does too. In Digital the pad stays digital, even when a game asks for
+analog; for games that need the sticks, set it to Analog.
 Controllers connected to the Dock keep their own L2, R2, L3 and R3.
 
 ### Second controller (Dock)
@@ -152,7 +142,9 @@ remembers your choices.
 | Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
 | Skip BIOS Logo | On, **Off** | Starts the game without the PlayStation intro |
 | Fast BIOS Boot | **On**, Off | Runs the BIOS's own start-up faster, so games reach the Sony screen about 2 seconds sooner; the Sony screen and every game keep the console's timing |
+| Turbo Mode | **Off**, On | On removes the console's memory, CPU and DMA wait states, so games run faster than on a PlayStation; Off keeps the console's timing |
 | Aspect Ratio | **Original**, Fill Screen | Original shows the console's 4:3 picture; Fill Screen fills the Pocket's whole screen |
+| Deinterlacing | **Bob**, Weave | How high-resolution (480i) screens show: Bob line-doubles each field like a CRT TV; Weave joins the two fields into one picture, sharper when still but with combing when things move |
 | Hide Overscan | **On**, Off | In Original, blacks out the lines at the top and bottom that a TV hides; Fill Screen always crops them |
 | Controller Mode | **Digital**, Analog | The DualShock's mode, switched at once (see [Controls](#controls)) |
 | L Button | **L1**, L2, L3 | What the Pocket's L sends |
@@ -163,8 +155,45 @@ remembers your choices.
 | SELECT + D-Pad | None, D-Pad, Face Buttons, **Left Analog Stick**, Right Analog Stick | What Select held with the D-Pad sends |
 | SELECT + A/B/X/Y | None, Face Buttons, D-Pad, L1/R1, L2/R2, L3/R3, Left Analog Stick, **Right Analog Stick** | What Select held with A, B, X or Y sends (the L and R pairs go on Y and A) |
 
-High-resolution (interlaced, 480i) screens are woven into full frames
-automatically; there is no setting for it.
+### Deinterlacing
+
+Most games draw 240 lines, but some screens use the PlayStation's
+high-resolution (interlaced, 480i) mode, such as Tekken 3's menus and the
+Sony screen. A TV shows such a picture as two half pictures, called fields,
+one with the odd lines and one with the even lines, one after the other.
+The Pocket's screen isn't interlaced, so the core has to turn the fields
+into whole frames. Deinterlacing picks how:
+
+- **Bob** (default) shows each field on its own as a whole frame, with
+  every line doubled, like a CRT TV does. Moving pictures stay clean, and
+  the doubled lines are smoothed so still text and menus stay as steady as
+  they can. Fine detail can still flicker slightly.
+- **Weave** joins the last two fields into one full-resolution frame, as
+  the core did before 0.5.7. Still pictures are sharpest, but anything that
+  moves between the two fields shows comb-like lines, and some screens
+  (such as the Sony screen's fade) can show a thin diagonal line.
+
+Deinterlacing only changes how 480i screens are shown; 240-line games look
+the same either way, and the game itself runs the same. It can be changed
+at any time.
+
+### Turbo Mode
+
+With Turbo Mode off, the core keeps the console's timing as closely as it
+can. Turbo Mode skips the waits a real PlayStation has when the CPU reads
+and writes main memory, when it loads and decodes instructions, and when
+DMA moves data. The clocks stay the same, and the GPU, sound, CD drive and
+geometry chip keep the console's speed; only less time is spent waiting.
+Most games are locked to the TV's frame rate, so they don't run faster
+overall: busy scenes just slow down less, for example in Bloody Roar II or
+Crash Bandicoot.
+
+That speed comes at the cost of accuracy: with Turbo Mode on, games no
+longer run with the console's timing. A game that depends on the exact
+timing can run too fast in places, glitch, get its sound or video out of
+step, or freeze. If a game misbehaves, turn Turbo Mode off; Off is the
+accurate setting. It works at once, even during a game, but it's safest to
+change it before starting one.
 
 ### Other aspect ratios
 
@@ -192,8 +221,8 @@ copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
 ## Known issues
 
-- Some games may run slower than on a real console.
-- A thin diagonal line can split the white Sony screen while it fades.
+- Some games may run slower than on a real console. Turbo Mode helps.
+- Bloody Roar II: after a long time on the pause screen, the music can stutter for a couple of seconds and then play normally again.
 
 ## Building from source
 

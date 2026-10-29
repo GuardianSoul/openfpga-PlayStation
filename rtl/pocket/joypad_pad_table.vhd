@@ -30,7 +30,8 @@ use IEEE.numeric_std.all;
 use work.pJoypad.all;
 
 entity joypad_pad is
-   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false; ANALOG_LEVEL : boolean := false);
+   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false; ANALOG_LEVEL : boolean := false;
+            DIGITAL_HOLD : boolean := false);
    port
    (
       clk1x                : in  std_logic;
@@ -448,7 +449,10 @@ begin
                end if;
                case to_integer(unsigned(romWord(9 downto 8))) is
                   when E_CFG  => dsConfigMode(portNr) <= transmitValue(0);
-                  when E_ANA  => dsAnalogMode(portNr) <= transmitValue(0);
+                  when E_ANA  =>   -- DIGITAL_HOLD: no analog on the game's request while the setting is Digital
+                     if not (DIGITAL_HOLD and ANALOG_LEVEL and joypad.ToggleDS = '0' and transmitValue(0) = '1') then
+                        dsAnalogMode(portNr) <= transmitValue(0);
+                     end if;
                   when E_LCK  => dsAnalogLock(portNr) <= transmitValue(0);
                   when others => null;
                end case;

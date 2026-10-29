@@ -37,10 +37,12 @@ entity tb_save_trap_cpu is
       DUMP_BYTES : positive := 16384;
       MAX_CYCLES : natural  := 3000000;
       PROGRESS   : natural  := 0;
-      VRAM_ROWS  : positive := 4;
+      VRAM_ROWS  : positive := 5;
       SPU_PAGES  : positive := 2;     -- SPU RAM pages of 1024 halfwords (ROM word 0xFF4)
       GPU_HOLD   : natural  := 0;     -- the GPU reports a command in progress for this long from SAVE_AT
-      LOAD_DISC  : natural  := 0      -- the disc in the drive (0x180B) during a load; 0 while saving
+      LOAD_DISC  : natural  := 0;     -- the disc in the drive (0x180B) during a load; 0 while saving
+      CD_FRESH   : boolean  := false; -- a load finds the drive fresh (a wake from Sleep): motor off, idle
+      ZERO_ROW   : natural  := 4      -- this VRAM row starts all zero (a packed save leaves it out)
    );
 end entity;
 
@@ -62,7 +64,7 @@ architecture test of tb_save_trap_cpu is
       return result;
    end function;
    constant rom : words(0 to 127) := load("rom.hex", 128, false);
-   constant exp1_rom : words(0 to 1023) := load("rom_exp1.hex", 1024, false);
+   constant exp1_rom : words(0 to 2047) := load("rom_exp1.hex", 2048, false);
 
    signal clk1x, clk2x, clk3x : std_logic := '1';
    signal reset, ss_reset : std_logic := '1';
@@ -98,6 +100,12 @@ architecture test of tb_save_trap_cpu is
    signal spu_ss_s : words(0 to 511);
    signal spu_ram_s : halves(0 to SPU_PAGES * 1024 - 1);
    signal spu_guest_writes : natural := 0;
+
+   -- CD controller model
+   signal cd_state_s : std_logic_vector(63 downto 0) := (others => '0');
+   signal cd_q : std_logic_vector(7 downto 0) := (others => '0');
+   signal cd_capt : natural := 0;          -- the LBA a save read from 0x181C-0x181E
+   signal cd_saves_quiet : natural := 0;
 
    signal cycle_count, retired, log_stores : natural := 0;
    signal clk1xToggle, clk1xToggle2x, clk2xIndex, gte_busy : std_logic := '0';
@@ -152,10 +160,12 @@ begin
                   " epc(r) k0=" & to_hstring(cpu_cpu_export.regs(26)) & " ra=" & to_hstring(cpu_cpu_export.regs(31))
                severity failure;
          end if;
-         if reset = '0' and ce = '1' and cpu_cpu_done = '1' and cpu_cpu_export.pc(31 downto 12) = x"BF000" then
-            assert std_logic_vector(cpu_cpu_export.opcode) = exp1_rom(to_integer(cpu_cpu_export.pc(11 downto 2)))
+         if reset = '0' and ce = '1' and cpu_cpu_done = '1' and cpu_cpu_export.pc(31 downto 13) = x"BF00" & "000" then
+            assert std_logic_vector(cpu_cpu_export.opcode) = exp1_rom(to_integer(cpu_cpu_export.pc(12 downto 2)))
                report "handler opcode at " & to_hstring(cpu_cpu_export.pc) & " is " & to_hstring(cpu_cpu_export.opcode) &
-                  ", ROM has " & to_hstring(exp1_rom(to_integer(cpu_cpu_export.pc(11 downto 2)))) severity failure;
+                  ", ROM has " & to_hstring(exp1_rom(to_integer(cpu_cpu_export.pc(12 downto 2)))) severity failure;
+            assert cpu_cpu_export.pc(12 downto 0) < 16#1000# or cpu_cpu_export.pc(12 downto 0) >= 16#1C00#
+               report "handler runs outside its ROMs at " & to_hstring(cpu_cpu_export.pc) severity failure;
          end if;
          if reset = '0' and cpu_mem_request = '1' and cpu_mem_isData = '0' and
             cpu_mem_addressInstr(31 downto 12) = x"BF000" then
@@ -181,6 +191,7 @@ begin
       variable ss_adr, ss_left, quiet_left, sa, sk : natural := 0;
       variable sd : std_logic_vector(15 downto 0);
       variable initialised : boolean := false;
+      variable size_pages, stored : natural := 0;
       -- the port words a save keeps (tb_spu_save_tap.vhd ss_saved)
       function ss_saved(n : natural) return boolean is
       begin
@@ -202,9 +213,13 @@ begin
       if rising_edge(clk2x) then
          at_cpu_edge := clk1x = '1' and clk1x'last_event = 0 ns;
          a := to_integer(mux_bus_exp1_addr);
-         if a < 16#1000# then
+         if a < 16#1000# or a >= 16#1C00# then
             w := exp1_rom(a / 4);
             exp1_q <= w(8 * (a mod 4) + 7 downto 8 * (a mod 4));
+         elsif a >= 16#1818# and a < 16#1820# then
+            exp1_q <= cd_state_s(8 * (a - 16#1818#) + 7 downto 8 * (a - 16#1818#));
+            -- (on a read: the address bus also shows other devices' low address bits)
+            if a = 16#181C# and want_save = '1' and mux_bus_exp1_read = '1' then cd_capt <= to_integer(unsigned(cd_state_s(55 downto 32))); end if;
          elsif a < 16#1800# then
             w := page((a - 16#1000#) / 4);
             exp1_q <= w(8 * (a mod 4) + 7 downto 8 * (a mod 4));
@@ -234,6 +249,7 @@ begin
          -- SPU model: quiet a while after the hold, port accesses take a few cycles
          if not initialised then
             for i in 0 to 511 loop if ss_saved(i) then ss(i) := std_logic_vector(to_unsigned((i * 2654435 + SEED) mod 2**30, 32)); end if; end loop;
+            ss(40)(15 downto 0) := (others => '0');
             initialised := true;
          end if;
          if spu_hold = '0' then spu_quiet <= '0'; quiet_left := 100 + to_integer(lfsr(10 downto 0));
@@ -250,6 +266,10 @@ begin
             -- the current main volume reads back what port word 43 sets
             if sa = 16#1B8# then spu_q <= ss(43)(15 downto 0); end if;
             if sa = 16#1BA# then spu_q <= ss(43)(31 downto 16); end if;
+            -- ENDX and SPUSTAT read back port words 37 and 40 (high half)
+            if sa = 16#19C# then spu_q <= ss(37)(15 downto 0); end if;
+            if sa = 16#19E# then spu_q <= ss(37)(31 downto 16); end if;
+            if sa = 16#1AE# then spu_q <= ss(40)(31 downto 16); end if;
          end if;
          if at_cpu_edge and ce = '1' and mux_bus_spu_write = '1' then
             sa := to_integer(mux_bus_spu_addr); sd := mux_bus_spu_dataWrite;
@@ -259,6 +279,7 @@ begin
                sk := (sa * 31 + to_integer(unsigned(sd))) mod 512;
                while not ss_saved(sk) loop sk := (sk + 1) mod 512; end loop;
                ss(sk) := std_logic_vector(rotate_left(unsigned(ss(sk)), 7)) xor (sd & std_logic_vector(to_unsigned(sa, 16)));
+               ss(40)(15 downto 0) := (others => '0');   -- word 40 carries only SPUSTAT (IRQ9)
                spuram((to_integer(unsigned(sd)) * 7 + sa) mod (SPU_PAGES * 1024)) := sd xor std_logic_vector(to_unsigned(sa, 16));
                spu_guest_writes <= spu_guest_writes + 1;
             else
@@ -269,7 +290,7 @@ begin
                -- side effects of guest writes the port writes after them repair
                if sa = 16#1A2# then ss(4) := x"BAD00004"; end if;    -- mBASE: the reverb pointer
                if sa = 16#1A6# then ss(3) := x"BAD00003"; end if;    -- transfer address
-               if sa = 16#1AA# then ss(40) := x"BAD00040"; end if;   -- SPUCNT: the IRQ line
+               if sa = 16#1AA# then ss(40) := x"BAD00000"; end if;   -- SPUCNT: the IRQ line
             end if;
          end if;
          if at_cpu_edge and ce = '1' and mux_bus_exp1_write = '1' then
@@ -292,6 +313,10 @@ begin
                assert cp_busy = '0' report "COMMAND while a copy runs" severity failure;
                if mux_bus_exp1_dataWrite(0) = '1' then
                   p := slot(page_hi * 256 + page_lo);
+                  if mux_bus_exp1_dataWrite(1) = '0' and want_save = '1' and page_hi * 256 + page_lo /= 2047 and
+                     page_hi * 256 + page_lo + 1 > stored then
+                     stored := page_hi * 256 + page_lo + 1;
+                  end if;
                   for k in 0 to 511 loop
                      if mux_bus_exp1_dataWrite(1) = '1' then page(k) := buf(p * 512 + k);
                      else buf(p * 512 + k) := page(k); end if;
@@ -304,7 +329,17 @@ begin
                page_hi := to_integer(unsigned(mux_bus_exp1_dataWrite(2 downto 0)));
             elsif a = 16#1803# and mux_bus_exp1_dataWrite(2) = '1' then
                trap <= '0'; retry_left := 3000; retries <= retries + 1;
+            elsif a = 16#1818# then
+               size_pages := size_pages - size_pages mod 256 + to_integer(unsigned(mux_bus_exp1_dataWrite));
+            elsif a = 16#1819# then
+               size_pages := size_pages mod 256 + 256 * to_integer(unsigned(mux_bus_exp1_dataWrite(3 downto 0)));
             elsif a = 16#1803# then
+               if want_save = '1' and mux_bus_exp1_dataWrite(0) = '1' then
+                  assert size_pages = stored report "save size " & integer'image(size_pages) & " pages, stored " &
+                     integer'image(stored) severity failure;
+                  report "packed save: " & integer'image(stored) & " pages" severity note;
+               end if;
+               stored := 0;
                if want_save = '1' then
                   if mux_bus_exp1_dataWrite(0) = '1' then saves_done <= saves_done + 1;
                   else saves_failed <= saves_failed + 1; end if;
@@ -330,9 +365,10 @@ begin
                assert spu_hold = '1' and spu_quiet = '1' report "SPU port access while the SPU runs" severity failure;
                assert ss_saved(ss_adr) report "SPU port word " & integer'image(ss_adr) & " is not one a save keeps" severity failure;
                -- the port word goes through staging page word ss_adr
-               -- (word 43, the current main volume, reads as 0 like the tapped SPU)
+               -- (words 37, 40 and 43 read as 0 like the tapped SPU: the handler
+               -- takes ENDX, SPUSTAT and the current main volume from guest reads)
                if mux_bus_exp1_dataWrite(1) = '1' then ss(ss_adr) := page(ss_adr);
-               elsif ss_adr = 43 then page(ss_adr) := (others => '0');
+               elsif ss_adr = 37 or ss_adr = 40 or ss_adr = 43 then page(ss_adr) := (others => '0');
                else page(ss_adr) := ss(ss_adr); end if;
                ss_busy <= '1'; ss_left := 3 + to_integer(lfsr(2 downto 0));
             end if;
@@ -352,6 +388,152 @@ begin
    end process;
    bus_exp1_dataRead <= exp1_q;
    bus_spu_dataRead <= spu_q;
+
+   -- ---------------- CD controller model ----------------
+   -- The game (set up by the generics) has the drive reading from LBA 1000
+   -- in mode 0x80 with an XA filter; every 4,000 cycles a sector is read
+   -- (busy for 300 cycles, as a drive interrupt on its way). The game never
+   -- writes the CD registers, so any command during a save is the handler's
+   -- fault. A load must pause the drive and restart it: mode, filter, demute,
+   -- Setloc to the sector after the one the save read (0x181C), ReadN, then
+   -- IRQENA and the index as the game had them.
+   bus_cd_dataRead <= cd_q;
+   process (clk1x)
+      type fifo is array(0 to 15) of std_logic_vector(7 downto 0);
+      constant GAME_MODE : std_logic_vector(7 downto 0) := x"C8";
+      constant GAME_FILE : std_logic_vector(7 downto 0) := x"01";
+      constant GAME_CHAN : std_logic_vector(7 downto 0) := x"05";
+      variable idx : natural range 0 to 3 := 1;
+      variable irqena : std_logic_vector(4 downto 0) := "11111";
+      variable flag : std_logic_vector(4 downto 0) := "00000";
+      variable resp, par : fifo;
+      variable resp_n, resp_rd, par_n : natural := 0;
+      variable mode : std_logic_vector(7 downto 0) := GAME_MODE;
+      variable xfile : std_logic_vector(7 downto 0) := GAME_FILE;
+      variable xchan : std_logic_vector(7 downto 0) := GAME_CHAN;
+      variable motor, reading, playing, demuted : boolean := true;
+      variable lba, target : natural := 1000;
+      variable cmd : std_logic_vector(7 downto 0);
+      variable cmd_left, int2_left, sector_left, busy_left, motor_left : natural := 0;
+      variable sector_left_init : boolean := false;
+      variable loading, was_load : boolean := false;
+      variable setloc_seen, readn_seen : boolean := false;
+      variable a : natural;
+      variable d : std_logic_vector(7 downto 0);
+      variable last_loads : natural := 0;
+      variable busy : std_logic;
+      impure function stat return std_logic_vector is
+         variable s : std_logic_vector(7 downto 0) := x"00";
+      begin
+         if motor then s(1) := '1'; end if;
+         if reading then s(5) := '1'; end if;
+         if playing then s(7) := '1'; end if;
+         return s;
+      end function;
+      procedure push(v : std_logic_vector(7 downto 0)) is
+      begin
+         resp((resp_rd + resp_n) mod 16) := v; resp_n := resp_n + 1;
+      end procedure;
+      function bcd(v : std_logic_vector(7 downto 0)) return natural is
+      begin
+         return to_integer(unsigned(v(7 downto 4))) * 10 + to_integer(unsigned(v(3 downto 0)));
+      end function;
+   begin
+      if rising_edge(clk1x) then
+         if not sector_left_init then sector_left := 4000; sector_left_init := true; end if;
+         -- a fresh drive at the load (a wake from Sleep)
+         if CD_FRESH and want_load = '1' and not loading then
+            motor := false; reading := false; playing := false; mode := x"00"; xfile := x"00"; xchan := x"00";
+            irqena := "00000"; idx := 0; flag := "00000"; resp_n := 0; par_n := 0; cmd_left := 0; int2_left := 0;
+            motor_left := 30000;
+         end if;
+         loading := want_load = '1';
+         if motor_left > 0 then
+            motor_left := motor_left - 1;
+            if motor_left = 0 then motor := true; end if;
+         end if;
+         -- the drive reads on
+         if busy_left > 0 then busy_left := busy_left - 1; end if;
+         if (reading or playing) and motor then
+            if sector_left > 0 then sector_left := sector_left - 1;
+            else sector_left := 4000; lba := lba + 1; busy_left := 300; end if;
+         end if;
+         -- the command, once the flags are clear
+         if cmd_left > 1 then cmd_left := cmd_left - 1;
+         elsif cmd_left = 1 and flag = "00000" then
+            cmd_left := 0;
+            flag := "00011";
+            case cmd is
+               when x"01" => push(stat);
+               when x"09" => push(stat); reading := false; playing := false; int2_left := 3000;
+               when x"0E" => mode := par(0); push(stat);
+               when x"0D" => xfile := par(0); xchan := par(1); push(stat);
+               when x"0C" => demuted := true; push(stat);
+               when x"02" =>
+                  target := ((bcd(par(0)) * 60 + bcd(par(1))) * 75 + bcd(par(2))) - 150; setloc_seen := true; push(stat);
+               when x"06" =>
+                  assert setloc_seen report "ReadN without Setloc" severity failure;
+                  reading := true; lba := target - 1; sector_left := 20000; busy_left := 0; readn_seen := true;
+                  push(stat);
+               when x"03" => playing := true; lba := target; push(stat);
+               when others =>
+                  report "unexpected CD command " & to_hstring(cmd) severity failure;
+            end case;
+            par_n := 0;
+         end if;
+         if int2_left > 1 then int2_left := int2_left - 1;
+         elsif int2_left = 1 and flag = "00000" then int2_left := 0; flag := "00010"; push(stat); end if;
+         -- registers
+         if ce = '1' and mux_bus_cd_read = '1' then
+            a := to_integer(mux_bus_cd_addr(1 downto 0));
+            case a is
+               when 0 =>
+                  cd_q <= (others => '0');
+                  if cmd_left > 0 then cd_q(7) <= '1'; end if;
+                  if resp_n > 0 then cd_q(5) <= '1'; end if;
+                  cd_q(4) <= '1';
+                  if par_n = 0 then cd_q(3) <= '1'; end if;
+                  cd_q(1 downto 0) <= std_logic_vector(to_unsigned(idx, 2));
+               when 1 =>
+                  if resp_n > 0 then cd_q <= resp(resp_rd); resp_rd := (resp_rd + 1) mod 16; resp_n := resp_n - 1; end if;
+               when 3 =>
+                  if idx mod 2 = 1 then cd_q <= "111" & flag; else cd_q <= "111" & irqena; end if;
+               when others => null;
+            end case;
+         end if;
+         if ce = '1' and mux_bus_cd_write = '1' then
+            a := to_integer(mux_bus_cd_addr(1 downto 0)); d := mux_bus_cd_dataWrite;
+            if a = 0 then idx := to_integer(unsigned(d(1 downto 0)));
+            elsif a = 1 and idx = 0 then
+               assert want_load = '1' report "CD command " & to_hstring(d) & " outside a load" severity failure;
+               assert cmd_left = 0 report "CD command while one runs" severity failure;
+               cmd := d; cmd_left := 1500; int2_left := 0;
+            elsif a = 2 and idx = 0 then
+               par(par_n) := d; par_n := par_n + 1;
+            elsif a = 2 and idx = 1 then irqena := d(4 downto 0);
+            elsif a = 3 and idx = 1 then
+               flag := flag and not d(4 downto 0);
+               if d(6) = '1' then par_n := 0; end if;
+            end if;
+         end if;
+         -- a finished load: the drive set up as the game had it
+         if loads_done /= last_loads then
+            last_loads := loads_done;
+            assert mode = GAME_MODE and xfile = GAME_FILE and xchan = GAME_CHAN
+               report "load: CD mode/filter not restored" severity failure;
+            assert readn_seen and reading and target = cd_capt + 1
+               report "load: ReadN from " & integer'image(target) & ", the save had read up to " & integer'image(cd_capt)
+               severity failure;
+            assert irqena = "11111" and idx = 1 report "load: CD IRQENA / index not restored" severity failure;
+            assert demuted report "load: no Demute" severity failure;
+            report "load: CD reads on from " & integer'image(target) severity note;
+            setloc_seen := false; readn_seen := false;
+         end if;
+         busy := '0';
+         if cmd_left > 0 or int2_left > 0 or busy_left > 0 then busy := '1'; end if;
+         cd_state_s <= "0000000" & busy & std_logic_vector(to_unsigned(lba, 24)) & xchan & xfile & mode & stat;
+      end if;
+   end process;
 
    -- ---------------- GPU model ----------------
    bus_gpu_dataRead <= gpu_q;
@@ -406,6 +588,7 @@ begin
       if rising_edge(clk1x) then
          if not initialised then
             for i in vram'range loop vram(i) := std_logic_vector(to_unsigned((i * 7919 + SEED * 104729) mod 2**30, 32)); end loop;
+            for i in 0 to 511 loop vram(ZERO_ROW * 512 + i) := (others => '0'); end loop;   -- (the game draws in rows 0-3)
             initialised := true;
          end if;
          gpu_q <= (others => '0');

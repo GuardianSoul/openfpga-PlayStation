@@ -11,6 +11,7 @@
   'use strict';
 
   const SECTOR = 2352;
+  const BIOS_BYTES = 512 << 10;   // a PlayStation BIOS is exactly this size; no disc image is
   const PREGAP = 150;
   const LIBCRYPT_SLOT = 99;
   const CHEAT_SLOT = 98;
@@ -431,6 +432,32 @@
     const tag = discTag(s);
     return tag ? tag[1].trim() + '.sav' : null;
   };
+  // Disc numbers of the cues of one folder that no disc tag groups ("disc1",
+  // "disc2"; "1", "2"): each name's last number, the rest of the names equal,
+  // the numbers 1..n. null when the names point to different games.
+  const folderDiscs = (stems) => {
+    const keys = new Set(), numbers = [];
+    for (const st of stems) {
+      const s = st.replace(RELEASE, '').toLowerCase();
+      const found = [...s.matchAll(/[0-9]+/g)];
+      if (!found.length) return null;
+      const last = found[found.length - 1];
+      numbers.push(parseInt(last[0], 10));
+      keys.add((s.slice(0, last.index) + s.slice(last.index + last[0].length)).replace(/[^a-z0-9]/g, ''));
+    }
+    const sorted = [...numbers].sort((a, b) => a - b);
+    return keys.size === 1 && sorted.every((n, i) => n === i + 1) ? numbers : null;
+  };
+  // A name-grouped game's file name: disc 1's name without its disc tag,
+  // keeping only the tags in parentheses that every disc has ("Gran Turismo
+  // 2 (USA) (Disc 1) (Arcade Mode)" with "... (Disc 2) (Simulation Mode)" ->
+  // "Gran Turismo 2 (USA)").
+  const groupTitle = (stems) => {
+    const names = stems.map((s) => discTag(s) ? discTag(s)[1] : s);
+    const tags = names.map((n) => (n.match(RELEASE) || []).map((x) => x.trim()));
+    if (tags.every((k) => JSON.stringify(k) === JSON.stringify(tags[0]))) return names[0].trim();
+    return (names[0].replace(RELEASE, '').trim() + tags[0].filter((x) => tags.every((k) => k.includes(x))).map((x) => ' ' + x).join('')).trim();
+  };
   // A multi-disc game's shared card: from the first disc whose name has a disc tag.
   const groupCard = (stems) => stems.map(sharedCardName).find((c) => c) || null;
 
@@ -481,9 +508,102 @@
       const file = await fileAt(card, ['Cores', name, 'core.json']);
       let platform = null;
       try { platform = JSON.parse(await file.text()).core.metadata.platform_ids[0]; } catch (e) { continue; }
-      if (platform === 'playstation' || platform === 'psx') found.push({ id: name, platform });
+      if (platform !== 'playstation' && platform !== 'psx') continue;
+      // This core's game files: a cue in slot 100 and disc 1's files from 101.
+      let slots = [];
+      try { slots = JSON.parse(await (await fileAt(card, ['Cores', name, 'data.json'])).text()).data.data_slots.map((s) => s && s.id); } catch (e) { slots = []; }
+      const supported = name.toLowerCase().startsWith('guardiansoul.')
+        || (slots.includes(100) && slots.some((id) => Number.isInteger(id) && id >= 101 && id <= 199));
+      found.push({ id: name, platform, supported });
     }
     return found.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  // Where else on the card discs sit when Assets/<platform>/common has none
+  // (games copied for another core's platform folder), or null.
+  async function gamesElsewhere(card, platform) {
+    const isDisc = (n) => /\.(cue|chd)$/i.test(n);
+    const discsIn = async (p) => { const dir = await dirAt(card, ['Assets', p, 'common']); return dir ? (await walk(dir, isDisc)).length : 0; };
+    if (await discsIn(platform)) return null;
+    const assets = await dirAt(card, ['Assets']);
+    if (!assets) return null;
+    const others = [];
+    for (const [name, kind] of await list(assets)) if (kind === 'directory' && name !== platform && await discsIn(name)) others.push(`Assets/${name}/common`);
+    return others.sort()[0] || null;
+  }
+
+  // ---- the BIOS check (the plugin's bios.rs) -----------------------------------
+  // Whether the core will find a BIOS it can start, as its Chip32 loader
+  // (support/chip32/psx_bios_check.asm) decides: a file under one of the
+  // core's BIOS names in Assets/<platform>/common that is exactly 512 KB and
+  // has a "System ROM Version" line at 0x7FF32 ending in A, J or E.
+  const BIOS_NAMES = ['scph5501.bin', 'scph7001.bin', 'scph1001.bin', 'scph7501.bin', 'scph9001.bin', 'scph101.bin',
+    'scph5500.bin', 'scph7000.bin', 'scph3500.bin', 'scph100.bin',
+    'scph5502.bin', 'scph7002.bin', 'scph1002.bin', 'scph7502.bin', 'scph9002.bin', 'scph102.bin'];
+  const BIOS_REGIONS = { A: 'USA', J: 'Japan', E: 'Europe' };
+
+  // {usable: [version, region]} | {size} (not 512 KB) | {} (no version line).
+  async function examineBios(file) {
+    if (file.size !== BIOS_BYTES) return { size: file.size };
+    const line = new Uint8Array(await file.slice(0x7ff32, 0x7ff32 + 33).arrayBuffer());
+    const text = String.fromCharCode(...line);
+    const region = BIOS_REGIONS[text[32]];
+    if (!text.startsWith('System ROM Version ') || !region) return {};
+    return { usable: [text.split('\0')[0].trim(), region] };
+  }
+
+  function biosNameFor(names, region) {
+    const digit = { USA: '1', Japan: '0' }[region] || '2';
+    return names.find((n) => /^scph\d*$/.test(n.toLowerCase().replace(/\.bin$/, '')) && n.toLowerCase().endsWith(digit + '.bin')) || names[0];
+  }
+
+  // The BIOS report: one line per BIOS file, then what to do when none is usable.
+  async function checkBios(card, core, platform) {
+    let names = [];
+    try {
+      names = JSON.parse(await (await fileAt(card, ['Cores', core, 'data.json'])).text()).data.data_slots
+        .filter((s) => s && s.size_exact === BIOS_BYTES && typeof s.filename === 'string').map((s) => s.filename);
+    } catch (e) { names = []; }
+    if (!names.length) names = BIOS_NAMES;
+    const common = ['Assets', platform, 'common'], place = common.join('/');
+    const inCommon = await dirAt(card, common);
+    const entries = inCommon ? await list(inCommon) : [];
+    const lines = [];
+    let usable = 0;
+    for (const name of names) {
+      const hit = entries.find(([n, kind]) => kind === 'file' && n.toLowerCase() === name.toLowerCase());
+      if (!hit) continue;
+      const result = await examineBios(await fileAt(card, [...common, hit[0]]));
+      if (result.usable) { usable++; lines.push(`BIOS ${hit[0]}: ${result.usable[1]} (${result.usable[0]}), OK`); }
+      else if (result.size !== undefined) lines.push(`BIOS ${hit[0]} is ${Math.ceil(result.size / 1024)} KB, but a PlayStation BIOS is exactly 512 KB: replace it with a full dump of your console's BIOS`);
+      else lines.push(`BIOS ${hit[0]} is not a PlayStation BIOS (it has no "System ROM Version" line): replace it with a dump of your console's BIOS`);
+    }
+    if (usable) return lines;
+    // A usable BIOS elsewhere: in common under another name, another platform's
+    // common, the core's own Assets folder or the card's root.
+    const folders = [[], ['Assets', platform, core]];
+    const assets = await dirAt(card, ['Assets']);
+    for (const [name, kind] of assets ? await list(assets) : []) if (kind === 'directory') folders.push(['Assets', name, 'common']);
+    const found = [];
+    for (const folder of folders) {
+      const dir = await dirAt(card, folder);
+      for (const [name, kind] of dir ? await list(dir) : []) {
+        if (kind !== 'file' || name.startsWith('._') || !(/\.(bin|rom|mcr)$/i.test(name) || !name.includes('.'))) continue;
+        if (folder.join('/') === place && names.some((n) => n.toLowerCase() === name.toLowerCase())) continue;
+        const result = await examineBios(await fileAt(card, [...folder, name]));
+        if (result.usable) found.push([[...folder, name].join('/'), result.usable[1]]);
+      }
+    }
+    found.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    for (const [path, region] of found) {
+      lines.push(`${path} is a ${region} PlayStation BIOS, but the core doesn't look for it there: copy it to ${place}/ as ${biosNameFor(names, region)}`);
+    }
+    if (!found.length) {
+      const [usa, japan, europe] = ['USA', 'Japan', 'Europe'].map((r) => biosNameFor(names, r));
+      const asNames = usa === japan && japan === europe ? usa : `${usa} (USA), ${japan} (Japan) or ${europe} (Europe)`;
+      lines.push(`No BIOS found: the core can't start games without one. Copy your PlayStation BIOS to ${place}/ as ${asNames}`);
+    }
+    return lines;
   }
 
   // Write Assets/<platform>/<core>/<game>.json for every playable disc under
@@ -494,6 +614,42 @@
 
   // The cue written for a .bin that came without one: one data track.
   const loneBinCue = (binName) => `FILE "${binName}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n`;
+
+  // A skip reason as a plain sentence that ends with what to do about it
+  // (make_pocket_instances.py's explain(), the plugin's in instances.rs).
+  function explain(reason) {
+    const dump = "use the disc's .cue/.bin or .chd";
+    let m;
+    if ((m = /^(.+): file missing$/.exec(reason))) return `${m[1]} is missing: put it next to the .cue, with the name the .cue gives it`;
+    if ((m = /^(.+): not whole 2352-byte sectors$/.exec(reason))) return `${m[1]} is not a raw CD image (its size is not whole 2352-byte sectors): ${dump}`;
+    if ((m = /^track (\d+): (.+) is not 2352-byte sectors$/.exec(reason))) return `track ${m[1]} is ${m[2]}, which the core can't read: ${dump} with 2352-byte sectors`;
+    if (/^(no FILE entries|\S* ?before (TRACK|FILE))$/.test(reason)) return `the .cue is damaged (${reason}): get the disc's real .cue`;
+    if ((m = /^(\d+) track files \(core takes (\d+)\)$/.exec(reason))) return `${m[1]} track files, but this core takes ${m[2]}: update the core to the latest version`;
+    if (reason.endsWith('(merged image)')) return `${reason}: Generate game files again and choose to convert it`;
+    return {
+      'a track file whose .cue is missing': "it is one track of a disc whose .cue is missing: put the disc's .cue next to it",
+      'not whole 2352-byte sectors': `it is not a raw CD image (its size is not whole 2352-byte sectors): ${dump}`,
+      'not enough free space for its .cue': 'the SD card is full: free some space, then Generate game files again',
+      'CHD image not extracted': 'CHD image not extracted: Generate game files again and choose to convert it',
+    }[reason] || reason;
+  }
+
+  // Why a multi-disc game's discs (numbers, sorted) can't make one game file, and what to do.
+  function discGap(numbers, declared, platform) {
+    let missing = 1;
+    while (numbers.includes(missing)) missing++;
+    if (missing < numbers[numbers.length - 1]) {
+      return `disc ${missing} is missing (found discs ${numbers.join(', ')}): put it in Assets/${platform}/common too, in its own folder`;
+    }
+    return `${numbers.length} discs, but this core takes ${declared}: update the core to the latest version`;
+  }
+
+  // The closing line when a run made no game files, or null.
+  function nothingMade(written, skipped, platform) {
+    if (written) return null;
+    if (!skipped) return `No games found in Assets/${platform}/common: put each disc's .cue and .bin files in its own folder there, then Generate game files again.`;
+    return 'No game files made: fix what the skip lines above say, then Generate game files again.';
+  }
 
   // .bin files under common that no cue in their folder names and that have
   // no <name>.cue: [[path, reason or null]]. A reason means it is skipped: a
@@ -513,6 +669,7 @@
       }
       if (broken || named.has(bin.join('/'))) continue;
       const file = await fileAt(card, bin);
+      if (file.size === BIOS_BYTES || /^scph\d+\.bin$/i.test(name)) continue;   // a BIOS (512 KB, or named like one), not a disc
       const reason = /\(Track \d+\)/i.test(stem(name)) ? 'a track file whose .cue is missing'
         : file.size % SECTOR ? 'not whole 2352-byte sectors' : null;
       found.push([bin, reason]);
@@ -526,14 +683,14 @@
     let skipped = 0;
     for (const [bin, reason] of await loneBins(card, common)) {
       const shown = bin.slice(common.length).join('/');
-      if (reason) { say(`skip ${shown}: ${reason}`); skipped++; continue; }
+      if (reason) { say(`skip ${shown}: ${explain(reason)}`); skipped++; continue; }
       const name = bin[bin.length - 1];
       const cue = [...bin.slice(0, -1), stem(name) + '.cue'];
       try {
         await writeChecked(card, cue, [new TextEncoder().encode(loneBinCue(name))]);
         say(`wrote ${cue.slice(common.length).join('/')} (one data track; a game with CD music needs its own .cue)`);
       } catch (e) {
-        say(`skip ${shown}: ${/not enough room/.test(e.message) ? 'not enough free space for its .cue' : e.message}`);
+        say(`skip ${shown}: ${/not enough room/.test(e.message) ? explain('not enough free space for its .cue') : e.message}`);
         skipped++;
       }
     }
@@ -562,7 +719,7 @@
     const common = ['Assets', platform, 'common'];
     const out = ['Assets', platform, core];
     const commonDir = await dirAt(card, common);
-    if (!commonDir) throw new Error(`no ${common.join('/')} folder on this card`);
+    if (!commonDir) throw new Error(`there is no ${common.join('/')} folder on this SD card. Make it, put each game in its own folder there, then Generate game files again`);
     const summary = { written: 0, skipped: 0, converted: 0, convertFailed: 0, shared: 0, lines: [] };
     const say = (line) => { summary.lines.push(line); log(line); };
     if (options.convert) {
@@ -614,6 +771,24 @@
       const tag = discTag(stem(rel[rel.length - 1]));
       if (tag) (tag[0] === 1 ? first : later).add(tag[1].replace(RELEASE, '').trim());
     }
+    const untaggedFirst = (s) => { const t = s.replace(RELEASE, '').trim(); return later.has(t) && !first.has(t); };
+    // A subfolder holding only 2-4 cues that no disc tag groups, named as one
+    // game's discs, is that game ("Riven/disc1.cue", "Riven/disc2.cue"),
+    // named after the folder.
+    const byFolder = new Map();
+    for (const rel of await walk(commonDir, (n) => /\.cue$/i.test(n))) {
+      if (rel.length < 2) continue;
+      const key = rel.slice(0, -1).join('/');
+      if (!byFolder.has(key)) byFolder.set(key, []);
+      byFolder.get(key).push(rel);
+    }
+    const folderDisc = new Map();   // cue rel -> [disc number, game key]
+    for (const [key, rels] of byFolder) {
+      const stems = rels.map((r) => stem(r[r.length - 1]));
+      if (rels.length < 2 || rels.length > 4 || stems.some((s) => discTag(s) || untaggedFirst(s))) continue;
+      const numbers = folderDiscs(stems);
+      if (numbers) rels.forEach((r, i) => folderDisc.set(r.join('/'), [numbers[i], key + '/']));   // never a title's key
+    }
     for (const rel of await walk(commonDir, (n) => /\.cue$/i.test(n))) {
       const cue = [...common, ...rel];
       const folder = cue.slice(0, -1), cueName = cue[cue.length - 1], cueStem = stem(cueName);
@@ -640,9 +815,17 @@
       }
       if (!reason && !oneFile && !cueReader && files.length > maxTracks) reason = `${files.length} track files (core takes ${maxTracks})`;
       if (reason && await fileAt(card, [...folder, cueStem, cueStem + '.cue'])) continue;   // converted copy is listed
-      if (reason) { say(`skip ${rel.join('/')}: ${reason}`); summary.skipped++; continue; }
+      if (reason) { say(`skip ${rel.join('/')}: ${explain(reason)}`); summary.skipped++; continue; }
       let tag = discTag(cueStem);
       if (!tag && later.has(cueStem.replace(RELEASE, '').trim()) && !first.has(cueStem.replace(RELEASE, '').trim())) tag = [1, cueStem];
+      if (folderDisc.has(rel.join('/')) && discsDeclared > 1) {
+        const [number, game] = folderDisc.get(rel.join('/'));
+        if (!games.has(game)) games.set(game, new Map());
+        const found = games.get(game);
+        if (!found.has(number)) found.set(number, []);
+        found.get(number).push([cue, files, [], trackCount]);
+        continue;
+      }
       if (tag && discsDeclared > 1) {
         const [number, name] = tag;
         const game = name.replace(RELEASE, '').trim();
@@ -664,18 +847,36 @@
         parts.set(n, pick);
       }
       const numbers = [...parts.keys()].sort((a, b) => a - b);
+      const byFolder = game.endsWith('/');
+      const label = byFolder ? game.slice(0, -1).split('/').pop() : game;
       if (numbers.some((n, i) => n !== i + 1) || numbers.length > discsDeclared) {
-        say(`skip ${game}: discs [${numbers.join(', ')}] (core takes discs 1-${discsDeclared})`); summary.skipped++; continue;
+        say(`skip ${label}: ${discGap(numbers, discsDeclared, platform)}`); summary.skipped++; continue;
       }
+      // The discs of one game in folders of different folders ("A/X (Disc
+      // 1)/", "B/X (Disc 2)/"): grouped by their names all the same.
+      const parentsOf = (up) => new Set(numbers.map((n) => parts.get(n)[0].slice(0, -1 - up).join('/')));
+      if (parentsOf(1).size > 1 && parentsOf(0).size > 1) {
+        say(`warning: ${label}: its discs are in different folders (`
+            + numbers.map((n) => posix(parts.get(n)[0].slice(common.length, -1))).join(', ') + '); put them in one folder');
+      }
+      if (byFolder) say(`${label}: ${numbers.length} discs in one folder, grouped as one game`);
+      // A folder's discs: the game file and shared card take the folder's name.
+      // Before groupTitle(), disc 1's name: its game file is replaced.
+      const stem1 = stem(parts.get(1)[0].slice(-1)[0]);
+      const oldTitle = byFolder ? null : discTag(stem1) ? discTag(stem1)[1].trim() : stem1;
+      const newTitle = byFolder ? label : groupTitle(numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
+      const title = () => newTitle;
+      const oldNames = numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])).concat(oldTitle && oldTitle !== newTitle ? [oldTitle] : []);
+      const cardOf = () => byFolder ? label + '.sav' : groupCard(numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
       if (cueReader && !siblingPaths(parts.get(1)[0], numbers.slice(1).map((n) => [n, parts.get(n)[0]]))) {
         // The core can't find the other discs by name: a playlist lists them.
-        const stem1 = stem(parts.get(1)[0].slice(-1)[0]), name = discTag(stem1) ? discTag(stem1)[1].trim() : stem1;
+        const name = title(stem(parts.get(1)[0].slice(-1)[0]));
         const folders = numbers.map((n) => parts.get(n)[0].slice(0, -1));
         let depth = 0;
         while (folders.every((f) => depth < f.length && f[depth] === folders[0][depth])) depth++;
         const root = folders[0].slice(0, depth), m3u = [...root, name + '.m3u'];
         const shown = m3u.slice(common.length).join('/');
-        const shared = groupCard(numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
+        const shared = cardOf();
         if (numbers.length <= 4) {
           await writeFile(card, m3u, numbers.map((n) => parts.get(n)[0].slice(root.length).join('/') + '\n').join(''));
         }
@@ -694,26 +895,27 @@
             discs.get(shared).push(...numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
           }
           await writeInstance(name, slots, useShared ? '' : prefix);
-          for (const n of numbers) {
-            const s = stem(parts.get(n)[0].slice(-1)[0]);
-            if (s !== name) await removeFile(card, [...out, s + '.json']);
+          for (const s of oldNames) if (s !== name) await removeFile(card, [...out, s + '.json']);
+          if (oldTitle && oldTitle !== name) {   // the playlist under the old name, if it is ours
+            const old = await fileAt(card, [...root, oldTitle + '.m3u']), now = await fileAt(card, m3u);
+            if (old && now && await old.text() === await now.text()) await removeFile(card, [...root, oldTitle + '.m3u']);
           }
           say(`wrote ${name}.json (${numbers.length} discs, playlist ${shown})`);
           summary.written++;
           continue;
         }
         if (numbers.length <= 4) {
-          say(`${game}: the discs' names differ by more than their number: wrote the playlist ${shown} ` +
+          say(`${label}: the discs' names differ by more than their number: wrote the playlist ${shown} ` +
               "(pick it in the core's file list to swap discs); each disc also gets its own game file");
         } else {
-          say(`${game}: the discs' names differ by more than their number, so each disc gets its own game file`);
+          say(`${label}: the discs' names differ by more than their number, so each disc gets its own game file`);
         }
         for (const n of numbers) { const [cue, files, , count] = parts.get(n); await single(cue, files, count, shared); summary.written++; }
         continue;
       }
       const tooLong = oneFile || cueReader ? [] : numbers.slice(1).filter((n) => parts.get(n)[1].length > discTracks[n]);
       if (tooLong.length) {
-        say(`skip ${game}: disc ${tooLong[0]} has more track files than the core declares`); summary.skipped++; continue;
+        say(`skip ${label}: disc ${tooLong[0]} has more track files than the core declares: update the core to the latest version`); summary.skipped++; continue;
       }
       // The folder all discs sit under.
       const folders = numbers.map((n) => parts.get(n)[0].slice(0, -1));
@@ -735,7 +937,7 @@
       if (sizesFiles.has(cue1.join('/'))) slots.push({ id: TSZ_SLOT, filename: rel(cue1, sizesFiles.get(cue1.join('/'))) });   // disc 1's, for the boot mount
       const dataPath = posix(root.slice(common.length));
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
-      const shared = sharedCards ? groupCard(numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0]))) : null;
+      const shared = sharedCards ? cardOf() : null;
       if (shared) {   // the same shared card as the per-disc files would use
         for (const s of slots) s.filename = prefix + s.filename;
         slots.push({ id: CARD_SLOT, filename: shared });
@@ -744,10 +946,9 @@
         prefix = '';
       }
       // Named after disc 1 without its disc tag ("Final Fantasy VII (USA).json").
-      const name = discTag(cue1Stem) ? discTag(cue1Stem)[1].trim() : cue1Stem;
+      const name = title(cue1Stem);
       await writeInstance(name, slots, prefix);
-      for (const n of numbers) {   // per-disc files from earlier runs
-        const s = stem(parts.get(n)[0].slice(-1)[0]);
+      for (const s of oldNames) {   // per-disc files and older names from earlier runs
         if (s + '.json' !== name + '.json') await removeFile(card, [...out, s + '.json']);
       }
       say(`wrote ${name}.json (${numbers.length} disc${numbers.length > 1 ? 's' : ''})`);
@@ -760,8 +961,10 @@
       if (seeded) say(`shared card ${name} starts from ${seeded}`);
     }
     summary.shared = discs.size;
-    say(`${summary.written} instance files in ${out.join('/')}, ${summary.skipped} skipped`
+    say(`${summary.written} game files in ${out.join('/')}, ${summary.skipped} skipped`
         + (discs.size ? `, ${discs.size} multi-disc games share a card` : ''));
+    const hint = nothingMade(summary.written, summary.skipped, platform);
+    if (hint) say(hint);
     return summary;
   }
 
@@ -775,5 +978,5 @@
     return !takes(0, 'cue') && !takes(102, 'trk');
   }
 
-  Object.assign(exports, { makeInstances, findCores, needsSplit, parseCue, sharedCardName, jsonDumps, SECTOR });
+  Object.assign(exports, { makeInstances, findCores, needsSplit, gamesElsewhere, checkBios, explain, parseCue, sharedCardName, jsonDumps, SECTOR });
 })(typeof module === 'object' && module.exports ? module.exports : (globalThis.PocketInstances = {}));

@@ -23,6 +23,11 @@
 -- switches to that mode, as the DualShock's Analog button would, unless the
 -- game has locked the mode (0x44; then it applies once unlocked).
 -- L3+R3+Up/Down still switch it too.
+-- DIGITAL_HOLD (default false; with ANALOG_LEVEL): while the setting is
+-- Digital, a game's 0x44 request for analog mode is answered but not
+-- applied, so the pad stays digital (ID 0x41). Parasite Eve (USA) switches a
+-- digital DualShock to analog (44 01 00) and then reads only the left stick
+-- on its menus; with no sticks the D-pad looked dead.
 -- STICK_DPAD (default false, so the lockstep holds): as DuckStation's
 -- default "Use Left Analog for D-Pad in Digital Mode", a DualShock in digital
 -- mode (not analog, not config) also presses the D-pad from the left stick,
@@ -44,7 +49,8 @@ use IEEE.numeric_std.all;
 use work.pJoypad.all;
 
 entity joypad_pad is
-   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false; ANALOG_LEVEL : boolean := false);
+   generic (STICK_DPAD : boolean := false; RUMBLE_ECHO : boolean := false; ANALOG_LEVEL : boolean := false;
+            DIGITAL_HOLD : boolean := false);
    port
    (
       clk1x                : in  std_logic;
@@ -514,7 +520,7 @@ begin
                         when SETSTATELSB =>
                            if (transmitValue = x"00") then
                               dsAnalogMode(portNr) <= '0';
-                           elsif  (transmitValue = x"01") then
+                           elsif  (transmitValue = x"01" and not (DIGITAL_HOLD and ANALOG_LEVEL and joypad.ToggleDS = '0')) then
                               dsAnalogMode(portNr) <= '1';
                            end if;
                            receiveValid    <= '1';

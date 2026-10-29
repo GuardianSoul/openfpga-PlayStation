@@ -53,8 +53,27 @@ The core as a whole is GPL-2.0; see LICENSE and THIRD_PARTY_NOTICES.md.
 """
 
 
-def placed(path, project):
-    """Archive name of a compile input; inputs must come from the project or the repository."""
+def external_roots(paths, project):
+    """The checkout directories of a frozen project's copies of repository files:
+    project/external/<the original checkout's absolute path>/<repository path> (the frozen fit's
+    snapshot). For each copy, the shortest leading part whose remainder is a file of this repository;
+    a copy whose remainder is not here (an uninitialised submodule) is placed by the roots found from
+    the others."""
+    base = project/'external'
+    roots = set()
+    for path in paths:
+        if not path.is_relative_to(base): continue
+        parts = path.relative_to(base).parts
+        k = next((k for k in range(1, len(parts)) if ROOT.joinpath(*parts[k:]).is_file()), None)
+        if k is not None: roots.add(base.joinpath(*parts[:k]))
+    return roots
+
+
+def placed(path, project, roots=()):
+    """Archive name of a compile input; inputs must come from the project or the repository. A frozen
+    copy of a repository file goes to its repository path (its own content: what was compiled)."""
+    root = next((r for r in sorted(roots, key=lambda r: -len(str(r))) if path.is_relative_to(r)), None)
+    if root is not None: return 'repo/' + path.relative_to(root).as_posix()
     if path.is_relative_to(project): return 'project/' + path.relative_to(project).as_posix()
     if path.is_relative_to(ROOT): return 'repo/' + path.relative_to(ROOT).as_posix()
     raise ValueError(f'compile input outside the project and repository: {path}')
@@ -66,7 +85,7 @@ def collect(project):
     def add(path):
         path = path.resolve()
         if not path.is_file(): raise ValueError(f'missing compile input {path}')
-        files[path] = placed(path, project)
+        files[path] = None   # named below, once the frozen copies' roots are known
         return path
     for m in ASSIGNMENT.finditer(qsf):
         path = Path(m[2] or m[3])
@@ -83,7 +102,12 @@ def collect(project):
         for groups in SOURCED.findall(path.read_text(errors='replace')):
             name = next(g for g in groups if g)
             add(Path(name) if Path(name).is_absolute() else project/name)
-    return files
+    roots = external_roots(files, project)
+    for path in files:
+        files[path] = placed(path, project, roots)
+    clashes = {n for n in files.values() if list(files.values()).count(n) > 1}
+    if clashes: raise ValueError(f'compile inputs share an archive name: {sorted(clashes)}')
+    return files, roots
 
 
 def uncommented(path):
@@ -137,8 +161,11 @@ def without(qsf, dropped, project):
     return '\n'.join(filter(keep, qsf.split('\n')))
 
 
-def public(text, project):
-    """Relative paths and public names; the QSF's absolute paths become paths from project/."""
+def public(text, project, roots=()):
+    """Relative paths and public names; the QSF's absolute paths become paths from project/. roots: the
+    frozen copies' checkout directories (external_root), whose files are under ../repo/ in the bundle."""
+    for root in sorted(roots, key=lambda r: -len(str(r))):
+        text = text.replace(str(root) + '/', '../repo/').replace(root.relative_to(project).as_posix() + '/', '../repo/')
     text = text.replace(str(project) + '/', '').replace(str(project), '.')
     text = text.replace(str(ROOT) + '/', '../repo/')
     for pattern, replacement in REWRITES:
@@ -154,7 +181,7 @@ def main():
     parser.add_argument('--output', type=Path, default=ROOT/'build/release/source')
     args = parser.parse_args()
     project = args.project.resolve()
-    files = collect(project)
+    files, roots = collect(project)
     dropped = drop_unused(files, project)
     problems, entries = [], {}
     for path, name in sorted(files.items(), key=lambda item: item[1]):
@@ -165,7 +192,7 @@ def main():
         if INCOMPATIBLE.search(text[:4000]): problems.append(f'{name}: Apache-2.0 or GPL-3 license header')
         if name == 'project/apf_top.qsf':
             text = without(text, dropped, project)
-        text = public(text, project)
+        text = public(text, project, roots)
         for number, line in enumerate(text.splitlines(), 1):
             if LEAKS.search(line): problems.append(f'{name}:{number}: {line.strip()[:120]}')
         entries[name] = text.encode()
@@ -177,6 +204,9 @@ def main():
         if path.name in WORKSPACE_ONLY_LICENSES: continue   # its code is never in a release bitstream
         entries['licenses/' + path.name] = path.read_bytes()
     entries['README.txt'] = README.format(version=args.version, repo=REPO).encode()
+    # Archive names are public too (0.5.6's bundle had project/external/<checkout path>/... names).
+    for name in sorted(entries):
+        if LEAKS.search(name): problems.append(f'{name}: archive name')
     # From 0.5.3 the public release carries no pocket_sotn code, paths or
     # mentions (2026-10-17); the bundle stops on any remaining text.
     for name, data in sorted(entries.items()):

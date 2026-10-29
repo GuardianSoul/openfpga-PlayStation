@@ -180,6 +180,53 @@ SOTN_GLUE = '''    // Main RAM, BIOS and SPU RAM on SDRAM at clk3x; VRAM on both
 '''
 
 
+
+VRAM_X3_PORTS = ('ddr_busy', 'ddr_burstcnt', 'ddr_addr', 'ddr_dout', 'ddr_dout_ready', 'ddr_rd', 'ddr_din', 'ddr_be', 'ddr_we',
+                 'aux_req', 'aux_we', 'aux_addr', 'aux_din', 'aux_done', 'card_write')
+VRAM_X3_WIDTHS = dict(ddr_burstcnt=8, ddr_addr=25, ddr_dout=64, ddr_din=64, ddr_be=8, aux_addr=21, aux_din=32)
+
+
+def vram_x3_top(text, parser):
+    """--vram-x3: the full-rate VRAM controller moves to clk3x behind psx_vram_x3.
+
+    The controller instance keeps its pins and aux_dout; its DDR/aux ports
+    get vx3_* nets to the bridge, which takes the original connections on
+    clk2x. The DQ output enables come from the per-pin registers.
+    """
+    head = "    psx_vram_psram #(.FULL_RATE(1'b1), .LATENCY(5)) vram ("
+    if text.count(head) != 1: parser.error('--vram-x3: VRAM controller instance not found')
+    start = text.index(head)
+    end = text.index(');', start) + 2
+    inst = text[start:end]
+    reset = re.search(r'\.reset\(([^()]*(?:\([^()]*\))?[^()]*)\)', inst)
+    if not reset or inst.count('.clk(clk2x)') != 1: parser.error('--vram-x3: controller clock/reset ports not found')
+    bridge = [f'.clk2x(clk2x),.clk3x(clk3x),.reset({reset.group(1)})']
+    for port in VRAM_X3_PORTS:
+        m = re.search(r'\.' + port + r'\(([^()]*)\)', inst)
+        if not m: parser.error(f'--vram-x3: controller port {port} not found')
+        inst = inst.replace(m.group(0), f'.{port}(vx3_{port})', 1)
+        bridge.append(f'.{port}({m.group(1)})')
+        bridge.append(f'.c_{port.replace("ddr_", "")}(vx3_{port})' if port.startswith('ddr_') else f'.c_{port}(vx3_{port})')
+    inst = inst.replace(head, "    psx_vram_psram #(.FULL_RATE(1'b1), .LATENCY(6), .CLK_KHZ(101606), .SLOW_DIV(3), .OUT_REG(1'b1)) vram (")
+    inst = inst.replace('.clk(clk2x)', '.clk(clk3x)')
+    for c in ('cram0', 'cram1'):
+        o = f'.{c}_dq_oe({c}_dq_oe),'
+        if inst.count(o) != 1: parser.error(f'--vram-x3: {o} not found')
+        inst = inst.replace(o, o + f'.{c}_dq_oe_pin({c}_dq_oe_pin),')
+    decl = ''.join(f'    wire {"[" + str(VRAM_X3_WIDTHS[p] - 1) + ":0] " if p in VRAM_X3_WIDTHS else ""}vx3_{p};\n' for p in VRAM_X3_PORTS)
+    block = ('    // --vram-x3: controller on clk3x; psx_vram_x3 carries its DDR and aux ports to clk2x\n' + decl
+             + '    wire [15:0] cram0_dq_oe_pin, cram1_dq_oe_pin;\n'
+             + '    psx_vram_x3 vram_x3 (' + ','.join(bridge) + ');\n' + inst)
+    text = text[:start] + block + text[end:]
+    for c in ('cram0', 'cram1'):
+        o = f"    assign {c}_dq={c}_dq_oe ? {c}_dq_out : 16'bz;\n"
+        if text.count(o) != 1: parser.error(f'--vram-x3: {c}_dq tri-state not found')
+        text = text.replace(o, f"    genvar {c}_i;   // --vram-x3: one IOE output-enable register per DQ pin\n"
+                               f"    generate for ({c}_i = 0; {c}_i < 16; {c}_i = {c}_i + 1) begin : {c}_dq_pin\n"
+                               f"        assign {c}_dq[{c}_i] = {c}_dq_oe_pin[{c}_i] ? {c}_dq_out[{c}_i] : 1'bz;\n"
+                               f"    end endgenerate\n")
+    return text
+
 VRAM_HEAD = '    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),\n'
 VRAM_HEAD_CLEAN = '    psx_vram_psram vram (.clk(clk2x),.reset(!cpu_locked),.park(vram_park),\n'
 
@@ -259,6 +306,10 @@ def main():
     parser.add_argument('--pal-bob', action='store_true', help='With --aspect-setting --pal288 --crop-lines: a PAL 480i field is a whole 288-line frame (bob): no 480i feature word, Fit in the 4:3 640x288 slot, Fill in the 10:9 640x268 one, so the PAL BIOS screens are neither cut nor squashed (psx_apf_video_wide PAL_BOB)')
     parser.add_argument('--even-lines', action='store_true', help='With --wide-lines --lead-line --vs-on-hs: the lead line goes out only in 480i, and a frame or field with an odd number of lines ends with one black pad line, so every count is even (psx_apf_video_wide LEAD_LINE 2 and EVEN_LINES; bhendo, issue #5): with an odd count the APF scaler left the end of a top row unwritten from power-on (red line), and progressive frames kept the lead line, a row low')
     parser.add_argument('--weave-576', action='store_true', help='With --fill-detect --fit-368 --dbl-320 --pal288 --crop-lines --even-lines: PAL 480i woven like NTSC in a 640x576 Fit slot (5) and a 640x536 Fill slot (7); progressive Fill lines sent twice so they share the Fill slots (NTSC 448 in 1, PAL 536 in 7). Fit and the native slots unchanged (psx_apf_video_wide WEAVE576; package --weave-576)')
+    parser.add_argument('--bob-480', action='store_true', help='With --weave-576 --interlace-feature: woven 480i goes out as one finished progressive frame per field (every line twice, the odd field one line lower) without the 480i frame word, so the Pocket scaler never weaves a field into the frame it shows (the BIOS logo diagonal, 0.5.7-test11/12); slots and the game\'s video timing unchanged (psx_apf_video_wide BOB480)')
+    parser.add_argument('--bob-480-smooth', action='store_true', help='With --bob-480: the repeated line of each 480i source line period is the average of the lines above and below it (still UI no longer jumps a line between fields); no extra block RAM: the line buffer is read two pixels wide (psx_apf_video_wide BOB_SMOOTH)')
+    parser.add_argument('--deinterlace-setting', action='store_true', help='With --bob-480: Core Settings "Deinterlacing" list, Bob (default: the --bob-480 output) / Weave (the 480i frame word, as a build without --bob-480), bridge 0x50000084; switches at the next VS (psx_apf_video_wide BOB_SET; package --deinterlace-setting)')
+    parser.add_argument('--bob-480-steady', action='store_true', help='With --bob-480, instead of --bob-480-smooth: both 480i fields are resampled onto the same output lines (each line a 3:1 mix of the two nearest lines of its field), so still pictures barely move between fields; a little softer (psx_apf_video_wide BOB_SMOOTH=2)')
     parser.add_argument('--pal-shape', action='store_true', help='With --weave-576 --fill-center: PAL Fill window 256 lines (640x512 slot), and in Fit a PAL picture of up to 240 lines cropped to 240 in the NTSC slots, a taller one centred (up 4 / down 16 lines) (psx_apf_video_wide PAL_SHAPE; package --pal-shape)')
     parser.add_argument('--wide-blend', action='store_true', help='With --weave-576: slot 2 is 800x240 4:3; 256-wide lines, and 368-wide ones when Core Settings "Wide Pixels" is Even (bridge 0x50000064), go out 800 wide with sharp-bilinear blending, so every pixel shows the same width at exact 4:3 (psx_apf_video_wide BLEND; package --wide-blend)')
     parser.add_argument('--fill-blend-panel', action='store_true', help='With --weave-576: Fill stays 640 wide and every line is blended in panel columns (the Pocket draws 640 -> 1600 as 2,3,2,3 panel pixels), so every pixel covers the same width; Core Settings "Fill Phase" A/B (bridge 0x50000068) picks the Pocket\'s 2/3 phase (psx_apf_video_wide FILL_BLEND 2; package --fill-blend-panel)')
@@ -304,7 +355,7 @@ def main():
     parser.add_argument('--psram-single', action='store_true', help='With --psram-main: chip 0 alone (bring-up fallback; cram1 has not been proven in burst mode)')
     parser.add_argument('--cd-sector-pack', action='store_true', help='Reset-only builds: cd_top sector buffers at 640 words each, 20 M10K instead of 32 (scripts/prepare_cd_sector_pack.py)')
     parser.add_argument('--memctrl-lean', action='store_true', help='Reset-only builds: memctrl with its readback-only bits in falling-edge block RAM (rtl/pocket/memctrl_lean.vhd; make test-memctrl-lean)')
-    parser.add_argument('--cd-buffers', type=int, choices=(2, 4, 8), default=2, help='psx_cd_stream sector buffers (NBUF): NBUF-1 sectors prefetched ahead of the drive, to ride out slow SD reads')
+    parser.add_argument('--cd-buffers', type=int, choices=(2, 3, 4, 8), default=2, help='psx_cd_stream sector buffers (NBUF): NBUF-1 sectors prefetched ahead of the drive, to ride out slow SD reads')
     parser.add_argument('--cd-xa-ring-norw', action='store_true', help='cd_xa ring buffers without read-during-write pass-through logic: written only in RESAMPLE_CLEAR/WRITERING, read only in RESAMPLE_READRING')
     parser.add_argument('--spu-cd-queue', action='store_true', help='SPU mixes and captures the CD/XA sample of the tick it is processing, even when it runs late (scripts/prepare_spu_cd_queue.py; identical when on time; FMV crackle)')
     parser.add_argument('--measure-ablate', action='append', default=[], choices=('spu-reverb',), help='MEASUREMENT ONLY, breaks the core: remove a block to measure its fitted size (spu-reverb: the reverb engine is never entered). Writes ABLATED, which package_pocket_early.py refuses')
@@ -320,7 +371,8 @@ def main():
     parser.add_argument('--memorymux-fifo-ram', choices=('BYPASS', 'CLK2X'), help='Clean-room memorymux write FIFO in M10K, cycle-identical to MiSTer, no CPU change (scripts/prepare_memorymux_fifo_ram.py); replaces --memorymux-m10k')
     parser.add_argument('--vram-ctrl', choices=('sotn', 'clean'), default='clean', help="With --sotn-memory: the MIT clean-room rtl/memory/psx_vram_psram.sv (default; parks the PSRAMs in their power-on mode while the core is held in reset) or pocket_sotn's vram_psram.vhd (sotn, 0.5.2 and older)")
     parser.add_argument('--vram-full-rate', action='store_true', help='With --sotn-memory --vram-ctrl clean: PSRAM VRAM chip clock at 67.7 MHz instead of 33.9 MHz (psx_vram_psram FULL_RATE, latency code 5): a fourth CPU PLL output at --vram-phase drives the chip clocks through a DDIO output; about twice the VRAM bandwidth (docs/pocket-vram-full-rate.md)')
-    parser.add_argument('--vram-phase', type=int, default=10047, help='With --vram-full-rate: chip clock phase after clk2x in ps; keep it a multiple of the CPU PLL phase step (VCO 74.25 MHz x 1051/128, step 205.03 ps; 10047 = 49 steps), or Quartus re-solves the PLL and every CPU clock moves (+130 ppm at 10000)')
+    parser.add_argument('--vram-x3', action='store_true', help='With --vram-full-rate: PSRAM VRAM controller on clk3x and chip clock at 101.6 MHz (latency code 6, rated to 108 MHz), behind rtl/memory/psx_vram_x3.sv (2:3 related-clock bridge to the GPU and card slot): about 1.5x the VRAM bandwidth (docs/pocket-vram-x3.md). --vram-phase is then the chip clock phase after clk3x (default 4716 = 23 steps)')
+    parser.add_argument('--vram-phase', type=int, default=None, help='With --vram-full-rate: chip clock phase after clk2x in ps; keep it a multiple of the CPU PLL phase step (VCO 74.25 MHz x 1051/128, step 205.03 ps; 10047 = 49 steps), or Quartus re-solves the PLL and every CPU clock moves (+130 ppm at 10000); default 10047 (49 steps), 4716 (23 steps) with --vram-x3')
     parser.add_argument('--memcard-ctrl', choices=('sotn', 'clean'), help="With --memcard-slot: the MIT clean-room rtl/pocket/psx_memcard_slot.sv (default with --memcard-format; always formats a card without the MC magic) or pocket_sotn's card slot (default without --memcard-format) or its --memcard-format copy (sotn, 0.5.2 and older)")
     parser.add_argument('--memorymux-m10k', action='store_true', help='Opt-in pinned SOTN falling-edge M10K write FIFO plus short CPU write-request path (scripts/prepare_memorymux_m10k.py)')
     parser.add_argument('--host-config-cdc', action='store_true', help='Coherent region/BIOS-region bridge; replace inherited known family hold cuts with scoped constraints')
@@ -350,7 +402,9 @@ def main():
     parser.add_argument('--pad2', action='store_true', help='With --dualshock --pad-combos: player 2 is dock controller 2, a DualShock with its own buttons and sticks, connected while the Pocket reports a controller 2 (scripts/prepare_pocket_pad2.py; the package\'s default input.json entry covers every player)')
     parser.add_argument('--analogizer', action='store_true', help='Analogizer on the cartridge port: 15 kHz RGBS/RGsB/YPbPr from the GPU timing and SNAC for a real PlayStation controller; Core Settings Analogizer Video (0x50000078) and Analogizer SNAC (0x5000007C), both off by default (scripts/prepare_pocket_analogizer.py; package --analogizer)')
     parser.add_argument('--pad-table', action='store_true', help='With --dualshock: the DualShock protocol decoding in one M10K ROM (rtl/pocket/joypad_pad_table.vhd, lockstep-equal to joypad_pad_dualshock under the SIO timing; make test-joypad-pad-table), about half the pad logic')
+    parser.add_argument('--turbo-setting', action='store_true', help='Core setting "Turbo" Off (default) / On (bridge 0x50000080): On drives psx_top TURBO_MEM and TURBO_COMP from the setting (MiSTer turbo without the GTE part); Off is the PS1 timing (scripts/prepare_turbo_setting.py; package --turbo-setting)')
     parser.add_argument('--analog-setting', action='store_true', help='With --dualshock: pad 1 is always a DualShock and the bridge 0x50000040 setting becomes Digital (default) / Analog, switched at run time like the Analog button (joypad_pad_dualshock ANALOG_LEVEL; package --analog-setting)')
+    parser.add_argument('--digital-hold', action='store_true', help='With --analog-setting: while the setting is Digital, a game\'s 0x44 request for analog is not applied (joypad_pad DIGITAL_HOLD; Parasite Eve USA)')
     parser.add_argument('--cheats', action='store_true', help='With --cue-mount --spu-cache-slim: GameShark cheats from a game JSON\'s slot 98, applied by the cue reader\'s firmware once per frame through a main RAM port on SDRAM ch3 (psx_cue_mount CHEATS, psx_spu_ch3_cache CHEAT); Cheats setting at bridge 0x50000054 (package --cheats)')
     parser.add_argument('--true-color', action='store_true', help='Core Settings "True Color" checkbox (bridge 0x50000058, off by default): on sets MiSTer\'s render24, so the GPU also keeps the low 3 bits of each colour in a second VRAM plane at 0x400000 and the picture shows 24-bit colour (package --true-color)')
     parser.add_argument('--dither-setting', action='store_true', help='Core Settings "Dithering" checkbox (bridge 0x50000050, on by default): off sets the GPU\'s ditherOff (package --dither-setting)')
@@ -1147,13 +1201,16 @@ def main():
             # a bounded flight time but no same-edge hold relation.
             card = '*|psx_memcard_slot:memcard_slot|'
             vram = '*|psx_vram_psram:vram|*' if args.vram_ctrl == 'clean' else '*|vram_psram:vram|*'
+            if args.vram_x3: vram += ' *|psx_vram_x3:vram_x3|*'   # the bridge's clk2x aux registers take the bundle
             # Only the clk2x-side destinations: same-domain clk_74a paths keep
             # their ordinary setup/hold checks.
             # Every clk2x register of the slot that reads the held request
             # words (they are used only two synchroniser edges after the
             # toggle, or while the request is still outstanding).
-            dest_2x = ' '.join([card + r for r in ('aux_req', 'busy', 'checked', 'fmt_active', 'fmt_idx[*]', 'own',
-                                                   'ready_seen', 'req_seen_2x', 'take_tgl_2x', 'w0_magic', 'w0_seen')] + [vram])
+            card_2x = ' '.join(card + r for r in ('aux_req', 'busy', 'checked', 'fmt_active', 'fmt_idx[*]', 'own',
+                                                  'ready_seen', 'req_seen_2x', 'take_tgl_2x', 'w0_magic', 'w0_seen'))
+            dest_2x = card_2x + ' ' + vram
+            x3_aux = ' '.join('*|psx_vram_x3:vram_x3|' + r for r in ('c_aux_we', 'c_aux_addr[*]', 'c_aux_din[*]'))
             bundle_74 = ' '.join(card + r for r in ('req_we_74', 'req_addr_74[*]', 'req_data_74[*]', 'ready_tgl_74*'))
             sdc.write_text(sdc.read_text() + '\n# psx_memcard_slot: synchroniser first stages and held request/response words.\n'
                 'set_false_path -to [get_registers {' + ' '.join(card + r for r in
@@ -1166,7 +1223,19 @@ def main():
                 f'set_max_delay 13 -from [get_registers {{{vram}}}] -to [get_registers {{{card}bridge_rd_data[*]}}]\n'
                 f'set_min_delay -13 -from [get_registers {{{vram}}}] -to [get_registers {{{card}bridge_rd_data[*]}}]\n'
                 # load_done is a clk_74a level synchronised by s2x_ready.
-                )
+                + (
+                # --vram-x3: aux_dout is a clk3x register; the format engine's
+                # clk2x registers read it only in the aux_done clock, which
+                # comes at least one clk3x plus two clk2x (39 ns) after the
+                # controller loaded it, and it is held until the next aux read.
+                f'set_max_delay 13 -from [get_registers {{*|psx_vram_psram:vram|aux_dout[*]}}] -to [get_registers {{{card_2x}}}]\n'
+                f'set_min_delay -13 -from [get_registers {{*|psx_vram_psram:vram|aux_dout[*]}}] -to [get_registers {{{card_2x}}}]\n'
+                # The other way, the bridge's clk3x c_aux_* copy the held
+                # aux_we/addr/din two clk3x edges after the request toggle,
+                # which comes a clk2x after they settled (>= 24 ns).
+                f'set_max_delay 13 -from [get_registers {{{card}*}}] -to [get_registers {{{x3_aux}}}]\n'
+                f'set_min_delay -13 -from [get_registers {{{card}*}}] -to [get_registers {{{x3_aux}}}]\n'
+                if args.vram_x3 else ''))
         else:
           sdc.write_text(sdc.read_text() + ('\n# pocket_memcard: toggle synchronizers and held request/response words.\n'
             'set_false_path -to [get_registers {*|pocket_memcard:*|rd_tog_s[0] *|pocket_memcard:*|rd_ack_s[0] *|mc_idle74[0]}]\n'
@@ -1181,7 +1250,10 @@ def main():
     if args.vram_full_rate:
         if not args.sotn_memory or args.vram_ctrl != 'clean': parser.error('--vram-full-rate needs --sotn-memory with --vram-ctrl clean')
         if args.sdram_clock_ps is not None or args.psram_main: parser.error('--vram-full-rate uses the fourth CPU PLL output (not with --sdram-clock-ps/--psram-main)')
-        if not 0 <= args.vram_phase < 14763: parser.error('--vram-phase must be within one clk2x period (0-14762 ps)')
+        if args.vram_x3 and args.vram_ctrl != 'clean': parser.error('--vram-x3 needs the clean VRAM controller')
+        if args.vram_phase is None: args.vram_phase = 4716 if args.vram_x3 else 10047
+        period_ps = 9842 if args.vram_x3 else 14763
+        if not 0 <= args.vram_phase < period_ps: parser.error(f'--vram-phase must be within one controller clock period (0-{period_ps - 1} ps)')
         pll_old = '''.output_clock_frequency2("101.606400 MHz"), .phase_shift2("0 ps"), .duty_cycle2(50)) cpu_pll ('''
         count_old = '.number_of_clocks(3), .pll_type("General"), .pll_subtype("General"),\n        .output_clock_frequency0("33.868800 MHz")'
         inst = '    psx_vram_psram vram ('
@@ -1189,10 +1261,10 @@ def main():
         for o in (pll_old, count_old, '.outclk({clk3x,clk2x,clk1x}));', '    wire cpu_locked;', inst, pins, '.cram1_clk(cram1_clk),'):
             if text.count(o) != 1: parser.error('--vram-full-rate anchor not found: ' + o[:60])
         text = text.replace(pll_old, f'''.output_clock_frequency2("101.606400 MHz"), .phase_shift2("0 ps"), .duty_cycle2(50),
-        .output_clock_frequency3("67.737600 MHz"), .phase_shift3("{args.vram_phase} ps"), .duty_cycle3(50)) cpu_pll (''')
+        .output_clock_frequency3("{'101.606400' if args.vram_x3 else '67.737600'} MHz"), .phase_shift3("{args.vram_phase} ps"), .duty_cycle3(50)) cpu_pll (''')
         text = text.replace(count_old, count_old.replace('(3)', '(4)'))
         text = text.replace('.outclk({clk3x,clk2x,clk1x}));', '.outclk({vram_chip_clk,clk3x,clk2x,clk1x}));')
-        text = text.replace('    wire cpu_locked;', '    wire cpu_locked;\n    wire vram_chip_clk;   // --vram-full-rate: PSRAM chip clock source, clk2x shifted', 1)
+        text = text.replace('    wire cpu_locked;', '    wire cpu_locked;\n    wire vram_chip_clk;   // --vram-full-rate: PSRAM chip clock source, ' + ('clk3x' if args.vram_x3 else 'clk2x') + ' shifted', 1)
         text = text.replace(pins, '.cram0_clk(cram0_clk_en),').replace('.cram1_clk(cram1_clk),', '.cram1_clk(cram1_clk_en),')
         text = text.replace(inst, '''    // --vram-full-rate: the chip clocks are vram_chip_clk gated by the
     // controller's enables (high half from the DDIO, low half 0).
@@ -1202,7 +1274,15 @@ def main():
         vram_clk_ddio (.datain_h({cram1_clk_en,cram0_clk_en}), .datain_l(2'b00), .outclock(vram_chip_clk),
         .dataout({cram1_clk,cram0_clk}), .aclr(1'b0), .aset(1'b0), .oe(1'b1), .outclocken(1'b1), .sclr(1'b0), .sset(1'b0));
     psx_vram_psram #(.FULL_RATE(1'b1), .LATENCY(5)) vram (''')
+        if args.vram_x3:
+            text = vram_x3_top(text, parser)
         qsf = out/'apf_top.qsf'
+        if args.vram_x3:
+            # the bridge, and the per-pin DQ output enables kept apart for the IOEs
+            qsf.write_text(qsf.read_text()
+                + f'set_global_assignment -name SYSTEMVERILOG_FILE "{Path(__file__).resolve().parents[1]}/rtl/memory/psx_vram_x3.sv" -library work\n'
+                + ''.join(f'set_instance_assignment -name PRESERVE_REGISTER ON -to "core_top:ic|psx_vram_psram:vram|o_oe{i}[{b}]"\n'
+                          for i in (0, 1) for b in range(16)))
         qsf.write_text(qsf.read_text() + ''.join(
             f'set_instance_assignment -name FAST_INPUT_REGISTER ON -to {c}_dq[{i}]\n' for c in ('cram0', 'cram1') for i in range(16))
             # Pin registers in the IOEs (as the controller header asks): the
@@ -1215,15 +1295,37 @@ def main():
         # after the next one (tKOH). A word is registered in dq_r at the second
         # clk2x edge after the edge that launched it (setup multicycle 2).
         lines = ['set vram_chip {ic|cpu_pll|general[3].gpll~PLL_OUTPUT_COUNTER|divclk}']
+        # --vram-x3 (101.6 MHz): the datasheet's 133 MHz column (this part is
+        # rated "up to 133 MHz"): setup 2 / hold 1.5 ns, data valid 5.5 ns
+        # after a chip edge, plus 0.5 ns (out) and 1 ns (back) of board.
+        o_max, o_min, i_max = (2.5, -1.5, 6.5) if args.vram_x3 else (3.0, -2.0, 9.0)
         for c in ('cram0', 'cram1'):
             outs = f'{{{c}_a[*] {c}_dq[*] {c}_adv_n {c}_cre {c}_ce0_n {c}_ce1_n {c}_oe_n {c}_we_n {c}_ub_n {c}_lb_n}}'
             lines += [f'create_generated_clock -name {c}_clk_out -source [get_pins $vram_chip] [get_ports {{{c}_clk}}]',
-                      f'set_output_delay -clock {c}_clk_out -max 3.0 -add_delay [get_ports {outs}]',
-                      f'set_output_delay -clock {c}_clk_out -min -2.0 -add_delay [get_ports {outs}]',
-                      f'set_input_delay -clock {c}_clk_out -max 9.0 -add_delay [get_ports {{{c}_dq[*]}}]',
+                      f'set_output_delay -clock {c}_clk_out -max {o_max} -add_delay [get_ports {outs}]',
+                      f'set_output_delay -clock {c}_clk_out -min {o_min} -add_delay [get_ports {outs}]',
+                      f'set_input_delay -clock {c}_clk_out -max {i_max} -add_delay [get_ports {{{c}_dq[*]}}]',
                       f'set_input_delay -clock {c}_clk_out -min 2.0 -add_delay [get_ports {{{c}_dq[*]}}]',
                       f'set_multicycle_path -setup 2 -from [get_clocks {c}_clk_out] -to [get_registers {{*|psx_vram_psram:vram|dq_r[*]}}]',
                       f'set_multicycle_path -hold 1 -from [get_clocks {c}_clk_out] -to [get_registers {{*|psx_vram_psram:vram|dq_r[*]}}]']
+        if args.vram_x3:
+            # The bridge and the faster controller crowd clk3x, and the main
+            # RAM controller's pin and row-state registers (already ~0.2 ns
+            # from failing without them) lose 0.05-0.5 ns of placement. The
+            # fitter alone sees them 0.4 ns tighter; STA keeps the real period.
+            sd = '*|psx_sdram_ctrl:controller|'
+            to = ' '.join(sd + r for r in ('a[*]', 'ba[*]', 'cmd[*]', 'ncs', 'st1[*]', 'st2[*]', 'st3[*]', 'stf[*]'))
+            # The bridge's clk3x -> clk2x returns (read word, read/aux/card
+            # toggles) meet a 0 ns hold relationship on the edges the two
+            # clocks share; on a full chip the fitter has left rhold ->
+            # ddr_dout 0.11 ns short (rel057d). The fitter alone gets a
+            # 0.3 ns hold target there; STA keeps the real relationship.
+            x3 = '*|psx_vram_x3:vram_x3|'
+            ret_from = ' '.join(x3 + r for r in ('rhold[*]', 'rtog', 'd_tog', 'w_tog'))
+            ret_to = ' '.join(x3 + r for r in ('ddr_dout[*]', 'rtog_s', 'd_tog_s', 'w_tog_s'))
+            lines += ['if {$::TimeQuestInfo(nameofexecutable) eq "quartus_fit"} {',
+                      f'    set_max_delay 9.44 -to [get_registers {{{to}}}]',
+                      f'    set_min_delay 0.3 -from [get_registers {{{ret_from}}}] -to [get_registers {{{ret_to}}}]', '}']
         sdc = out/'pocket.sdc'
         sdc.write_text(sdc.read_text() + '\n# --vram-full-rate PSRAM VRAM pins\n' + '\n'.join(lines) + '\n')
     if args.static_host_cuts:
@@ -1576,6 +1678,14 @@ LOG_DECL
         parser.error('--pal-bob needs --wide-lines --aspect-setting --pal288 --crop-lines, without --height-slots')
     if args.height_slots and (not args.fill_detect or args.fit_368 or args.dbl_320):
         parser.error('--height-slots needs --fill-detect, without --fit-368 or --dbl-320')
+    if args.bob_480_smooth and not args.bob_480:
+        parser.error('--bob-480-smooth needs --bob-480')
+    if args.bob_480_steady and (not args.bob_480 or args.bob_480_smooth):
+        parser.error('--bob-480-steady needs --bob-480 and replaces --bob-480-smooth')
+    if args.deinterlace_setting and not args.bob_480:
+        parser.error('--deinterlace-setting needs --bob-480')
+    if args.bob_480 and not (args.weave_576 and args.interlace_feature):
+        parser.error('--bob-480 needs --weave-576 --interlace-feature')
     if args.overscan_setting and not args.wide_lines:
         parser.error('--overscan-setting needs --wide-lines')
     if args.vs_on_hs and (args.vs_at_vblank or not args.scaler_slots):
@@ -1660,7 +1770,11 @@ LOG_DECL
         if len(pads) != 1: parser.error('--analog-setting: joypad_pad_dualshock.vhd not in project')
         pad_text = Path(pads[0]).read_text()
         if pad_text.count('ANALOG_LEVEL : boolean := false') != 1: parser.error('--analog-setting: ANALOG_LEVEL generic not found')
-        (out/'joypad_pad_dualshock_analog.vhd').write_text(pad_text.replace('ANALOG_LEVEL : boolean := false', 'ANALOG_LEVEL : boolean := true'))
+        pad_text = pad_text.replace('ANALOG_LEVEL : boolean := false', 'ANALOG_LEVEL : boolean := true')
+        if args.digital_hold:
+            if pad_text.count('DIGITAL_HOLD : boolean := false') != 1: parser.error('--digital-hold: DIGITAL_HOLD generic not found')
+            pad_text = pad_text.replace('DIGITAL_HOLD : boolean := false', 'DIGITAL_HOLD : boolean := true')
+        (out/'joypad_pad_dualshock_analog.vhd').write_text(pad_text)
         qsf_path.write_text(qsf_text.replace(f'"{pads[0]}"', f'"{out/"joypad_pad_dualshock_analog.vhd"}"'))
     if args.pad_table:
         # The same pad with its command decoding in a ROM; it keeps the
@@ -1672,7 +1786,7 @@ LOG_DECL
         if len(pads) != 1: parser.error('--pad-table: joypad_pad_dualshock.vhd not in project')
         pad_text = Path(pads[0]).read_text()
         table_text = (root/'rtl/pocket/joypad_pad_table.vhd').read_text()
-        for generic in ('STICK_DPAD', 'ANALOG_LEVEL'):
+        for generic in ('STICK_DPAD', 'ANALOG_LEVEL', 'DIGITAL_HOLD'):
             found = re.findall(generic + r' : boolean := (true|false)', pad_text)
             if len(found) != 1 or table_text.count(f'{generic} : boolean := false') != 1:
                 parser.error(f'--pad-table: {generic} generic not found')
@@ -1999,7 +2113,7 @@ LOG_DECL
             if used: parser.error(f'{flag} has no effect with --wide-lines (psx_apf_video_wide)')
         start = text.find('psx_apf_video #('); end = text.find(') apf_video (', start)
         if start < 0 or end < 0 or text.count('psx_apf_video #(') != 1: parser.error('--wide-lines: psx_apf_video instance not found')
-        params = (['.INTERLACE_FEATURE(1)'] if args.interlace_feature else []) + (['.FIELD_INVERT(1)'] if args.field_invert else []) + (['.PAL288(1)'] if args.pal288 else []) + (['.HYBRID(1)'] if args.hybrid_slots else []) + (['.LEAD_LINE(2)' if args.even_lines else '.LEAD_LINE(1)'] if args.lead_line else []) + (['.VS_ON_HS(1)'] if args.vs_on_hs else []) + (['.ASPECT(1)', '.PAL_TIMING(1)'] if args.aspect_setting else []) + (['.CROP_LINES(1)'] if args.crop_lines else []) + (['.VIDEO_PROBE(1)'] if args.video_probe else []) + (['.SLOT368(1)'] if args.fit_368 else []) + (['.DBL320(1)'] if args.dbl_320 else []) + (['.FILL_DETECT(1)'] if args.fill_detect else []) + (['.OVERSCAN_BLANK(1)'] if args.overscan_setting else []) + (['.HEIGHT_SLOTS(1)'] if args.height_slots else []) + (['.PAL_BOB(1)'] if args.pal_bob else []) + (['.LOG(1)'] if args.video_log else []) + (['.FILL_CENTER(1)'] if args.fill_center else []) + (['.EVEN_LINES(1)'] if args.even_lines else []) + (['.WEAVE576(1)'] if args.weave_576 else []) + (['.DOCK_TEST(1)'] if args.dock_test else []) + (['.PAL_SHAPE(1)'] if args.pal_shape else []) + (['.BLEND(1)'] if args.wide_blend else []) + (['.EOL_TWICE(1)'] if args.eol_twice else []) + (['.FILL_BLEND(1)'] if args.fill_blend else []) + (['.PACE(1)'] if args.pace else []) + (['.FILL_BLEND(2)'] if args.fill_blend_panel else [])
+        params = (['.INTERLACE_FEATURE(1)'] if args.interlace_feature else []) + (['.FIELD_INVERT(1)'] if args.field_invert else []) + (['.PAL288(1)'] if args.pal288 else []) + (['.HYBRID(1)'] if args.hybrid_slots else []) + (['.LEAD_LINE(2)' if args.even_lines else '.LEAD_LINE(1)'] if args.lead_line else []) + (['.VS_ON_HS(1)'] if args.vs_on_hs else []) + (['.ASPECT(1)', '.PAL_TIMING(1)'] if args.aspect_setting else []) + (['.CROP_LINES(1)'] if args.crop_lines else []) + (['.VIDEO_PROBE(1)'] if args.video_probe else []) + (['.SLOT368(1)'] if args.fit_368 else []) + (['.DBL320(1)'] if args.dbl_320 else []) + (['.FILL_DETECT(1)'] if args.fill_detect else []) + (['.OVERSCAN_BLANK(1)'] if args.overscan_setting else []) + (['.HEIGHT_SLOTS(1)'] if args.height_slots else []) + (['.PAL_BOB(1)'] if args.pal_bob else []) + (['.LOG(1)'] if args.video_log else []) + (['.FILL_CENTER(1)'] if args.fill_center else []) + (['.EVEN_LINES(1)'] if args.even_lines else []) + (['.WEAVE576(1)'] if args.weave_576 else []) + (['.DOCK_TEST(1)'] if args.dock_test else []) + (['.PAL_SHAPE(1)'] if args.pal_shape else []) + (['.BLEND(1)'] if args.wide_blend else []) + (['.EOL_TWICE(1)'] if args.eol_twice else []) + (['.FILL_BLEND(1)'] if args.fill_blend else []) + (['.PACE(1)'] if args.pace else []) + (['.FILL_BLEND(2)'] if args.fill_blend_panel else []) + (['.BOB480(1)'] if args.bob_480 else []) + (['.BOB_SMOOTH(1)'] if args.bob_480_smooth else []) + (['.BOB_SMOOTH(2)'] if args.bob_480_steady else []) + (['.BOB_SET(1)'] if args.deinterlace_setting else [])
         text = text[:start] + 'psx_apf_video_wide #(' + ', '.join(params or ['.PAL288(0)']) + text[end:]
         if args.video_log:
             if not args.perf_log: parser.error('--video-log needs --perf-log (the log is saved through the perf slot)')
@@ -2051,6 +2165,18 @@ LOG_DECL
     always @(posedge video_rgb_clock) wide_sync<={wide_sync[0],wide_set};
 """ + text[at:]
             text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .wide_even(wide_sync[1]),', 1)
+        if args.deinterlace_setting:
+            # "Deinterlacing" list (interact.json, bridge 0x50000084; Bob until set):
+            # 0 Bob (BOB480), anything else Weave. The video module takes it at VS.
+            if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
+                parser.error('--deinterlace-setting: video setting wiring not found')
+            at = text.index('\n', text.index('wire apf_weave=')) + 1
+            text = text[:at] + """    reg deint_set=1'b0;
+    always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000084) deint_set<=|bridge_wr_data;
+    (* async_reg="true" *) reg [1:0] deint_sync=2'b00;
+    always @(posedge video_rgb_clock) deint_sync<={deint_sync[0],deint_set};
+""" + text[at:]
+            text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .bob_en(!deint_sync[1]),', 1)
         if args.dock_test:
             # "Dock test" list (interact.json, bridge 0x50000060; Normal until set).
             if text.count('.field_swap(apf_swap),') != 1 or text.count('wire apf_weave=') != 1:
@@ -2130,7 +2256,7 @@ LOG_DECL
     if 'psx_apf_video #(' in text or 'psx_apf_video_wide #(' in text:
         extra.append('# The 480i and Screen menu settings cross into the video clock through two-flop synchronizers.\n'
                      'set_false_path -to [get_registers {*|weave_sync[0] *|swap_sync[0] *|video_test_meta[*]'
-                     + (' *|stretch_sync[0]' if args.aspect_setting else '') + (' *|overscan_sync[0]' if args.overscan_setting else '') + (' *|dock_sync0[*]' if args.dock_test else '') + (' *|wide_sync[0]' if args.wide_blend else '') + (' *|phase_sync[0]' if args.fill_blend_panel else '') + '}]\n')
+                     + (' *|stretch_sync[0]' if args.aspect_setting else '') + (' *|overscan_sync[0]' if args.overscan_setting else '') + (' *|dock_sync0[*]' if args.dock_test else '') + (' *|wide_sync[0]' if args.wide_blend else '') + (' *|phase_sync[0]' if args.fill_blend_panel else '') + (' *|deint_sync[0]' if args.deinterlace_setting else '') + '}]\n')
     if args.cd_stream:
         # psx_cd_stream holds every multi-bit value that crosses from before its
         # toggle until the far side answers; the toggles cross through two flops.
@@ -2181,6 +2307,10 @@ LOG_DECL
     if args.dpram_sdp:
         from prepare_dpram_sdp import prepare_project as prepare_sdp
         prepare_sdp(out)
+    if args.turbo_setting:
+        from prepare_turbo_setting import prepare_project as prepare_turbo
+        try: prepare_turbo(out)
+        except ValueError as error: parser.error(str(error))
     # Quartus Lite's fitter is mostly serial; more threads still shave its
     # parallel phases (the generators pin 4). Early builds run 2-3 at a time.
     qsf = out/'apf_top.qsf'

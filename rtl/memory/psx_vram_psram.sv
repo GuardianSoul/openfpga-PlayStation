@@ -82,6 +82,25 @@
 //   asynchronous configuration and parked accesses keep half-rate slots
 //   (every other clk); synchronous configuration runs at full rate.
 //
+// Fast clock (FULL_RATE=1, SLOW_DIV=3): the controller runs on clk3x
+//   (101.6 MHz) with LATENCY 6 (fixed code 6 is rated to 108 MHz) and
+//   CLK_KHZ 101606; psx_vram_x3 carries the DDR and aux ports to clk2x.
+//   Bursts and synchronous configuration use every clk edge as at full
+//   rate; the power-up wait, asynchronous configuration and parked accesses
+//   take one slot per three clks, 29.5 ns, the same slot time as on clk2x.
+//   At 9.84 ns a read word reaches dq_r about two chip periods after the
+//   chip edge that launches it (clock out, tACLK, board and input paths), so
+//   READ_PIPE 1 takes it from dq_r one clk later than at full rate (input
+//   multicycle setup 3 / hold 2 into dq_r).
+//   OUT_REG 1: every pin output (and the chip clock enable) gets one more
+//   register, a plain copy of the pin register one clk later with no enable
+//   or clear, so it can be the pin's IOE output / output-enable register and
+//   the next-state logic only has to reach a core register (at 9.84 ns the
+//   logic plus the route out to the IO column does not fit). DQ output
+//   enable is one such register per pin. All pins move one clk later
+//   together, so a read word reaches dq_r one clk later too and is taken
+//   from it one clk later (as READ_PIPE 1 does); one clk more latency.
+//
 // The top must drive cram*_dq from cram*_dq_out when cram*_dq_oe is high.
 // Pin outputs drive both chips from one register; give the cram pins
 // FAST_OUTPUT_REGISTER / FAST_OUTPUT_ENABLE_REGISTER so the fitter
@@ -97,7 +116,10 @@ module psx_vram_psram #(
     parameter int INIT_US   = 150,    // datasheet power-up time
     parameter int ROW_LOG2  = 6,      // DDR words per segment, log2 (row = 64)
     parameter int SAVE_AUX  = 0,      // aux_addr[20]: the save-state buffer on die 1
-    parameter bit FULL_RATE = 1'b0    // chip clock = clk (see "Full rate" above); cram*_clk is then its enable
+    parameter bit FULL_RATE = 1'b0,   // chip clock = clk (see "Full rate" above); cram*_clk is then its enable
+    parameter int SLOW_DIV  = 2,      // FULL_RATE: clk cycles per slot in the slow states (3 on clk3x, see "Fast clock")
+    parameter int READ_PIPE = 0,      // FULL_RATE: 1 takes each read word from dq_r one clk later (clk3x, see "Fast clock")
+    parameter bit OUT_REG   = 1'b0    // FULL_RATE: one more register stage on every pin output, one DQ enable per pin (clk3x, see "Fast clock")
 )(
     input  wire        clk,
     input  wire        reset,
@@ -128,6 +150,7 @@ module psx_vram_psram #(
     output wire [21:16] cram0_a,
     output wire [15:0] cram0_dq_out,
     output wire        cram0_dq_oe,
+    output wire [15:0] cram0_dq_oe_pin,   // per-pin copies of cram0_dq_oe (OUT_REG: separate registers)
     input  wire [15:0] cram0_dq_in,
     output wire        cram0_clk,
     output wire        cram0_adv_n,
@@ -142,6 +165,7 @@ module psx_vram_psram #(
     output wire [21:16] cram1_a,
     output wire [15:0] cram1_dq_out,
     output wire        cram1_dq_oe,
+    output wire [15:0] cram1_dq_oe_pin,
     input  wire [15:0] cram1_dq_in,
     output wire        cram1_clk,
     output wire        cram1_adv_n,
@@ -157,7 +181,7 @@ module psx_vram_psram #(
 localparam int RD_FIRST   = LATENCY + 1 + READ_ADJ;   // first read sample slot
 localparam int WR_FIRST   = LATENCY + 1 + WRITE_ADJ;  // first write beat slot
 localparam int OE_SLOT    = LATENCY > 2 ? 2 : 1;
-localparam int INIT_SLOTS = INIT_US * CLK_KHZ / 2000 + 16;
+localparam int INIT_SLOTS = INIT_US * CLK_KHZ / (1000 * SLOW_DIV) + 16;
 localparam logic [15:0] BCR_SYNC  = {1'b0, 1'b1, 3'(LATENCY), 1'b1, 1'b0, 1'b1, 2'b00, 2'b01, 1'b1, 3'b111};
 localparam logic [15:0] BCR_ASYNC = 16'h9D1F;         // power-on value
 localparam logic [15:0] RCR_ALL   = 16'h0010;         // power-on value: full array refresh
@@ -174,17 +198,39 @@ reg  [1:0]  p_ce_n = 2'b11;                           // {die 1, die 0}
 reg  [3:0]  p_bm_n = 4'hF;                            // {cram1 ub, lb, cram0 ub, lb}
 reg         p_clk = 1'b0;
 
-assign cram0_a = p_a;             assign cram1_a = p_a;
-assign cram0_dq_out = p_dq0;      assign cram1_dq_out = p_dq1;
-assign cram0_dq_oe = p_oe;        assign cram1_dq_oe = p_oe;
-assign cram0_clk = p_clk;         assign cram1_clk = p_clk;
-assign cram0_adv_n = p_adv_n;     assign cram1_adv_n = p_adv_n;
-assign cram0_cre = p_cre;         assign cram1_cre = p_cre;
-assign cram0_ce0_n = p_ce_n[0];   assign cram1_ce0_n = p_ce_n[0];
-assign cram0_ce1_n = p_ce_n[1];   assign cram1_ce1_n = p_ce_n[1];
-assign cram0_oe_n = p_oe_n;       assign cram1_oe_n = p_oe_n;
-assign cram0_we_n = p_we_n;       assign cram1_we_n = p_we_n;
-assign {cram1_ub_n, cram1_lb_n, cram0_ub_n, cram0_lb_n} = p_bm_n;
+wire [5:0]  q_a    = OUT_REG ? o_a : p_a;
+wire [15:0] q_dq0  = OUT_REG ? o_dq0 : p_dq0, q_dq1 = OUT_REG ? o_dq1 : p_dq1;
+wire        q_adv_n = OUT_REG ? o_adv_n : p_adv_n, q_cre = OUT_REG ? o_cre : p_cre;
+wire        q_oe_n = OUT_REG ? o_oe_n : p_oe_n, q_we_n = OUT_REG ? o_we_n : p_we_n, q_clk = OUT_REG ? o_clk : p_clk;
+wire [1:0]  q_ce_n = OUT_REG ? o_ce_n : p_ce_n;
+wire [3:0]  q_bm_n = OUT_REG ? o_bm_n : p_bm_n;
+assign cram0_a = q_a;             assign cram1_a = q_a;
+assign cram0_dq_out = q_dq0;      assign cram1_dq_out = q_dq1;
+assign cram0_dq_oe = OUT_REG ? o_oe0[0] : p_oe;   assign cram1_dq_oe = OUT_REG ? o_oe1[0] : p_oe;
+// OUT_REG: the output stage. The DQ enable is one register per pin, so each
+// can be the pin's IOE output-enable register (one shared register is routed
+// through the core to 32 pins: 3.9 ns, too slow at 101.6 MHz); the top keeps
+// them apart (PRESERVE_REGISTER) and puts them in the IOEs.
+reg  [5:0]  o_a = 6'd0;
+reg  [15:0] o_dq0 = 16'd0, o_dq1 = 16'd0, o_oe0 = 16'd0, o_oe1 = 16'd0;
+reg         o_adv_n = 1'b1, o_cre = 1'b0, o_oe_n = 1'b1, o_we_n = 1'b1, o_clk = 1'b0;
+reg  [1:0]  o_ce_n = 2'b11;
+reg  [3:0]  o_bm_n = 4'hF;
+always @(posedge clk) begin
+    o_a <= p_a; o_dq0 <= p_dq0; o_dq1 <= p_dq1; o_oe0 <= {16{p_oe}}; o_oe1 <= {16{p_oe}};
+    o_adv_n <= p_adv_n; o_cre <= p_cre; o_oe_n <= p_oe_n; o_we_n <= p_we_n; o_clk <= p_clk;
+    o_ce_n <= p_ce_n; o_bm_n <= p_bm_n;
+end
+assign cram0_dq_oe_pin = OUT_REG ? o_oe0 : {16{p_oe}};
+assign cram1_dq_oe_pin = OUT_REG ? o_oe1 : {16{p_oe}};
+assign cram0_clk = q_clk;         assign cram1_clk = q_clk;
+assign cram0_adv_n = q_adv_n;     assign cram1_adv_n = q_adv_n;
+assign cram0_cre = q_cre;         assign cram1_cre = q_cre;
+assign cram0_ce0_n = q_ce_n[0];   assign cram1_ce0_n = q_ce_n[0];
+assign cram0_ce1_n = q_ce_n[1];   assign cram1_ce1_n = q_ce_n[1];
+assign cram0_oe_n = q_oe_n;       assign cram1_oe_n = q_oe_n;
+assign cram0_we_n = q_we_n;       assign cram1_we_n = q_we_n;
+assign {cram1_ub_n, cram1_lb_n, cram0_ub_n, cram0_lb_n} = q_bm_n;
 
 // ---- read capture: beat 0 into lo_q, beat 1 into hi_q (straight from the pins).
 // While no read runs, {hi_q, lo_q} hold the write data of the request buffer.
@@ -192,10 +238,18 @@ wire [31:0] dq_in = {cram1_dq_in, cram0_dq_in};
 reg  [31:0] lo_q = 32'd0, hi_q = 32'd0;
 reg  [31:0] dq_r = 32'd0;          // FULL_RATE: input register
 reg         cap = 1'b0, cap_hi = 1'b0;   // FULL_RATE: dq_r holds the word marked by smp
+reg         cap2 = 1'b0, cap2_hi = 1'b0; // READ_PIPE or OUT_REG: one clk later
+reg         cap3 = 1'b0, cap3_hi = 1'b0; // both: two clks later
+localparam int CAP_DLY = (READ_PIPE != 0 ? 1 : 0) + (OUT_REG ? 1 : 0);
+wire        cap_use = CAP_DLY == 2 ? cap3 : CAP_DLY == 1 ? cap2 : cap;
+wire        cap_use_hi = CAP_DLY == 2 ? cap3_hi : CAP_DLY == 1 ? cap2_hi : cap_hi;
+wire        rd_pipe = smp || cap || (CAP_DLY >= 1 && cap2) || (CAP_DLY >= 2 && cap3);   // read words still in the input pipeline
 assign ddr_dout = {hi_q, lo_q};
 
 // ---- control
 reg         ph = 1'b0;            // 1: the coming edge is an F edge
+reg  [1:0]  sdiv = 2'd0;          // SLOW_DIV 3: slot counter of the slow states
+wire        slow_f = SLOW_DIV == 2 ? ph : sdiv == 2'(SLOW_DIV - 1);
 reg  [2:0]  st = ST_INIT;
 reg  [12:0] tmr = 13'd0;          // power-up wait / slot within a segment or config write
 reg  [1:0]  cop = 2'd0;           // config write: {die, BCR(1)/RCR(0)}
@@ -222,10 +276,10 @@ reg  [7:0]  b_be = 8'd0;
 
 // ddr_busy from registers only: low whenever the buffer is free and no read
 // owns the capture registers, in any clk cycle
-wire rd_on = (act_busy && !act_we) || (!cur_we && (st == ST_LAT || st == ST_DATA)) || (FULL_RATE && (smp || cap));
+wire rd_on = (act_busy && !act_we) || (!cur_we && (st == ST_LAT || st == ST_DATA)) || (FULL_RATE && rd_pipe);
 // FULL_RATE: these states use every clk edge, the others every other one
 wire fast_st = st == ST_IDLE || st == ST_LAT || st == ST_DATA || st == ST_SCFG;
-wire f_edge = FULL_RATE ? (ph || fast_st) : ph;
+wire f_edge = FULL_RATE ? (slow_f || fast_st) : ph;
 assign ddr_busy = b_v || rd_on || rst_pend || park_s || aux_turn ||
                   !(st == ST_IDLE || st == ST_LAT || st == ST_DATA);
 
@@ -297,6 +351,7 @@ endtask
 
 always @(posedge clk) begin
     ph <= !ph;
+    if (SLOW_DIV != 2) sdiv <= sdiv == 2'(SLOW_DIV - 1) ? 2'd0 : sdiv + 2'd1;
     rst_pend <= rst_pend || reset;
     park_m <= park === 1'b1;
     park_s <= park_m;
@@ -422,7 +477,7 @@ always @(posedge clk) begin
         ST_IDLE: begin
             if (act_busy && rst_pend && !act_we) act_busy <= 1'b0;   // drop reads under reset
             else if (!act_busy && b_v && rst_pend && !b_we) b_v <= 1'b0;
-            else if (FULL_RATE && (smp || cap)) ;                   // a read's last words are still in the input pipeline
+            else if (FULL_RATE && rd_pipe) ;                   // a read's last words are still in the input pipeline
             // one launch site (sel_* picks the source); a waiting aux access
             // also goes before parking
             else if (aux_want && !rst_pend || act_busy || b_v || take_bus) launch();
@@ -485,12 +540,14 @@ always @(posedge clk) begin
         // input register, then the word smp marked one clk earlier
         dq_r <= dq_in;
         cap <= smp; cap_hi <= smp_hi;
+        cap2 <= cap; cap2_hi <= cap_hi;
+        cap3 <= cap2; cap3_hi <= cap2_hi;
         p_clk <= clk_run;
-        if (cap) begin
+        if (cap_use) begin
             if (seg_aux) begin
                 if (!rst_pend && !reset) begin aux_dout <= dq_r; aux_done <= 1'b1; end
                 aux_rd_done <= 1'b1;
-            end else if (!cap_hi) lo_q <= dq_r;
+            end else if (!cap_use_hi) lo_q <= dq_r;
             else begin
                 hi_q <= dq_r;
                 if (!rst_pend && !reset) ddr_dout_ready <= 1'b1;

@@ -1,6 +1,6 @@
-.PHONY: test test-python test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache preflight resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte inspect-assets diagnose-bios
+.PHONY: test test-python test-rtl test-references test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte
 
-test: test-python test-ghdl-signed-shifts test-rtl test-references test-laxer test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-system-encodings test-sim-memory-models test-disc-host test-checkpoint-host test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-digital test-joypad-dualshock test-joypad-dualshock-lean test-joypad-pad-table test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-gpu-sort-reread test-gpu-recip test-gpu-poly-stepadd test-gpu-poly-diffmux test-vram-psram test-memcard-slot test-memorymux-fifo-ram
+test: test-python test-rtl test-references test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-sim-memory-models test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-gpu-mul-retime test-gpu-no-watchdog test-gpu-area-reg test-spu-static-readback test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-dualshock test-joypad-dualshock-lean test-joypad-pad-table test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-gpu-sort-reread test-gpu-recip test-gpu-poly-stepadd test-gpu-poly-diffmux test-vram-psram test-memcard-slot test-memorymux-fifo-ram test-sdram-ref-owed
 
 .PHONY: test-sdram-selector test-sdram-ctrl release
 .PHONY: test-native-sdram-spec check-native-sdram-spec
@@ -36,6 +36,10 @@ test-sdram-ctrl:
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 2 --compare-cl2
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 3 --spu-first
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 300 --dclk 0.5 --tret 0.5 --expect-fail
+
+.PHONY: test-sdram-ref-owed
+test-sdram-ref-owed:
+	python3 scripts/run_sdram_ref_owed.py
 	python3 scripts/run_sdram_ctrl.py --cas 2 --ops 300 --dclk 5 --tret 5 --no-reference --expect-fail
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 4 --open-row
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 6 --open-row --spu-first
@@ -62,17 +66,9 @@ test-video-config-cdc:
 test-video-config-pipeline:
 	python3 scripts/run_video_config_pipeline.py
 
-.PHONY: test-config-cdc test-config-cdc-system
+.PHONY: test-config-cdc
 test-config-cdc:
 	python3 scripts/run_config_cdc.py
-
-.PHONY: test-status-cdc
-test: test-status-cdc
-test-status-cdc:
-	python3 scripts/run_status_cdc.py
-
-test-config-cdc-system:
-	python3 scripts/run_shared_sdram_system.py --reset-only --release-init --config-cdc
 
 .PHONY: test-gpu-borrowed
 test-gpu-borrowed:
@@ -83,10 +79,6 @@ test-gpu-borrowed:
 test-gpu-coordinates:
 	python3 scripts/run_gpu_line_share.py --coordinates
 
-.PHONY: test-ghdl-signed-shifts test-joypad-digital
-
-test-joypad-digital:
-	python3 scripts/run_joypad_digital_check.py
 
 .PHONY: test-psx-apf-video
 test-psx-apf-video:
@@ -98,20 +90,11 @@ test-apf-blank-cdc:
 	python3 scripts/run_apf_blank_cdc.py
 
 
-test-ghdl-signed-shifts:
-	python3 scripts/run_ghdl_shifts.py
+.PHONY: test-system test-system-fast test-sim-memory-models test-gpu-primitives test-gpu-line-share test-system-memory
 
-.PHONY: test-system-encodings test-system test-system-fast test-sim-memory-models test-gpu-primitives test-gpu-line-share test-system-memory
+.PHONY: test-cd-controller test-spu-cd-mix
 
-.PHONY: test-disc-host test-cd-controller test-spu-cd-mix
-
-test-disc-host:
-	python3 scripts/run_disc_host.py
-
-.PHONY: test-checkpoint-host test-system-checkpoint
-
-test-checkpoint-host: test-disc-host
-	python3 scripts/run_checkpoint_host.py
+.PHONY: test-system-checkpoint
 
 test-system-checkpoint:
 	python3 scripts/run_checkpoint_checks.py
@@ -135,7 +118,7 @@ test-spu-cd-mix:
 test-spu-voices:
 	python3 scripts/run_spu_cd_mix.py --voices
 
-.PHONY: test-dma-channel-ram test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-dma-chcr-ram test-gpu-mul-retime test-gpu-no-watchdog test-memcard-window test-cd-disc-swap test-disc-swap-seq test-cd-xa test-cd-xa-stream test-mdec-reference test-gte-reference
+.PHONY: test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-gpu-mul-retime test-gpu-no-watchdog test-cd-disc-swap test-disc-swap-seq test-cd-xa test-cd-xa-stream test-mdec-reference test-gte-reference
 test-disc-swap-seq:
 	python3 scripts/run_disc_swap_seq.py
 
@@ -163,16 +146,7 @@ test-memcard-slot:
 test-memorymux-fifo-ram:
 	python3 scripts/run_memorymux_fifo_ram.py --quick
 
-test-memcard-window:
-	python3 scripts/run_memcard_window.py
-
 .PHONY: test-vram-psram test-memcard-slot test-memorymux-fifo-ram
-
-.PHONY: test-save-exp1
-test: test-save-exp1
-test-save-exp1:
-	python3 scripts/run_save_exp1.py
-
 # Slow (GHDL SPU benches): run after changing the SPU save tap or the SPU chain.
 .PHONY: test-spu-save-tap
 test-spu-save-tap:
@@ -185,17 +159,7 @@ test-save-trap-cpu:
 	python3 scripts/build_save_fw.py --check
 	python3 scripts/run_save_trap_cpu.py
 
-.PHONY: test-apf-bridge
-test: test-apf-bridge
-test-apf-bridge:
-	python3 scripts/run_apf_bridge_checks.py
-
-.PHONY: test-apf-pad
-test: test-apf-pad
-test-apf-pad:
-	python3 scripts/run_apf_pad_checks.py
-
-.PHONY: test-gpu-area-reg test-spu-static-readback test-main-lean test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-spu-adsr-lean test-gpu-dy-ram
+.PHONY: test-gpu-area-reg test-spu-static-readback test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-spu-adsr-lean test-gpu-dy-ram
 test-dma-m10k:
 	python3 scripts/run_dma_m10k.py
 
@@ -236,6 +200,11 @@ test-gpu-recip:
 test-gpu-poly-stepadd:
 	cd scripts && python3 run_gpu_poly_stepadd.py
 
+.PHONY: test-gpu-poly-vt-multicycle
+test: test-gpu-poly-vt-multicycle
+test-gpu-poly-vt-multicycle:
+	cd scripts && python3 run_gpu_poly_vt_multicycle.py
+
 .PHONY: test-gpu-poly-diffmux
 test-gpu-poly-diffmux:
 	cd scripts && python3 run_gpu_poly_diffmux.py
@@ -246,20 +215,11 @@ test-gpu-area-reg:
 test-spu-static-readback:
 	python3 scripts/run_spu_static_readback.py
 
-test-main-lean:
-	python3 scripts/run_main_lean.py
-
-# Requires the locally installed Intel simulation library (not a CI default).
-.PHONY:
-
 test-gpu-no-watchdog:
 	python3 scripts/run_gpu_no_watchdog.py
 
 test-gpu-mul-retime:
 	python3 scripts/run_gpu_mul_retime.py
-
-test-dma-chcr-ram:
-	python3 scripts/run_dma_chcr_ram.py
 
 test-gte-add-table:
 	python3 scripts/run_gte_add_table.py
@@ -272,9 +232,6 @@ test-gpu-mul-narrow:
 
 test-spu-guest-m10k:
 	python3 scripts/run_spu_guest_m10k.py
-
-test-mdec-idct-pipe:
-	python3 scripts/run_mdec_idct_pipe.py
 
 test-gte-multicycle:
 	python3 scripts/run_gte_multicycle.py
@@ -296,9 +253,6 @@ test-gpu-vertex-ram:
 
 test-gpu-tag-generation:
 	python3 scripts/run_gpu_tag_generation.py
-
-test-dma-channel-ram:
-	python3 scripts/run_dma_channel_ram.py
 
 test-spu-reverb-table:
 	python3 scripts/run_spu_reverb_table.py
@@ -331,9 +285,6 @@ test-gpu-combined:
 test-gpu-read-math:
 	python3 scripts/run_gpu_read_math.py
 
-test-system-encodings:
-	python3 scripts/run_system_encodings.py
-
 # Longer connected-system diagnostic; no private BIOS/disc data is needed.
 test-system:
 	python3 scripts/run_system_sim.py
@@ -348,64 +299,22 @@ test-gpu-primitives:
 test-gpu-signed-clip:
 	python3 scripts/run_gpu_signed_clip.py
 
-.PHONY: test-shared-sdram-system test-shared-reset-repro test-shared-cold-entry
-test-shared-sdram-system:
-	python3 scripts/run_shared_sdram_system.py
-
-test-shared-reset-repro:
-	python3 scripts/run_shared_sdram_system.py --scratch-reset-repro
-
-test-shared-cold-entry:
-	python3 scripts/run_shared_sdram_system.py --unpaused-cold-only
-
-.PHONY: test-main-reset-fence
-test: test-main-reset-fence
-test-main-reset-fence:
-	python3 scripts/run_main_reset_fence.py
-
-.PHONY: test-main-sync
-test-main-sync:
-	python3 scripts/run_main_sync_checks.py
-
-.PHONY: test-shared-reset-delayed
-test-shared-reset-delayed:
-	python3 scripts/run_shared_sdram_system.py --delay-main-reset
-
-.PHONY: test-shared-cached-spu-reset
-test-shared-cached-spu-reset:
-	python3 scripts/run_shared_sdram_system.py --cached-spu --reset-only --release-init --delay-main-reset
-
 .PHONY: test-vram-credit-timing
 test-vram-credit-timing:
 	python3 scripts/run_vram_credit_timing.py
 
-.PHONY: measure-spu-scalar-buffer test-spu-scalar-buffer measure-spu-scalar-buffer-area measure-spu-scalar-buffer-extended measure-spu-scalar-full-top
-measure-spu-scalar-buffer:
-	python3 scripts/run_spu_memory_cadence.py --scalar-buffer --scalar-buffer-ways 2 --scalar-buffer-storage M10K-dual --scalar-stream --pitch 16384
-
-measure-spu-scalar-buffer-extended:
-	python3 scripts/run_spu_memory_cadence.py --scalar-buffer --scalar-buffer-ways 2 --scalar-buffer-storage M10K-dual --scalar-extended --pitch 16384
-
+.PHONY: test-spu-scalar-buffer measure-spu-scalar-full-top
 test-spu-scalar-buffer:
 	python3 scripts/run_spu_scalar_buffer_checks.py
 	python3 scripts/run_spu_scalar_buffer_checks.py --storage M10K-dual
-
-measure-spu-scalar-buffer-area:
-	python3 scripts/measure_spu_scalar_buffer_area.py --storage M10K-dual
 
 measure-spu-scalar-full-top:
 	@test -n "$(CAPTURED_RUN)" || (echo 'Set CAPTURED_RUN to the cached-SPU physical project to compare'; exit 1)
 	python3 scripts/measure_spu_scalar_full_top.py "$(CAPTURED_RUN)"
 
-.PHONY: test-spu-scalar-stream measure-spu-scalar-stream measure-spu-scalar-stream-area measure-spu-scalar-stream-full-top
+.PHONY: test-spu-scalar-stream measure-spu-scalar-stream-full-top
 test-spu-scalar-stream:
 	python3 scripts/run_spu_scalar_buffer_checks.py --storage M10K-stream
-
-measure-spu-scalar-stream:
-	python3 scripts/run_spu_memory_cadence.py --scalar-buffer --scalar-buffer-ways 2 --scalar-buffer-storage M10K-stream --scalar-extended --pitch 16384
-
-measure-spu-scalar-stream-area:
-	python3 scripts/measure_spu_scalar_buffer_area.py --storage M10K-stream
 
 measure-spu-scalar-stream-full-top:
 	@test -n "$(CAPTURED_RUN)" || (echo 'Set CAPTURED_RUN to the scalar dual-clock physical project to compare'; exit 1)
@@ -424,23 +333,15 @@ test-system-cd-dma:
 
 test-sim-memory-models:
 	python3 scripts/run_sim_memory_models.py
-	python3 scripts/run_internal_ram_models.py
 
 test-python:
 	python3 -m unittest discover -s tests -v
 
 test-rtl:
-	python3 scripts/run_sim.py
 	python3 scripts/run_clients.py
-	python3 scripts/run_pgate.py
-	python3 scripts/run_cpu.py
-	python3 scripts/run_psram.py
 
 test-references:
 	python3 scripts/run_reference_checks.py
-
-test-laxer:
-	python3 scripts/run_laxer_gte.py
 
 test-gte-adapter:
 	python3 scripts/run_gte_adapter.py
@@ -453,9 +354,6 @@ test-cd-arithmetic:
 
 test-no-turbo-cache:
 	python3 scripts/run_no_turbo_cache.py
-
-preflight:
-	python3 scripts/preflight.py
 
 resources:
 	python3 scripts/resource_report.py
@@ -487,22 +385,13 @@ resource-platform:
 resource-laxer-gte:
 	python3 scripts/run_resource_fit.py --targets laxer_gte --profile area --output build/resources/laxer-gte $(if $(QUARTUS_BIN),--bin "$(QUARTUS_BIN)")
 
-inspect-assets:
-	python3 scripts/inspect_discs.py --hash
-
-diagnose-bios:
-	python3 scripts/run_bios.py
-
 .PHONY: test-vram-stream
 test-vram-stream:
 	python3 scripts/run_vram_stream_checks.py
 
-.PHONY: test-psram-burst test-psram-probe
+.PHONY: test-psram-burst
 test-psram-burst:
 	python3 scripts/run_psram_burst.py
-
-test-psram-probe:
-	python3 scripts/run_psram_probe.py
 
 .PHONY: test-pocket-audio test-pocket-audio-sinc test-pocket-audio-bridge test-pocket-audio-i2s test-pocket-spu-capture test-pocket-audio-rate-lean test-pocket-audio-sinc-mac
 test-pocket-audio: test-pocket-audio-sinc test-pocket-audio-bridge test-pocket-audio-i2s test-pocket-spu-capture test-pocket-audio-rate-lean test-pocket-audio-sinc-mac
@@ -544,18 +433,6 @@ test-pocket-spu-capture:
 test-pocket-spu-bridge:
 	python3 scripts/run_pocket_spu_capture.py --audio-bridge
 
-.PHONY: measure-spu-memory-cadence
-measure-spu-memory-cadence:
-	python3 scripts/run_spu_memory_cadence.py
-
-.PHONY: measure-spu-cached-memory
-measure-spu-cached-memory:
-	python3 scripts/run_spu_memory_cadence.py --cached
-
-.PHONY: test-apf-services
-test-apf-services:
-	python3 scripts/run_apf_services.py
-
 .PHONY: test-pocket-bios-loader test-apf-bios-boot
 test: test-pocket-bios-loader test-apf-bios-boot
 
@@ -565,20 +442,7 @@ test-pocket-bios-loader:
 test-apf-bios-boot:
 	python3 scripts/run_apf_bios_boot.py
 
-.PHONY: test-main-memory
-test: test-main-memory
 
-test-main-memory:
-	python3 scripts/run_main_memory.py
-
-.PHONY: test-mister-main-adapter test-native-main-system
-test: test-mister-main-adapter
-
-test-mister-main-adapter:
-	python3 scripts/run_mister_main_adapter.py
-
-test-native-main-system:
-	python3 scripts/run_native_main_system.py
 
 .PHONY: test-cpu-cache-contract
 test-cpu-cache-contract:
@@ -591,19 +455,13 @@ test-release-host-trim:
 test-release-init:
 	python3 scripts/run_release_init.py
 
-.PHONY: test-memcard-transfer
-test-memcard-transfer:
-	python3 scripts/run_memcard_transfer.py
+# Slow (GHDL, full reset clears): run after changing the reset sequencer or prepare_reset_seq_lean.py.
+.PHONY: test-reset-seq-lean
+test-reset-seq-lean:
+	python3 scripts/run_reset_seq_lean.py
 
-.PHONY: test-memcard-pin
-test-memcard-pin:
-	python3 scripts/run_memcard_pin.py
-
-.PHONY: test-cd-stream test-cd-controller-apf test-cd-swap-apf
-test: test-cd-stream test-cd-controller-apf test-cd-swap-apf
-
-test-cd-stream:
-	python3 scripts/run_cd_stream.py
+.PHONY: test-cd-controller-apf test-cd-swap-apf
+test: test-cd-controller-apf test-cd-swap-apf
 
 test-cd-controller-apf:
 	python3 scripts/run_cd_controller.py --apf
@@ -611,16 +469,10 @@ test-cd-controller-apf:
 test-cd-swap-apf:
 	python3 scripts/run_cd_swap_apf.py
 
-.PHONY: test-cd-menu-cdc test-cd-table-cdc test-cd-table-menu-cdc
-test: test-cd-menu-cdc test-cd-table-cdc test-cd-table-menu-cdc
+.PHONY: test-cd-menu-cdc
+test: test-cd-menu-cdc
 test-cd-menu-cdc:
 	python3 scripts/run_cd_menu_cdc.py
-
-test-cd-table-cdc:
-	python3 scripts/run_cd_table_cdc.py
-
-test-cd-table-menu-cdc:
-	python3 scripts/run_cd_table_menu_cdc.py
 
 .PHONY: test-clean-memory-cdc
 test-clean-memory-cdc:
@@ -631,27 +483,9 @@ test: test-divider-bank
 test-divider-bank:
 	python3 scripts/run_divider_bank.py
 
-.PHONY: test-memcard-initialize test-apf-target-arb
-test-memcard-initialize:
-	python3 scripts/run_memcard_initialize.py
-
-test-apf-target-arb:
-	python3 scripts/run_apf_target_arb.py
-
 .PHONY: test-apf-video
 test-apf-video:
 	python3 scripts/run_apf_video.py
-
-.PHONY: test-memcard-service
-test-memcard-service:
-	python3 scripts/run_memcard_service.py
-
-.PHONY: test-memcard-os-read test-mirlo-sdram
-test-memcard-os-read:
-	python3 scripts/run_memcard_os_read.py
-
-test-mirlo-sdram:
-	python3 scripts/run_mirlo_sdram.py
 
 .PHONY: test-native-sdram-system
 test-native-sdram-system:
@@ -665,11 +499,6 @@ test: test-pad-combo
 .PHONY: test-joypad-replay
 test-joypad-replay:
 	python3 scripts/run_joypad_replay.py
-
-.PHONY: test-snac-lockstep
-test: test-snac-lockstep
-test-snac-lockstep:
-	python3 scripts/run_snac_lockstep.py
 
 .PHONY: test-dma-wd-default
 test: test-dma-wd-default
@@ -717,7 +546,8 @@ test-stick-map:
 	mkdir -p build/tb_stick_dpad && cd build/tb_stick_dpad && ghdl -a --std=08 -frelaxed ../../references/PSX_MiSTer/rtl/pJoypad.vhd ../../rtl/pocket/joypad_pad_dualshock.vhd ../../sim/pocket/tb_joypad_stick_dpad.vhd && ghdl -e --std=08 -frelaxed tb_joypad_stick_dpad && \
 		for g in true false; do ghdl -r --std=08 -frelaxed tb_joypad_stick_dpad -gSTICK_DPAD=$$g 2>&1 | grep -q "PASS stick dpad STICK_DPAD=$$g" || exit 1; done
 	mkdir -p build/tb_analog_level && cd build/tb_analog_level && ghdl -a --std=08 -frelaxed ../../references/PSX_MiSTer/rtl/pJoypad.vhd ../../rtl/pocket/joypad_pad_dualshock.vhd ../../sim/pocket/tb_joypad_analog_level.vhd && ghdl -e --std=08 -frelaxed tb_joypad_analog_level && \
-		for g in true false; do ghdl -r --std=08 -frelaxed tb_joypad_analog_level -gANALOG_LEVEL=$$g 2>&1 | grep -q "PASS analog level ANALOG_LEVEL=$$g" || exit 1; done
+		for g in "true false" "false false" "true true" "false true"; do set -- $$g; \
+			ghdl -r --std=08 -frelaxed tb_joypad_analog_level -gANALOG_LEVEL=$$1 -gDIGITAL_HOLD=$$2 2>&1 | grep -q "PASS analog level ANALOG_LEVEL=$$1 DIGITAL_HOLD=$$2" || exit 1; done
 
 .PHONY: test-pocket-analog
 test: test-pocket-analog

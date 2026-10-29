@@ -20,7 +20,7 @@ from tool_paths import ROOT, find_tool
 UPSTREAM = ROOT / 'references/PSX_MiSTer'
 
 
-def run(directory, variant_text, seeds, operations=6000):
+def run(directory, variant_text, seeds, operations=6000, bench=None, top='tb_spu_guest_m10k'):
     ghdl = find_tool('ghdl'); directory.mkdir(parents=True, exist_ok=True)
     log = (directory / 'build.log').open('w')
     def call(*args): subprocess.run([ghdl, *args], cwd=directory, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
@@ -38,11 +38,11 @@ def run(directory, variant_text, seeds, operations=6000):
     variant = directory / 'spu_g.vhd'
     variant.write_text(re.sub(r'\bspu\b', 'spu_g', variant_text(base.read_text())))
     call('-a', '--std=08', '-frelaxed', str(variant))
-    call('-a', '--std=08', '-frelaxed', str(ROOT / 'sim/reference/tb_spu_guest_m10k.vhd'))
-    call('-e', '--std=08', '-frelaxed', 'tb_spu_guest_m10k')
+    call('-a', '--std=08', '-frelaxed', str(bench or ROOT / 'sim/reference/tb_spu_guest_m10k.vhd'))
+    call('-e', '--std=08', '-frelaxed', top)
     results = []
     for seed in seeds:
-        r = subprocess.run([ghdl, '-r', '--std=08', '-frelaxed', 'tb_spu_guest_m10k', f'-gSEED={seed}', f'-gOPERATIONS={operations}',
+        r = subprocess.run([ghdl, '-r', '--std=08', '-frelaxed', top, f'-gSEED={seed}', f'-gOPERATIONS={operations}',
                             '--assert-level=error', '--ieee-asserts=disable'], cwd=directory, capture_output=True, text=True, timeout=3600)
         out = r.stdout + r.stderr
         results.append((r.returncode == 0 and 'PASS SPU guest block RAM lockstep' in out,

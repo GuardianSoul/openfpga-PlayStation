@@ -100,7 +100,7 @@ static u32 fsec[MAXF + 1] BIG;     // first sector; fsec[nfiles] = total
 // segment's first sector in it.
 static u32 fseg[MAXF];              // in .bss (HIGH): BIG is full
 static u32 tstart[MAXT] BIG;       // parse: sectors in the file | file << 24; then absolute
-static u32 ti1[MAXT] BIG;          // INDEX 01, as tstart (| audio << 31 while parsing)
+static u32 ti1[MAXT] BIG;          // INDEX 01, as tstart; | audio << 31
 static u8 base[256] BIG;           // the picked cue's path, for its sibling discs
 static u32 marks[4], nmarks;       // where base names its disc number
 static u32 fb;                     // '0' + the disc of the cue base names; 0: a playlist entry
@@ -202,6 +202,18 @@ NOINLINE static u32 measure(u32 slot, u32 unit, int k) {
     if (size < 4) return 0;
     u32 n = unit == 1 ? size : __udivsi3(size, unit), most = (2u << k) - 1;
     return n > most ? most : n;
+}
+
+// Track sizes (slot 97, make_pocket_instances.py and the plugin): a game JSON
+// whose files are opened by path can carry each FILE's sectors, so the boot
+// mount needs no openfile and size probe per file (Street Fighter Collection's
+// 72 took longer than the boot timer). Words: "TSZ1", the cue's bytes, the
+// FILE count, then each FILE's 2,352-byte sectors. Word i, or 0.
+#define TSZ_SLOT  97u
+#define TSZ_MAGIC 0x315A5354u
+NOINLINE static u32 tsz_word(u32 i) {
+    clen = 0;
+    return cmd(K_READ, TSZ_SLOT, 4 * i, 4) ? 0 : *(volatile u32 *)CHUNK;
 }
 
 // ---------------- cue text ----------------
@@ -381,7 +393,7 @@ NOINLINE static u32 table_word(u32 w) {
     switch (w & 3) {
     case 0: return r ? tstart[r] + 150 : 0;
     case 1: return (r + 1 < ntracks ? tstart[r + 1] : total) + 149;
-    case 2: return (r ? 1u << 16 : 0) | msf(ti1[r] + 150);
+    case 2: return (ti1[r] >> 31) << 16 | msf((ti1[r] & 0xfffff) + 150);
     default: return 0;
     }
 }
@@ -569,9 +581,18 @@ static void cue(u32 slot, u32 size, int mode) {
     // some rippers write): the disc starts at INDEX 01.
     lead = ti1[0] & 0xfffff;
     u32 psize = 0;
+    // The boot mount of a game JSON takes the files' sizes from its track
+    // sizes when they name this cue and its FILE count, and the last file,
+    // opened and probed as before, agrees (files are opened when read).
+    u32 tsz = 0;
+    if (json && boot_sizes && rd == FILE_SLOT && tsz_word(0) == TSZ_MAGIC && tsz_word(1) == cue_size && tsz_word(2) == nphys) {
+        u32 k = nfiles - 1;
+        while (k && (fseg[k] & 0xffffff)) k--;   // the last file's first segment
+        tsz = !open(k) && measure(FILE_SLOT, 2352, 18) == tsz_word(2 + nphys);
+    }
     for (u32 k = 0; k < nfiles; k++) {
         u32 b = fseg[k] & 0xffffff, n;
-        if (!b) {   // a file's first segment: its size
+        if (!b && !(tsz && (psize = tsz_word(3 + (fseg[k] >> 24))))) {   // a file's first segment: its size
             if (rd == FILE_SLOT && open(k)) { fail(mode); return; }
             psize = measure(rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24), 2352, 18);
         }
@@ -586,7 +607,9 @@ static void cue(u32 slot, u32 size, int mode) {
     }
     fsec[nfiles] = total;
     // Files back to back; a track starts at INDEX 00 (else 01); track 1 is
-    // data at 00:00:00, later tracks are audio, in order, inside the disc.
+    // data at 00:00:00, later tracks follow in order inside the disc. A later
+    // track may be data too (Breath of Fire IV's track 2 is MODE2/2352): the
+    // table's audio bit is the track's own, as MiSTer's host gives it.
     u32 prev = 0;
     for (u32 r = 0; r < ntracks; r++) {
         u32 f = tstart[r] >> 24, s = tstart[r] & 0xfffff, x = ti1[r] & 0xfffff, a = ti1[r] >> 31;
@@ -594,9 +617,9 @@ static void cue(u32 slot, u32 size, int mode) {
         else s += fsec[f];
         if (!f) { s = s > lead ? s - lead : 0; x = x > lead ? x - lead : 0; }
         x += fsec[f];
-        if (r == 0 ? (a || s || x) : (!a || s <= prev)) { fail(mode); return; }
+        if (r == 0 ? (a || s || x) : s <= prev) { fail(mode); return; }
         if (s > x || x >= total) { fail(mode); return; }
-        tstart[r] = s; ti1[r] = x; prev = x;
+        tstart[r] = s; ti1[r] = x | a << 31; prev = x;
     }
     u32 bytes = sectors_to_bytes(total);
     IO[W_DISC] = bytes;

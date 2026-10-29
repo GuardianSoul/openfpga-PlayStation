@@ -49,6 +49,15 @@
 //   0x1810-0x1817  read the GPU's display ranges (GP1 05/06/07 values, which
 //           no register reads back): {vDisplayRange[19:0], hDisplayRange[23:0],
 //           vramRange[18:0]} little-endian, bit 0 = vramRange[0]
+//   0x1818-0x181F  read the CD controller state no register gives back
+//           (cd_state, prepare_save_states.py cd tap): stat byte, mode,
+//           XA filter file, channel, the last sector read (LBA, 3 bytes) and
+//           [0] busy: a command or a second response or a drive interrupt is
+//           on its way (a command from the routine now would change that)
+//   0x1818, 0x1819  write SIZE_LO, SIZE_HI ([3:0]): the state's size in 2 KiB
+//           pages, which the Pocket copies (savestate_size; 2048 after reset).
+//           Taken over by the APF side with FINISH.
+//   0x1C00-0x1FFF  second routine ROM (read; ROM2_HEX, 1 KiB)
 // The set/flag taps are state no game can write (or read without clearing):
 // prepare_save_states.py wires them into irq.vhd, dma.vhd and timer.vhd.
 // Reads are combinational from the current address (no read side effects),
@@ -66,6 +75,7 @@
 `default_nettype none
 module psx_save_exp1 #(
     parameter ROM_HEX = "",
+    parameter ROM2_HEX = "",
     parameter [31:0] SAVE_BASE = 32'h3000_0000,
     parameter [31:0] SAVE_SIZE = 32'h0040_0000
 ) (
@@ -131,11 +141,14 @@ module psx_save_exp1 #(
     output reg         savestate_load_err = 1'b0,
     // the disc in the drive - 1 (multi-disc game files), kept in the state's
     // magic word so a state of another disc does not load
-    input  wire [1:0]  disc
+    input  wire [1:0]  disc,
+    // CD controller state (clk1x levels, read as they are; see 0x1818)
+    input  wire [63:0] cd_state
 );
     assign savestate_supported = 1'b1;
     assign savestate_addr = SAVE_BASE;
-    assign savestate_size = SAVE_SIZE;
+    reg [11:0] size_74 = 12'd2048;      // pages, taken with FINISH
+    assign savestate_size = {9'd0, size_74, 11'd0};
     assign savestate_maxloadsize = SAVE_SIZE;
 
     // ------------------------------------------------------------------
@@ -162,6 +175,7 @@ module psx_save_exp1 #(
         end
         if (s74_fin[1] != fin_seen_74) begin
             fin_seen_74 <= s74_fin[1];
+            size_74 <= size_pages;      // set by the routine before FINISH
             if (savestate_start_busy) begin
                 savestate_start_busy <= 1'b0; savestate_start_ok <= fin_ok_2x; savestate_start_err <= !fin_ok_2x;
             end
@@ -181,8 +195,9 @@ module psx_save_exp1 #(
     reg wr_d = 1'b0;
     reg [15:0] retry_wait = 16'd0;
     reg [7:0] page_lo = 8'd0; reg [2:0] page_hi = 3'd0;
+    reg [11:0] size_pages = 12'd2048;
     wire wr_edge = bus_write && !wr_d;
-    wire reg_area = bus_addr[12] && bus_addr[11];
+    wire reg_area = bus_addr[12] && bus_addr[11] && bus_addr[10:6] == 5'd0;
     wire page_area = bus_addr[12] && !bus_addr[11];
 
     // ROM (8-bit, read every clock) and staging page: 8-bit on the bus
@@ -191,6 +206,10 @@ module psx_save_exp1 #(
     initial if (ROM_HEX != "") $readmemh(ROM_HEX, rom);
     reg [7:0] rom_q = 8'd0;
     always @(posedge clk2x) rom_q <= rom[bus_addr[11:0]];
+    reg [7:0] rom2 [0:1023];
+    initial if (ROM2_HEX != "") $readmemh(ROM2_HEX, rom2);
+    reg [7:0] rom2_q = 8'd0;
+    always @(posedge clk2x) rom2_q <= rom2[bus_addr[9:0]];
     wire [7:0] page_q;
     // page word cp_word, valid from the second clk2x edge after it is set:
     // aux_req and spuram_req are registered, so a request started on the
@@ -230,7 +249,8 @@ module psx_save_exp1 #(
         ss_ack1 <= ss_seen1;   // the strobe's clk1x edge has passed
     end
     always @(*) begin
-        if (reg_area && bus_addr[4]) bus_dataRead = gpu_bytes[8*bus_addr[2:0] +: 8];
+        if (reg_area && bus_addr[4] && bus_addr[3]) bus_dataRead = cd_state[8*bus_addr[2:0] +: 8];
+        else if (reg_area && bus_addr[4]) bus_dataRead = gpu_bytes[8*bus_addr[2:0] +: 8];
         else if (reg_area) case (bus_addr[3:0])
             4'd8:    bus_dataRead = {4'd0, timer_flags[3:0]};
             4'd9:    bus_dataRead = {4'd0, timer_flags[7:4]};
@@ -240,6 +260,7 @@ module psx_save_exp1 #(
             4'd15:   bus_dataRead = {7'd0, ss_busy};
             default: bus_dataRead = {5'd0, want_load, want_save, cp_busy};
         endcase
+        else if (bus_addr[12] && bus_addr[11] && bus_addr[10]) bus_dataRead = rom2_q;
         else bus_dataRead = bus_addr[12] ? page_q : rom_q;
     end
 
@@ -306,6 +327,10 @@ module psx_save_exp1 #(
             if (retry_wait != 16'd0) begin
                 retry_wait <= retry_wait - 1'b1;
                 if (retry_wait == 16'd1) trap <= 1'b1;
+            end
+            if (wr_edge && reg_area && bus_addr[4] && bus_addr[3:1] == 3'd4) begin
+                if (bus_addr[0]) size_pages[11:8] <= bus_dataWrite[3:0];
+                else size_pages[7:0] <= bus_dataWrite;
             end
             if (wr_edge && reg_area && !bus_addr[4]) case (bus_addr[3:0])
                 4'd0: if (bus_dataWrite[0] && !cp_busy) begin

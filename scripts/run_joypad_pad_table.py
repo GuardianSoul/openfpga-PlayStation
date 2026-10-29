@@ -5,7 +5,7 @@ The DualShock pad (itself lockstep-equal to the pinned MiSTer joypad_pad,
 make test-joypad-dualshock-lean) is copied as joypad_pad_lean; both run in
 sim/pocket/tb_joypad_pad_table.vhd under the SIO's byte timing with
 RUMBLE_ECHO off (the Pocket build): three seeds each with pad 2 disabled and
-digital, then STICK_DPAD off and ANALOG_LEVEL on. The table pad then replays
+digital, then STICK_DPAD off, ANALOG_LEVEL on, and ANALOG_LEVEL with DIGITAL_HOLD. The table pad then replays
 the recorded Ape Escape traffic (scripts/run_joypad_replay.py traces) with
 the SIO's gap between a byte and actionNext. Planted mutations of the table
 pad must be caught.
@@ -30,6 +30,7 @@ MUTATIONS = (  # (old, new, generics)
     ('then id := 16#F3#;', 'then id := 16#F1#;', ()),
     ('if (to_integer(joypad.Analog1Y) >=  64) then b(6)', 'if (to_integer(joypad.Analog1Y) >=  65) then b(6)', ()),
     ('dsAnalogMode(portNr)    <= joypad.ToggleDS;', 'dsAnalogMode(portNr)    <= not joypad.ToggleDS;', ('-gANALOG_LEVEL=true',)),
+    ("ANALOG_LEVEL and joypad.ToggleDS = '0' and transmitValue(0)", "ANALOG_LEVEL and joypad.ToggleDS = '1' and transmitValue(0)", ('-gANALOG_LEVEL=true', '-gDIGITAL_HOLD=true')),
     # port 2's L3+R3+Up combo lands in port 1's state (needs a second DualShock)
     ("joypad.KeyUp = '1') then\n                     dsAnalogMode(portNr) <= '1';", "joypad.KeyUp = '1') then\n                     dsAnalogMode(0) <= '1';", ('-gPAD2=2',)),
 )
@@ -37,7 +38,8 @@ RUNS = [(('-gPAD2=0', f'-gSEED={s}'), 1) for s in (1, 2, 3)] + [(('-gPAD2=1', f'
     (('-gSEED=7', '-gSTICK_DPAD=false'), 1), (('-gSEED=8', '-gANALOG_LEVEL=true', '-gCYCLES=1500000'), 1),
     (('-gSEED=9', '-gPAD2=1', '-gANALOG_LEVEL=true', '-gCYCLES=2000000'), 1)] + [
     (('-gPAD2=2', f'-gSEED={s}'), 1) for s in (12, 13, 14)] + [
-    (('-gSEED=15', '-gPAD2=2', '-gANALOG_LEVEL=true', '-gCYCLES=2000000'), 1)]
+    (('-gSEED=15', '-gPAD2=2', '-gANALOG_LEVEL=true', '-gCYCLES=2000000'), 1),
+    (('-gSEED=16', '-gANALOG_LEVEL=true', '-gDIGITAL_HOLD=true', '-gCYCLES=2000000'), 1)]
 
 
 def build(ghdl, folder, table):

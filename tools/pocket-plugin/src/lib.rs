@@ -15,7 +15,9 @@ const MAKE: &str = "Generate game files";
 const KEEP: &str = "Convert them, keep the originals";
 const REPLACE: &str = "Convert them, replace the originals";
 const SKIP: &str = "Skip them, generate the other game files";
+const BIOS: &str = "Check the BIOS";
 const EXIT: &str = "Exit";
+const OURS: &str = "GuardianSoul.PlayStation";
 
 #[derive(Clone, Serialize, ToBytes)]
 #[encoding(Json)]
@@ -48,7 +50,14 @@ fn println(msg: &str) {
 fn mb(bytes: u64) -> u64 { (bytes + (1 << 20) - 1) >> 20 }
 
 fn platform(core: &str) -> Option<String> {
-    instances::find_cores(Path::new(CARD)).into_iter().find(|c| c.id == core).map(|c| c.platform)
+    instances::find_cores(Path::new(CARD)).into_iter().find(|c| c.id == core && c.supported).map(|c| c.platform)
+}
+
+fn check_bios(core: &str, platform: &str) {
+    println(&format!("Checking the BIOS in Assets/{platform}/common ..."));
+    for line in instances::bios::check_bios(Path::new(CARD), core, platform) {
+        println(&line);
+    }
 }
 
 /// What to do for this core: when discs need converting first, how.
@@ -57,7 +66,7 @@ fn menu(core: &str) -> PluginMessage {
     let jobs = convert::plan(Path::new(CARD), core, &platform);
     let name = format!("action:{core}");
     if jobs.is_empty() {
-        return PluginMessage::Choice { name, query: format!("Game files for {core}"), choices: vec![MAKE.into(), EXIT.into()] };
+        return PluginMessage::Choice { name, query: format!("Game files for {core}"), choices: vec![MAKE.into(), BIOS.into(), EXIT.into()] };
     }
     for job in &jobs {
         println(&format!("needs converting: {} ({} MB)", job_name(job), mb(job.bytes)));
@@ -73,6 +82,7 @@ fn menu(core: &str) -> PluginMessage {
             format!("{KEEP} (adds {} MB to the SD card)", mb(keep)),
             format!("{REPLACE} ({replace})"),
             SKIP.into(),
+            BIOS.into(),
             EXIT.into(),
         ],
     }
@@ -96,6 +106,15 @@ fn run(core: &str, mode: Option<Mode>) -> PluginMessage {
         println(&format!("Converting {} disc(s) in Assets/{platform}/common ...", jobs.len()));
         convert::run(card, &platform, &jobs, mode, &mut |line| println(line));
     }
+    if let Some(elsewhere) = instances::games_elsewhere(card, &platform) {
+        println(&format!(
+            "Your games are in {elsewhere}, but {core} looks for them in Assets/{platform}/common: move each game's folder there, then Generate game files again."
+        ));
+        if !card.join("Assets").join(&platform).join("common").is_dir() {
+            check_bios(core, &platform);
+            return PluginMessage::Exit;
+        }
+    }
     println(&format!("Looking for games in Assets/{platform}/common ..."));
     match instances::make_instances(card, core, &platform, &mut |line| println(line)) {
         Ok(summary) => {
@@ -108,16 +127,30 @@ fn run(core: &str, mode: Option<Mode>) -> PluginMessage {
         }
         Err(error) => println(&format!("Stopped: {error}")),
     }
+    check_bios(core, &platform);
     PluginMessage::Exit
 }
 
 #[plugin_fn]
 pub fn start() -> FnResult<PluginMessage> {
     println("PlayStation game files");
-    let cores = instances::find_cores(Path::new(CARD));
+    let (cores, others): (Vec<_>, Vec<_>) = instances::find_cores(Path::new(CARD)).into_iter().partition(|c| c.supported);
+    let others: Vec<String> = others.into_iter().map(|c| c.id).collect();
+    if !others.is_empty() && !cores.is_empty() {
+        println(&format!("Not listed: {} (another developer's PlayStation core; this plugin makes game files for {OURS}).", others.join(", ")));
+    }
     Ok(match cores.len() {
+        0 if !others.is_empty() => {
+            println(&format!(
+                "{} is another developer's PlayStation core. This plugin makes game files only for the {OURS} core, which is not on this \
+                 SD card. Install {OURS} (in pupdate or Pocket Sync), put each game in its own folder in Assets/playstation/common/, \
+                 then Generate game files again.",
+                others.join(" and ")
+            ));
+            PluginMessage::Exit
+        }
         0 => {
-            println("No PlayStation core found in Cores/ on this SD card. Install the core first.");
+            println(&format!("No PlayStation core found in Cores/ on this SD card. Install the {OURS} core first (in pupdate or Pocket Sync)."));
             PluginMessage::Exit
         }
         1 => menu(&cores[0].id),
@@ -135,6 +168,13 @@ pub fn handle_response(input: HostMessage) -> FnResult<PluginMessage> {
         HostMessage::Answer { value, .. } if value == EXIT => PluginMessage::Exit,
         HostMessage::Answer { name, value } if name == "core" => menu(&value),
         HostMessage::Answer { name, value } => match name.strip_prefix("action:") {
+            Some(core) if value == BIOS => {
+                match platform(core) {
+                    Some(platform) => check_bios(core, &platform),
+                    None => println(&format!("{core} is no longer on the SD card.")),
+                }
+                PluginMessage::Exit
+            }
             Some(core) if value == MAKE || value == SKIP => run(core, None),
             Some(core) if value.starts_with(KEEP) => run(core, Some(Mode::Keep)),
             Some(core) if value.starts_with(REPLACE) => run(core, Some(Mode::Replace)),

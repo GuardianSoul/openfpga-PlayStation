@@ -48,6 +48,45 @@ replace them, or skip them. A full SD card corrupts easily, so:
   computer, then removes unfinished `.part` files. Nothing under its real
   name is ever half-written.
 
+## What it checks
+
+Every run reports what it finds, and each problem comes with what to do
+about it:
+
+- **The core.** It makes game files only for the GuardianSoul.PlayStation
+  core. Another developer's PlayStation core on the card is not listed; if
+  that is the only one, the plugin says so, names the core to install, and
+  stops without touching anything.
+- **Where the games are.** This core reads `Assets/playstation/common/`. If
+  that folder has no games but another one does (such as
+  `Assets/psx/common/`, another core's folder), it says to move them.
+- **Each disc.** A disc it can't make a game file for is skipped with a
+  line saying why and what to do:
+  - a file the `.cue` names is missing or renamed;
+  - a `.bin` with no `.cue` that is one track of a bigger disc;
+  - a file that is not a raw CD image (2352-byte sectors), such as an
+    `.iso` or a damaged download;
+  - a damaged `.cue`;
+  - a multi-disc game with a disc missing, or more discs or tracks than the
+    installed core takes (update the core);
+  - a `.chd` that wasn't converted.
+
+  If no game files were made, the last line says so.
+- **The BIOS.** After every run (or on its own with *Check the BIOS*), it
+  checks the BIOS files in `Assets/playstation/common/` the way the core
+  does when it starts: one of the names the core looks for (such as
+  `scph5501.bin`), exactly 512 KB, and a real PlayStation BIOS (with its
+  "System ROM Version" line). It reports each one as OK, the wrong size or
+  not a BIOS. With no usable BIOS there, it looks for one elsewhere on the
+  card (under another name, in another core's folder, in the card's root)
+  and says where to copy it and what to call it. A BIOS in
+  `Assets/playstation/common/` is never mistaken for a disc.
+
+A game that starts at the PlayStation's own menu (CD Player and Memory
+Card) usually means the core started without a disc: the game file names
+files that aren't there, or it was written for another core. Generate the
+game files with this plugin instead of writing them by hand.
+
 ## Build
 
 ```

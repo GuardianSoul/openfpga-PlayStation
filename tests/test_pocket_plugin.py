@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tests.test_pocket_instances import MERGED, sectors
-from tests.test_sd_card_page import CORE, CUE_READER, cue_reader_card, make_card, tree, with_audio
+from tests.test_sd_card_page import CORE, CUE_READER, cue_reader_card, folder_discs, make_card, one_track, tree, with_audio
 
 ONE_FILE = ([{'id': 0}, {'id': 16}, {'id': 100}]
             + [{'id': 100*n + k, 'extensions': ['bin' if k == 1 else 'trk']} for n in (1, 2, 3, 4) for k in (1, 2)])
@@ -72,7 +72,7 @@ def report(stdout):
     menus, progress and closing lines, and the summary with its path)."""
     lines = [l for l in stdout.splitlines() if not l.startswith(('  ', '[', 'needs converting:', 'Converting ', 'Looking for ', 'Removed '))]
     start = next(i for i, l in enumerate(lines) if l.startswith('PlayStation game files'))
-    end = next(i for i, l in enumerate(lines) if ' instance files in ' in l)
+    end = next(i for i, l in enumerate(lines) if ' game files in ' in l)
     return lines[start+1:end]
 
 
@@ -143,7 +143,7 @@ class PocketPlugin(unittest.TestCase):
             self.assertIn('needs converting: Merged/Game.cue', out)
             games = plugin/'Assets/playstation'/CORE
             self.assertFalse((games/help_entry.name).exists())
-            ff9 = json.loads((games/'Final Fantasy IX (v1.1).json').read_text())['instance']
+            ff9 = json.loads((games/'Final Fantasy IX.json').read_text())['instance']
             self.assertEqual([s['id'] for s in ff9['data_slots']], [100, 101, 201, 301, 401, 16])
             self.assertEqual(ff9['data_slots'][-1]['filename'], 'Final Fantasy IX (v1.1).sav')
             self.assertEqual((plugin/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').read_bytes(), b'disc 4')
@@ -194,6 +194,22 @@ class PocketPlugin(unittest.TestCase):
             self.assertEqual([f for f in leftovers if f.exists()], [])
             self.assertTrue(keep.exists())
 
+    def test_folder_discs_match_the_script(self):
+        # Discs grouped by folder, folders that stay apart and the disc warnings.
+        for reader in (False, True):
+            with self.subTest(reader=reader), TemporaryDirectory() as tmp:
+                script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
+                if reader:
+                    cue_reader_card(script)
+                    declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
+                    (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+                else:
+                    make_card(script)
+                folder_discs(script/'Assets/playstation/common')
+                out = self.compare(script, plugin, MAKE if reader else SKIP)
+                self.assertIn('Lost: 3 discs in one folder, grouped as one game', out)
+                self.assertIn('warning: Spread: its discs are in different folders', out)
+
     def test_cue_reader_core_matches_the_script(self):
         # --cue-mount core: merged and multi-file discs need no converting.
         with TemporaryDirectory() as tmp:
@@ -205,8 +221,11 @@ class PocketPlugin(unittest.TestCase):
             self.assertIn('wrote Game.json (3 tracks, cue)', out)
             self.assertIn('wrote Ape Escape (Europe).json (1 track, cue, LibCrypt Ape Escape (Europe).sbi)', out)
             # Cue FILE names that differ from the files: the game file names the real files.
-            self.assertIn('skip Gone/Gone (USA).cue: Gone (USA) (Track 2).bin: file missing', out)
-            self.assertIn('skip Stray/Stray (USA).cue: Stray (USA) (Track 1).bin: file missing', out)
+            self.assertIn('skip Gone/Gone (USA).cue: Gone (USA) (Track 2).bin is missing: put it next to the .cue, '
+                          'with the name the .cue gives it', out)
+            self.assertIn('skip Stray/Stray (USA).cue: Stray (USA) (Track 1).bin is missing', out)
+            self.assertIn('skip Gap: disc 2 is missing (found discs 1, 3)', out)
+            self.assertIn('skip Long Game: 5 discs, but this core takes 4: update the core', out)
             slots = lambda name: [s['filename'] for s in json.loads(
                 (plugin/'Assets/playstation'/CORE/f'{name}.json').read_text())['instance']['data_slots']]
             self.assertEqual(slots('Case'), ['Case.cue', 'Case Game (USA).bin'])
@@ -223,7 +242,7 @@ class PocketPlugin(unittest.TestCase):
             declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
             (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
             out = self.compare(script, plugin, MAKE)
-            self.assertIn('wrote Final Fantasy IX (v1.1).json (4 discs, playlist Final Fantasy IX (USA)/Final Fantasy IX (v1.1).m3u)', out)
+            self.assertIn('wrote Final Fantasy IX.json (4 discs, playlist Final Fantasy IX (USA)/Final Fantasy IX.m3u)', out)
         # Declaring slot 99 (0.5.4): a game file's .sbi goes there, as the cue has no path on the Pocket.
         with TemporaryDirectory() as tmp:
             script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
@@ -341,23 +360,94 @@ class PocketPlugin(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             card = Path(tmp)
             make_card(card)
-            other = card/'Cores/Someone.PSX'
+            other = card/'Cores/Someone.PSX'   # another developer's core: no slots 100 and 101+
             other.mkdir()
             (other/'core.json').write_text(json.dumps({'core': {'metadata': {'platform_ids': ['psx']}}}))
+            (other/'data.json').write_text(json.dumps({'data': {'data_slots': [{'id': 0, 'extensions': ['cue', 'bin']}]}}))
+            shutil.copytree(card/'Cores'/CORE, card/'Cores/GuardianSoul.PSXTest')
             (card/'Cores/Someone.N64').mkdir()
             (card/'Cores/Someone.N64/core.json').write_text(json.dumps({'core': {'metadata': {'platform_ids': ['n64']}}}))
             out = self.plugin(card, 'Exit')
+            self.assertIn("Not listed: Someone.PSX (another developer's PlayStation core", out)
+            self.assertIn(f'choices: GuardianSoul.PSXTest | {CORE} | Exit', out)
             self.assertIn('[Which PlayStation core are the game files for?: Exit]', out)
             self.assertFalse((card/'Assets/playstation'/CORE/'Tekken 3 (USA).json').exists())
             out = self.plugin(card, CORE, 'Exit')
             self.assertIn('[1 disc needs converting first', out)
             self.assertIn('choices: Convert them, keep the originals (adds 2 MB to the SD card) | '
-                          'Convert them, replace the originals (adds 1 MB) | Skip them, generate the other game files | Exit', out)
+                          'Convert them, replace the originals (adds 1 MB) | Skip them, generate the other game files | Check the BIOS | Exit', out)
             self.plugin(card, CORE, SKIP)
             self.assertTrue((card/'Assets/playstation'/CORE/'Tekken 3 (USA).json').is_file())
             self.assertFalse((card/'Assets/playstation/common/Merged/Game').exists())
         with TemporaryDirectory() as tmp:
             self.assertIn('No PlayStation core found', self.plugin(Path(tmp)))
+
+    def test_another_developers_core(self):
+        # Only another developer's PlayStation core (its games in Assets/psx/common): say so, don't skip every disc.
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            core = card/'Cores/akoaysigod.PSX'
+            core.mkdir(parents=True)
+            (core/'core.json').write_text(json.dumps({'core': {'metadata': {'platform_ids': ['psx']}}}))
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': [{'id': 0, 'extensions': ['cue']}, {'id': 1}]}}))
+            one_track(card/'Assets/psx/common/Tekken 3 (USA)', 'Tekken 3 (USA)')
+            out = self.plugin(card)
+            self.assertIn("akoaysigod.PSX is another developer's PlayStation core. This plugin makes game files only for the "
+                          'GuardianSoul.PlayStation core, which is not on this SD card.', out)
+            self.assertNotIn('skip', out)
+            self.assertFalse((card/'Assets/psx/akoaysigod.PSX').exists())
+
+    def test_games_in_the_other_platform_folder(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            make_card(card)
+            shutil.move(card/'Assets/playstation/common', card/'Assets/psx/common')
+            (card/'Assets/playstation/common').mkdir()
+            out = self.plugin(card, MAKE)
+            self.assertIn(f'Your games are in Assets/psx/common, but {CORE} looks for them in Assets/playstation/common: '
+                          "move each game's folder there", out)
+            self.assertIn('No games found in Assets/playstation/common', out)
+            shutil.rmtree(card/'Assets/playstation/common')   # no common at all: only the move line, then the BIOS check
+            out = self.plugin(card, MAKE)
+            self.assertIn('Your games are in Assets/psx/common', out)
+            self.assertNotIn('Stopped', out)
+            self.assertIn('Checking the BIOS', out)
+
+    def bios_image(self, version=b'System ROM Version 4.1 12/16/97 A', size=524288):
+        data = bytearray(size)
+        data[0x7ff32:0x7ff32 + len(version)] = version
+        return bytes(data)
+
+    def test_bios_check(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            make_card(card)
+            common = card/'Assets/playstation/common'
+            out = self.plugin(card, 'Check the BIOS')
+            self.assertIn('No BIOS found: the core can\'t start games without one. Copy your PlayStation BIOS to '
+                          'Assets/playstation/common/ as scph5501.bin (USA), scph5500.bin (Japan) or scph5502.bin (Europe)', out)
+            self.assertFalse((card/'Assets/playstation'/CORE/'Tekken 3 (USA).json').exists())   # the check alone writes nothing
+            # A BIOS under another name, in the other platform's folder: where it should go.
+            (card/'Assets/psx/common').mkdir(parents=True)
+            (card/'Assets/psx/common/PSX BIOS.bin').write_bytes(self.bios_image(b'System ROM Version 4.1 12/16/97 E'))
+            self.assertIn("Assets/psx/common/PSX BIOS.bin is a Europe PlayStation BIOS, but the core doesn't look for it there: "
+                          'copy it to Assets/playstation/common/ as scph5502.bin', self.plugin(card, 'Check the BIOS'))
+            # Wrong size, not a BIOS, and a good one (any case).
+            (common/'scph1001.bin').write_bytes(bytes(1000))
+            (common/'scph5500.bin').write_bytes(bytes(524288))
+            (common/'SCPH5501.BIN').write_bytes(self.bios_image())
+            (common/'Odd').mkdir()
+            (common/'Odd/Odd.bin').write_bytes(bytes(1000))
+            out = self.plugin(card, SKIP)
+            self.assertIn('BIOS SCPH5501.BIN: USA (System ROM Version 4.1 12/16/97 A), OK', out)
+            self.assertIn('BIOS scph1001.bin is 1 KB, but a PlayStation BIOS is exactly 512 KB', out)
+            self.assertIn('BIOS scph5500.bin is not a PlayStation BIOS', out)
+            self.assertNotIn('copy it to', out)
+            # A BIOS in common is not a disc: no "skip" line for it, no .cue.
+            self.assertNotIn('skip SCPH5501', out)
+            self.assertNotIn('skip scph1001', out)   # named like a BIOS: the BIOS check reports it
+            self.assertIn('skip Odd/Odd.bin: it is not a raw CD image (its size is not whole 2352-byte sectors)', out)
+            self.assertFalse((common/'SCPH5501.cue').exists())
 
 
 if __name__ == '__main__':

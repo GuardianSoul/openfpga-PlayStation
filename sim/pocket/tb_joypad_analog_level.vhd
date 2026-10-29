@@ -3,7 +3,10 @@
 -- (Controller Mode setting) switches the DualShock between digital (ID 0x41)
 -- and analog (0x73) at run time, the L3+R3 combos still work, and a mode
 -- the game locked (0x44) holds until unlocked. Without ANALOG_LEVEL the
--- level does nothing.
+-- level does nothing. Last, Parasite Eve (USA)'s sequence (43 01, 44 01 00,
+-- 43 00) with the setting on Digital: a DualShock goes analog (and the level
+-- toggle Analog -> Digital brings it back); with DIGITAL_HOLD it stays
+-- digital.
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
@@ -11,7 +14,7 @@ use IEEE.numeric_std.all;
 use work.pJoypad.all;
 
 entity tb_joypad_analog_level is
-   generic (ANALOG_LEVEL : boolean := true);
+   generic (ANALOG_LEVEL : boolean := true; DIGITAL_HOLD : boolean := false);
 end entity;
 
 architecture sim of tb_joypad_analog_level is
@@ -52,7 +55,7 @@ begin
    end process;
 
    dut : entity work.joypad_pad
-      generic map (ANALOG_LEVEL => ANALOG_LEVEL)
+      generic map (ANALOG_LEVEL => ANALOG_LEVEL, DIGITAL_HOLD => DIGITAL_HOLD)
       port map (clk1x => clk, ce => ce, reset => reset, DSAltSwitchMode => '0', isMultitap => '0',
          multitapDigital => '0', multitapAnalog => '0', joypad1 => joypad1, joypad2 => j0, joypad3 => j0, joypad4 => j0,
          joypad1_rumble => r1, joypad2_rumble => r2, joypad3_rumble => r3, joypad4_rumble => r4,
@@ -126,7 +129,19 @@ begin
       -- reset keeps the chosen level: the pad comes back in that mode
       reset <= '1'; wait until rising_edge(clk); wait for 1 ns; reset <= '0'; settle;
       check(ANALOG_LEVEL, "after reset with level analog");
-      if errs = 0 then report "PASS analog level ANALOG_LEVEL=" & boolean'image(ANALOG_LEVEL); end if;
+      -- Parasite Eve (USA): on the Squaresoft logo, 43 01, 44 01 00 (analog, no lock), 43 00
+      level <= '0'; settle;
+      check(false, "digital before the game's request");
+      transfer((x"01", x"43", x"00", x"01", x"00"), dummy);
+      transfer((x"01", x"44", x"00", x"01", x"00", x"00", x"00", x"00", x"00"), dummy);
+      transfer((x"01", x"43", x"00", x"00", x"00", x"00", x"00", x"00", x"00"), dummy);
+      settle;
+      check(not (DIGITAL_HOLD and ANALOG_LEVEL), "the game's 44 01 00 with the setting Digital");
+      -- the user's workaround: Analog, then Digital
+      level <= '1'; settle; level <= '0'; settle;
+      check(not ANALOG_LEVEL, "after Analog -> Digital");
+      if errs = 0 then report "PASS analog level ANALOG_LEVEL=" & boolean'image(ANALOG_LEVEL)
+         & " DIGITAL_HOLD=" & boolean'image(DIGITAL_HOLD); end if;
       done <= true;
       wait;
    end process;

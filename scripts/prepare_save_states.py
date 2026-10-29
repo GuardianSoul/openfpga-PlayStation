@@ -157,8 +157,29 @@ def gpu_tap_text(text):
                      'gpu architecture begin')
 
 
+CD_TAP_PORT = '      bus_dataRead         : out std_logic_vector(7 downto 0) := (others => \'0\');\n'
+
+
+def cd_tap_text(text):
+    """cd_top.vhd: the state the save routine needs to restart the drive on a
+    load, as levels (no register gives it back, and a command from the
+    routine at save time could land between the game's own commands and
+    sector interrupts): stat byte, mode, XA filter, the last sector read and
+    a busy bit (a command, a second response or a drive interrupt on its
+    way; with it 0 and IRQFLAG 0 the game has every sector up to
+    currentLBA)."""
+    if 'save_cd_state' in text:
+        raise ValueError('save states: cd_top already has the tap')
+    text = _once(text, CD_TAP_PORT, CD_TAP_PORT + '      save_cd_state        : out std_logic_vector(63 downto 0);\n',
+                 'cd_top ports')
+    tap = ('\n   save_cd_state <= "0000000" & (working or cmd_busy or cmdPending or (pendingDriveIRQ(0) or pendingDriveIRQ(1) or\n'
+           '                    pendingDriveIRQ(2) or pendingDriveIRQ(3) or pendingDriveIRQ(4))) &\n'
+           '                    std_logic_vector(to_unsigned(currentLBA, 24)) & XaFilterChannel & XaFilterFile & modeReg & internalStatus;\n')
+    return _sub_once(text, r'^begin[ \t]*\n', lambda m: m.group(0) + tap, 'cd_top architecture begin')
+
+
 SPU_KEEP_WRITES = {2, 3, 4, 5, 6, 37, 43}   # plus the IRQ9 line of 40
-SPU_KEEP_READS = {2, 3, 4, 5, 6, 37}       # plus STAT (40 high half)
+SPU_KEEP_READS = {2, 3, 4, 5, 6}          # ENDX and STAT come from guest reads
 
 
 def spu_tap_text(text):
@@ -223,7 +244,7 @@ def spu_tap_text(text):
 
     def read_line(m):
         number = int(m.group(1))
-        return m.group(0) if number in SPU_KEEP_READS or (number == 40 and m.group(2) == '(31 downto 16)') else ''
+        return m.group(0) if number in SPU_KEEP_READS else ''
     text, n = re.subn(r'^[ \t]*ss_out\((\d+)\)(\([^)]*\))? *<= [^\n]*;[^\n]*\n', read_line, text, flags=re.M)
     if n != 61:
         raise ValueError(f'save states: spu ss_out lines found {n} times')
@@ -249,6 +270,7 @@ SAVE_PORTS_VHDL = ('save_trap : in std_logic := \'0\';\n'
                    '      save_set_timer : in std_logic_vector(11 downto 0) := (others => \'0\');\n'
                    '      save_timer_flags : out std_logic_vector(11 downto 0);\n'
                    '      save_gpu_ranges : out std_logic_vector(62 downto 0);\n'
+                   '      save_cd_state : out std_logic_vector(63 downto 0);\n'
                    '      save_spu_hold : in std_logic := \'0\';\n'
                    '      save_spu_quiet : out std_logic;\n'
                    '      save_spu_adr : in unsigned(8 downto 0) := (others => \'0\');\n'
@@ -329,7 +351,8 @@ def psx_top_text(text):
     text = _sub_once(text, r'(icpu : entity work\.cpu\s*port map\s*\([^;]*?\n([ \t]*)irqRequest[ \t]*=> irqRequest,)',
                      lambda m: m.group(1) + f'\n{m.group(2)}trapRequest       => save_trap,', 'CPU irqRequest map')
     for unit, maps in (('irq', ('save_set_go', 'save_set_irq')), ('dma', ('save_set_go', 'save_set_dma')),
-                       ('tmr', ('save_set_go', 'save_set_timer', 'save_timer_flags')), ('gpu', ('save_gpu_ranges',))):
+                       ('tmr', ('save_set_go', 'save_set_timer', 'save_timer_flags')), ('gpu', ('save_gpu_ranges',)),
+                       ('cd', ('save_cd_state',))):
         text = _sub_once(text, r'^([ \t]*)bus_dataRead([ \t]*)=> bus_' + unit + r'_dataRead,[ \t]*\n',
                          lambda m: m.group(0) + ''.join(f'{m.group(1)}{name} => {name},\n' for name in maps),
                          unit + ' bus map')
@@ -346,6 +369,7 @@ def resource_wrapper_text(text):
              '    save_set_irq : in std_logic_vector(10 downto 0);\n    save_set_dma : in std_logic_vector(6 downto 0);\n'
              '    save_set_timer : in std_logic_vector(11 downto 0);\n    save_timer_flags : out std_logic_vector(11 downto 0);\n'
              '    save_gpu_ranges : out std_logic_vector(62 downto 0);\n'
+             '    save_cd_state : out std_logic_vector(63 downto 0);\n'
              '    save_spu_hold : in std_logic;\n    save_spu_quiet : out std_logic;\n'
              '    save_spu_adr : in unsigned(8 downto 0);\n    save_spu_wdata : in std_logic_vector(31 downto 0);\n'
              '    save_spu_rden : in std_logic;\n    save_spu_wren : in std_logic;\n'
@@ -359,7 +383,7 @@ def resource_wrapper_text(text):
             '        save_exp1_dataRead => save_exp1_dataRead,\n        save_set_go => save_set_go,\n'
             '        save_set_irq => save_set_irq,\n        save_set_dma => save_set_dma,\n'
             '        save_set_timer => save_set_timer,\n        save_timer_flags => save_timer_flags,\n'
-            '        save_gpu_ranges => save_gpu_ranges,\n' +
+            '        save_gpu_ranges => save_gpu_ranges,\n        save_cd_state => save_cd_state,\n' +
             ',\n'.join(f'        {n} => {n}' for n in SPU_SIGNALS))
     text = _sub_once(text, r'(\S)(\n    \);\nend architecture;)', lambda m: m.group(1) + ',\n' + maps + m.group(2), 'wrapper port map end')
     return text
@@ -375,7 +399,7 @@ SAVE_BLOCK = '''    // Save states (prepare_save_states.py): EXP1 device + APF s
     wire [1:0] save_disc;   // the disc in the drive - 1, assigned at the end of the module
     wire [12:0] save_exp1_addr; wire [7:0] save_exp1_dataWrite, save_exp1_dataRead;
     wire save_set_go; wire [10:0] save_set_irq; wire [6:0] save_set_dma; wire [11:0] save_set_timer, save_timer_flags;
-    wire [62:0] save_gpu_ranges;
+    wire [62:0] save_gpu_ranges; wire [63:0] save_cd_state;
     wire save_spu_hold, save_spu_quiet, save_spu_rden, save_spu_wren, save_spuram_req, save_spuram_rnw, save_spuram_done;
     wire [8:0] save_spu_adr; wire [31:0] save_spu_wdata, save_spu_rdata;
     wire [18:0] save_spuram_adr; wire [15:0] save_spuram_wdata, save_spuram_rdata;
@@ -383,7 +407,7 @@ SAVE_BLOCK = '''    // Save states (prepare_save_states.py): EXP1 device + APF s
     wire ss_supported, ss_start_ack, ss_start_busy, ss_start_ok, ss_start_err;
     wire ss_load_ack, ss_load_busy, ss_load_ok, ss_load_err, ss_start, ss_load;
     wire [31:0] ss_addr, ss_size, ss_maxloadsize;
-    psx_save_exp1 #(.ROM_HEX("{rom}"), .SAVE_BASE(32'h3000_0000), .SAVE_SIZE(32'h0040_0000)) save_exp1 (
+    psx_save_exp1 #(.ROM_HEX("{rom}"), .ROM2_HEX("{rom2}"), .SAVE_BASE(32'h3000_0000), .SAVE_SIZE(32'h0040_0000)) save_exp1 (
         .clk2x(clk2x), .reset_2x(mc_reset2x[1]),
         .bus_addr(save_exp1_addr), .bus_write(save_exp1_write), .bus_dataWrite(save_exp1_dataWrite),
         .bus_dataRead(save_exp1_dataRead), .trap(save_trap),
@@ -402,7 +426,8 @@ SAVE_BLOCK = '''    // Save states (prepare_save_states.py): EXP1 device + APF s
         .savestate_start(ss_start), .savestate_start_ack(ss_start_ack), .savestate_start_busy(ss_start_busy),
         .savestate_start_ok(ss_start_ok), .savestate_start_err(ss_start_err),
         .savestate_load(ss_load), .savestate_load_ack(ss_load_ack), .savestate_load_busy(ss_load_busy),
-        .savestate_load_ok(ss_load_ok), .savestate_load_err(ss_load_err), .disc(save_disc));
+        .savestate_load_ok(ss_load_ok), .savestate_load_err(ss_load_err), .disc(save_disc),
+        .cd_state(save_cd_state));
 '''
 
 CMD_MAP = {'savestate_supported': 'ss_supported', 'savestate_addr': 'ss_addr', 'savestate_size': 'ss_size',
@@ -410,6 +435,13 @@ CMD_MAP = {'savestate_supported': 'ss_supported', 'savestate_addr': 'ss_addr', '
            'savestate_start_busy': 'ss_start_busy', 'savestate_start_ok': 'ss_start_ok',
            'savestate_start_err': 'ss_start_err', 'savestate_load': 'ss_load', 'savestate_load_ack': 'ss_load_ack',
            'savestate_load_busy': 'ss_load_busy', 'savestate_load_ok': 'ss_load_ok', 'savestate_load_err': 'ss_load_err'}
+
+
+def rom2_hex(rom_hex):
+    """The second ROM's hex next to the first (build_save_fw.py writes both)."""
+    from pathlib import Path
+    path = Path(rom_hex)
+    return path.with_name(path.stem + '2' + path.suffix)
 
 
 def core_top_text(text, rom_hex, save_size=0x400000):
@@ -428,7 +460,7 @@ def core_top_text(text, rom_hex, save_size=0x400000):
                  '.aux_req(ss_aux_req),.aux_we(ss_aux_we),.aux_addr(ss_aux_addr),.aux_din(ss_aux_din),.aux_dout(ss_aux_dout),\n'
                  '        .aux_done(ss_aux_done),', 'VRAM aux port')
     text = text[:at] + vram + text[at + len(vram):]
-    block = SAVE_BLOCK.replace('{rom}', str(rom_hex))
+    block = SAVE_BLOCK.replace('{rom}', str(rom_hex)).replace('{rom2}', str(rom2_hex(rom_hex)))
     if save_size != 0x400000:
         block = block.replace(".SAVE_SIZE(32'h0040_0000)", f".SAVE_SIZE(32'h{save_size:08X})")
     text = _once(text, head, block + f'    psx_vram_psram #(.SAVE_AUX(1){", " + params if params else ""}) vram (',
@@ -449,6 +481,7 @@ def core_top_text(text, rom_hex, save_size=0x400000):
                                            '.save_exp1_dataWrite(save_exp1_dataWrite),.save_exp1_dataRead(save_exp1_dataRead),'
                                            '.save_set_go(save_set_go),.save_set_irq(save_set_irq),.save_set_dma(save_set_dma),'
                                            '.save_set_timer(save_set_timer),.save_timer_flags(save_timer_flags),.save_gpu_ranges(save_gpu_ranges),'
+                                           '.save_cd_state(save_cd_state),'
                                            + ''.join(f'.{n}({n}),' for n in SPU_SIGNALS),
                      'psx instance')
     start = text.index('core_bridge_cmd')
@@ -466,8 +499,8 @@ SDC = '''
 # and the request kind / result bit, held from before their toggle until the
 # far side has seen it.
 set_false_path -to [get_registers {*|psx_save_exp1:save_exp1|s74_fin[0] *|psx_save_exp1:save_exp1|s2x_req[0]}]
-set_max_delay 13 -from [get_registers {*|psx_save_exp1:save_exp1|req_load_74 *|psx_save_exp1:save_exp1|fin_ok_2x}]
-set_min_delay -13 -from [get_registers {*|psx_save_exp1:save_exp1|req_load_74 *|psx_save_exp1:save_exp1|fin_ok_2x}]
+set_max_delay 13 -from [get_registers {*|psx_save_exp1:save_exp1|req_load_74 *|psx_save_exp1:save_exp1|fin_ok_2x *|psx_save_exp1:save_exp1|size_pages[*]}]
+set_min_delay -13 -from [get_registers {*|psx_save_exp1:save_exp1|req_load_74 *|psx_save_exp1:save_exp1|fin_ok_2x *|psx_save_exp1:save_exp1|size_pages[*]}]
 '''
 
 
@@ -492,7 +525,7 @@ def prepare_project(directory, rom_hex, save_size=0x400000):
     work.mkdir()
     changes = {'cpu.vhd': cpu_trap_text, 'memorymux.vhd': memorymux_exp1_text, 'psx_top.vhd': psx_top_text,
                'irq.vhd': irq_set_text, 'dma.vhd': dma_set_text, 'timer.vhd': timer_tap_text, 'gpu.vhd': gpu_tap_text,
-               'spu.vhd': spu_tap_text,
+               'spu.vhd': spu_tap_text, 'cd_top.vhd': cd_tap_text,
                'psx_mister_psx_top_resource.vhd': resource_wrapper_text,
                'core_top.sv': lambda t: core_top_text(t, rom_hex, save_size)}
     for name, transform in changes.items():

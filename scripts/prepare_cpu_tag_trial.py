@@ -32,7 +32,9 @@ def apply_cpu_tag_trial(manifest,directory,contract_path):
         or not manifest.get('variant_flags',{}).get('no-turbo-cache') or 'cpu_tag_trial' in manifest):
         raise ValueError('private CPU tag trial requires fresh reset-only/no-turbo Pocket build')
     fixed=manifest['system_manifest']['targets']['psx_top']['fixed_ports']
-    if any(fixed.get(name)!="'0'" for name in ('TURBO_COMP','TURBO_MEM','TURBO_CACHE','TURBO_CACHE50')):
+    # --turbo-setting drives TURBO_COMP/TURBO_MEM from a live setting (prepare_turbo_setting.py); the cache ones stay '0'
+    if any(fixed.get(name)!="'0'" for name in ('TURBO_CACHE','TURBO_CACHE50')) or \
+            any(fixed.get(name) not in ("'0'", 'turbo_en') for name in ('TURBO_COMP','TURBO_MEM')):
         raise ValueError('CPU trial needs all turbo controls fixed off')
     if any(digest(Path(s['path']))!=s['sha256'] for s in manifest['sources']):
         raise ValueError('CPU preparation source identity changed')

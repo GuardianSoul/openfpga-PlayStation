@@ -35,6 +35,9 @@ module tb_psx_pocket_pad_combo;
         seen=0;for(i=0;i<TAP*2;i=i+1) begin step(1);if(buttons[SELECT]) seen=seen+1;end
         if(seen<TAP-4||seen>TAP+2) begin errors=errors+1;$display("FAIL tap pulse length %0d",seen);end
         expect_buttons(0,"tap pulse ended");
+        // A tap longer than the shortest pulse replays for as long as it was held.
+        press(1<<SELECT);step(TAP+20);press(0);seen=0;for(i=0;i<HOLD;i=i+1) begin step(1);if(buttons[SELECT]) seen=seen+1;end
+        if(seen<TAP+20||seen>TAP+26) begin errors=errors+1;$display("FAIL long tap replay %0d, want about %0d",seen,TAP+23);end
         // A brush shorter than the brush window never reaches the game.
         keys=1<<SELECT;step(4);press(0);seen=0;for(i=0;i<TAP*2;i=i+1) begin step(1);if(buttons[SELECT]) seen=1;end
         if(seen) begin errors=errors+1;$display("FAIL brush became a tap");end
@@ -67,6 +70,21 @@ module tb_psx_pocket_pad_combo;
         enable=0;press(1<<SELECT|1<<1);expect_buttons(0,"dpad combo with face combos off");
         if(dpad_combos!==4'b0010) begin errors=errors+1;$display("FAIL dpad-only combos %b",dpad_combos);end
         press(0);step(TAP*2);dpad_enable=0;enable=6'b111111;
+        // A held Select reaches the game for as long as it is held (Tenchu's map), once.
+        press(1<<SELECT);step(HOLD-8);expect_buttons(0,"select inside the hold window");
+        step(12);seen=0;for(i=0;i<200;i=i+1) begin step(1);if(buttons[SELECT]) seen=seen+1;end
+        if(seen!=200) begin errors=errors+1;$display("FAIL held select seen %0d of 200",seen);end
+        press(0);seen=0;for(i=0;i<TAP*2;i=i+1) begin step(1);if(buttons[SELECT]) seen=seen+1;end
+        if(seen) begin errors=errors+1;$display("FAIL select after a long hold: %0d",seen);end
+        // A combo partner late in the hold window (L/R and the D-pad): no Select at any time.
+        dpad_enable=1;
+        press(1<<SELECT);step(HOLD-12);press(1<<SELECT|1<<R1);seen=buttons[SELECT];expect_buttons(1<<R2,"late partner R");
+        press(1<<SELECT);step(HOLD*2);seen=seen+buttons[SELECT];press(0);for(i=0;i<TAP*2;i=i+1) begin step(1);seen=seen+buttons[SELECT]; end
+        press(1<<SELECT);step(HOLD-12);press(1<<SELECT|1<<1);seen=seen+buttons[SELECT];
+        if(dpad_combos!==4'b0010) begin errors=errors+1;$display("FAIL late D-pad partner %b",dpad_combos);end
+        press(0);for(i=0;i<TAP*2;i=i+1) begin step(1);seen=seen+buttons[SELECT]; end
+        if(seen) begin errors=errors+1;$display("FAIL select leaked into a combo");end
+        dpad_enable=0;
         // Every combo off: Select passes straight through.
         enable=0;press(1<<SELECT);expect_buttons(1<<SELECT,"select direct");
         press(1<<SELECT|1<<L1);expect_buttons(1<<SELECT|1<<L1,"no combos");

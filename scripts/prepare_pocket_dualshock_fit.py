@@ -30,7 +30,9 @@ SPU_QUEUE_SHA='169813eeab5a521bc897cc7a5c64923571a4fd52f2454ab49758ce27d11361be'
 PAD_TABLE_SHA='2f845f92c56c82fde1d933c4889a89968628246009e384fb969c5b87c61951e6'
 # 2e9058d: each port keeps its DualShock state, as upstream (--pad2; lockstep
 # with the pinned MiSTer pad in make test-joypad-pad-table / -dualshock-lean)
-PAD_TABLE_SHAS=(PAD_TABLE_SHA,'b6788a427cdd0d165966995a41ab8fba70a957a5726650b27ac0d09c40b13136')
+PAD_TABLE_SHAS=(PAD_TABLE_SHA,'b6788a427cdd0d165966995a41ab8fba70a957a5726650b27ac0d09c40b13136',
+               # 04403537: the same with DIGITAL_HOLD (Parasite Eve USA, prepare --digital-hold)
+               '04403537ac8315538353c87caf327b044417be33b1a779de5252080a81661f0d')
 
 def once(t,a,b):
 
@@ -97,9 +99,11 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
     qsf=project/'apf_top.qsf'
     selected=assignments(project,qsf.read_text())
     cache_paths={p for _,p in selected if p.name=='psx_spu_ch3_cache.sv'}
-    # b81de5f1: the same cache with the CHEAT port (off unless prepare --cheats)
+    # b81de5f1: the same cache with the CHEAT port (off unless prepare --cheats);
+    # 9bb0744e: plus VOICE_SETS (533c49b, default 0 = the address hash, so unchanged until prepare_spu_voice_sets.py)
     if len(cache_paths)!=1 or digest(next(iter(cache_paths))) not in ('1e65c93531ea81962f7eaf33d3ee5e0531629c754bfea41cb28999dd396e1911',
-                                                                      'b81de5f149563ddd9f4ac1c7364e90bfe7be390214af1b8d7683718eeba965c2'):
+                                                                      'b81de5f149563ddd9f4ac1c7364e90bfe7be390214af1b8d7683718eeba965c2',
+                                                                      '9bb0744e473b86b416319765ae6fc61d256994100c2603b6acc3ec55fac0c9ea'):
         raise ValueError('Released rc8 slim SPU cache and free-slot profile required')
     def one(name):
         paths={p for _,p in selected if p.name==name}
@@ -113,7 +117,7 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
             # prepare --pad-table: the table pad with the replaced pad's
             # STICK_DPAD/ANALOG_LEVEL defaults; checked with both at false.
             text=one('joypad_pad_table.vhd').read_text()
-            text=re.sub(r'(STICK_DPAD|ANALOG_LEVEL) : boolean := true',r'\1 : boolean := false',text)
+            text=re.sub(r'(STICK_DPAD|ANALOG_LEVEL|DIGITAL_HOLD) : boolean := true',r'\1 : boolean := false',text)
             sha=hashlib.sha256(text.encode()).hexdigest()
             return sha if sha in PAD_TABLE_SHAS else None
         if 'joypad_pad_dualshock_analog.vhd' in names and 'joypad_pad_dualshock.vhd' not in names:
@@ -127,7 +131,9 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
         raise ValueError('Budget emission differs from measured sources')
     core=one('core_top.sv').read_text()
     analog_sha=digest(one('psx_pocket_analog.sv'))
-    if analog_sha not in ('7ba041d832cb9209dfed45642caa2995dfb7fb6ff16d07a7859a6263e270d3e7','c329bb75dab0a24687d365aa1852333a52a462c619d610a5850dd9a6f7745a6a','81ee3571b73e1825701badf2459df8ef4f290b841419ac6bfcb3dbbeb0de00f9','ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033'):
+    if analog_sha not in ('7ba041d832cb9209dfed45642caa2995dfb7fb6ff16d07a7859a6263e270d3e7','c329bb75dab0a24687d365aa1852333a52a462c619d610a5850dd9a6f7745a6a','81ee3571b73e1825701badf2459df8ef4f290b841419ac6bfcb3dbbeb0de00f9','ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033',
+                         # 92c073e0: ca29019c with type 3 sticks checked as type 2 (#19)
+                         '92c073e06aff9ca4d515ed26bafe17531723e5db1da063fcb730c3be539d8fb7'):
         raise ValueError('Unreviewed analog transport')
     if ('psx_pocket_stick_map stick_map' not in core or not any(tag in core for tag in ('psx_pocket_analog pad_analog','psx_pocket_analog #(.PASS_CONFIG(1)')) or
             # 83d3cc78: the same pad with the ANALOG_LEVEL generic (--analog-setting, 77d5f25)
@@ -136,14 +142,16 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
                                  # 8cbbc514: 83d3cc78 with a name dropped from one comment (72cefc8)
                                  '8cbbc514d567d3ac59e34a6cad97868bcac24d26d597abef501416302cca35ad',
                                  # 964fd214: per-port DualShock state (2e9058d)
-                                 '964fd214d71db2a712cb2e1451b1188a1d387dd57811824a150d8e65dc7ebd40')):
+                                 '964fd214d71db2a712cb2e1451b1188a1d387dd57811824a150d8e65dc7ebd40',
+                                 # 3ed122d6: DIGITAL_HOLD (Parasite Eve USA, prepare --digital-hold)
+                                 '3ed122d6bcb0e11a729f1058193a6db20ab0a943985049525e4361dc9c8d07e3')):
         raise ValueError('Current DualShock and stick-settings profile required')
     atomic='psx_pocket_analog #(.PASS_CONFIG(1)' in core
     config_bits=16 if 'wire [15:0] pad_stick_config_in' in core else 15 if 'wire [14:0] pad_stick_config_in' in core else 13 if 'wire [12:0] pad_stick_config_in' in core else 4 if 'wire [3:0] pad_stick_config_in' in core else 0
     # 15 bits: the A/B/X/Y stick list (Claude, 2026-10-17) on the CONFIG_W transport;
     # 16: SELECT + D-Pad widened to 3 bits for its Face Buttons option (same transport).
-    if atomic and ((config_bits in (15,16) and analog_sha!='ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033') or
-                   (config_bits==13 and analog_sha not in ('81ee3571b73e1825701badf2459df8ef4f290b841419ac6bfcb3dbbeb0de00f9','ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033')) or
+    if atomic and ((config_bits in (15,16) and analog_sha not in ('ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033','92c073e06aff9ca4d515ed26bafe17531723e5db1da063fcb730c3be539d8fb7')) or
+                   (config_bits==13 and analog_sha not in ('81ee3571b73e1825701badf2459df8ef4f290b841419ac6bfcb3dbbeb0de00f9','ca29019c8fa94d791b63eb9529785214a14ab9345f878c7b11c9e66e173bd033','92c073e06aff9ca4d515ed26bafe17531723e5db1da063fcb730c3be539d8fb7')) or
                    (config_bits==4 and analog_sha!='c329bb75dab0a24687d365aa1852333a52a462c619d610a5850dd9a6f7745a6a') or config_bits==0):
         raise ValueError('Input-settings packet/transport version mismatch')
     sort_source=None

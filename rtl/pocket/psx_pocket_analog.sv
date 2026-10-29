@@ -2,9 +2,10 @@
 // DualShock inputs for prepare --dualshock: the Pocket menu's "DualShock"
 // checkbox and a docked controller's sticks, brought into the CPU clock.
 //
-// Sticks are believed for a docked pad that reports analog (APF type 3), or
-// a type 2 pad whose stick word is neither 0 nor all ones (what a pad without
-// sticks sends); otherwise every axis is centred (0x80). The handheld (type 1)
+// Sticks are believed for a docked pad of APF type 2 or 3 (analog) whose
+// stick word is neither 0 nor all ones (what a pad without sticks sends;
+// Parasite Eve II's menu, which reads the left stick, froze on a pinned
+// one, #19); otherwise every axis is centred (0x80). The handheld (type 1)
 // therefore always reports centred sticks. Byte order is APF's: [7:0] left X,
 // [15:8] left Y, [23:16] right X, [31:24] right Y, 0x00 = left/up as on a
 // real DualShock, so the bytes pass straight through.
@@ -26,7 +27,7 @@ module psx_pocket_analog #(parameter PASS_CONFIG=0, parameter integer CONFIG_W=1
     output reg [31:0] sticks=32'h80808080,
     output reg [CONFIG_W-1:0] config_out=CONFIG_RESET   // L/R, Select combos, D-pad modes
 );
-    wire believe=apf_type==4'h3 || (apf_type==4'h2 && apf_joy!=32'h0 && apf_joy!=32'hFFFFFFFF);
+    wire believe=(apf_type==4'h3 || apf_type==4'h2) && apf_joy!=32'h0 && apf_joy!=32'hFFFFFFFF;
     wire [CONFIG_W+32:0] source={PASS_CONFIG ? config_in : CONFIG_RESET,
                        dualshock_setting, believe ? apf_joy : 32'h80808080};
     // clk_74a side

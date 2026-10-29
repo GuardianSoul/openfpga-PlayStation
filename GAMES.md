@@ -70,8 +70,11 @@ next to it on the *Plugins* page) and choose *Generate game files*. Do it
 again whenever you add games. In the core, pick the
 game. The list starts with a *How to add games* entry until your first game
 file is generated; you can delete it from
-`Assets/playstation/GuardianSoul.PlayStation/`. Discs the core can't play
-yet are skipped with a message.
+`Assets/playstation/GuardianSoul.PlayStation/`. A disc the plugin can't
+make a game file for is skipped with a line saying why and what to do, and
+every run ends with a check of the BIOS. The plugin works only with this
+core (GuardianSoul.PlayStation): another developer's PlayStation core uses
+other game files and its own folder (`Assets/psx/common/`).
 
 Always make game files with the plugin. Pocket Sync's own *Games →
 Instance JSON* button and pupdate's core updates also write game files, one
@@ -104,6 +107,12 @@ A multi-disc game gets one game file that holds all of its discs. When the
 game asks for the next disc, open the Pocket menu, choose **Core Settings →
 Swap Discs** and pick the disc. The core opens and closes the lid for you,
 and remembers the disc you picked for next time.
+
+The core starts a multi-disc game on the disc picked in Swap Discs, and that
+choice is remembered for every game, not just the one you were playing. Pick
+Disc 1 before you launch another multi-disc game. Some games start from a
+disc of their own (Gran Turismo 2's Simulation Mode is disc 2): pick that
+disc, quit the game and launch it again.
 
 All discs of a game share one memory card,
 `Saves/playstation/common/<game>.sav` (the game's name without

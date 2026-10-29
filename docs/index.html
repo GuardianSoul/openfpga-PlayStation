@@ -82,7 +82,9 @@
     <h2>What it changes on the card</h2>
     <ul class="info card">
       <li>Generates one game file per game in <code>Assets/playstation/&lt;core&gt;/</code>. A game with several
-        discs ("Game (Disc 1)", "Game (Disc 2)", …) gets one file, named after the game.</li>
+        discs ("Game (Disc 1)", "Game (Disc 2)", …) gets one file, named after the game. Discs without a disc
+        number in their names count as one game when they are alone in a folder of their own
+        (<code>Game/disc1.cue</code>, <code>Game/disc2.cue</code>); the game is named after the folder.</li>
       <li>Deletes the separate per-disc game files of those games, because the new file replaces them.</li>
       <li>Gives each multi-disc game one memory card for all its discs,
         <code>Saves/playstation/common/&lt;game&gt;.sav</code>. It starts as a copy of the card from the disc you
@@ -120,7 +122,8 @@
   $('choose').addEventListener('click', async () => {
     let picked;
     try { picked = await window.showDirectoryPicker({ id: 'pocket-sd', mode: 'readwrite' }); } catch (e) { return; }
-    const cores = await PocketInstances.findCores(picked);
+    const all = await PocketInstances.findCores(picked);
+    const cores = all.filter((c) => c.supported), others = all.filter((c) => !c.supported).map((c) => c.id);
     const note = $('card');
     note.classList.remove('hidden');
     $('result').classList.add('hidden');
@@ -128,8 +131,12 @@
       card = null;
       $('run').disabled = true;
       $('core-row').classList.add('hidden');
-      note.innerHTML = '<span class="warn">No PlayStation core found in ' + escape(picked.name) +
-        '/Cores.</span> Pick the SD card itself, and install the core first.';
+      note.innerHTML = others.length
+        ? '<span class="warn">' + escape(others.join(' and ')) + ' is another developer\'s PlayStation core.</span> This page makes game ' +
+          'files only for the GuardianSoul.PlayStation core, which is not on this SD card. Install it (in pupdate or Pocket Sync), ' +
+          'put each game in its own folder in Assets/playstation/common/, then pick the card again.'
+        : '<span class="warn">No PlayStation core found in ' + escape(picked.name) +
+          '/Cores.</span> Pick the SD card itself, and install the GuardianSoul.PlayStation core first.';
       return;
     }
     card = picked;
@@ -171,17 +178,31 @@
     window.addEventListener('beforeunload', stay);
     try {
       if ((await card.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('the browser was not allowed to change the card');
-      const result = await PocketInstances.makeInstances(card, {
-        core: option.value, platform: option.dataset.platform,
-        convert: split, removeOriginals: split && $('replace').checked,
-      }, (line) => { log.textContent += line + '\n'; log.scrollTop = log.scrollHeight; });
-      summary.className = 'ok';
-      summary.textContent = `Done: ${result.written} game file${result.written === 1 ? '' : 's'} written` +
+      const say = (line) => { log.textContent += line + '\n'; log.scrollTop = log.scrollHeight; };
+      const platform = option.dataset.platform;
+      const elsewhere = await PocketInstances.gamesElsewhere(card, platform);
+      if (elsewhere) say(`Your games are in ${elsewhere}, but ${option.value} looks for them in Assets/${platform}/common: ` +
+                         'move each game\'s folder there, then Generate game files again.');
+      let result;
+      try {
+        result = await PocketInstances.makeInstances(card, {
+          core: option.value, platform,
+          convert: split, removeOriginals: split && $('replace').checked,
+        }, say);
+      } finally {
+        say(`Checking the BIOS in Assets/${platform}/common ...`);
+        for (const line of await PocketInstances.checkBios(card, option.value, platform)) say(line);
+      }
+      summary.className = result.written ? 'ok' : 'warn';
+      if (!result.written) summary.textContent = 'No game files made: see the lines below for what to do.';
+      else summary.textContent = `Done: ${result.written} game file${result.written === 1 ? '' : 's'} written` +
         (result.skipped ? `, ${result.skipped} skipped (see below)` : '') +
         '. Eject the card safely before taking it out.';
     } catch (error) {
       summary.className = 'warn';
-      summary.textContent = 'Stopped: ' + error.message;
+      // Games only in another folder: the log already says to move them there.
+      summary.textContent = /^Your games are in /m.test(log.textContent) ? 'No game files made: see the lines below for what to do.'
+        : 'Stopped: ' + error.message;
     } finally {
       window.removeEventListener('beforeunload', stay);
       $('run').disabled = $('choose').disabled = false;

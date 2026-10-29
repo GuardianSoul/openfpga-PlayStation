@@ -146,7 +146,8 @@ def apply_gte_adapter(manifest):
     if name=='psx_top': required.update({key:"'0'" for key in ('save_state','load_state','rewind_on','rewind_active')})
     else: required.update({key:"'0'" for key in ('loading_savestate','SS_wren','SS_rden')})
     for port,value in required.items():
-        if target['fixed_ports'].get(port)!=value:
+        # --turbo-setting: psx_top's TURBO_COMP may be the live setting; its igte port is tied '0' (prepare_turbo_setting.py)
+        if target['fixed_ports'].get(port)!=value and not (name=='psx_top' and port=='TURBO_COMP' and target['fixed_ports'].get(port)=='turbo_en'):
             raise ValueError('Candidate GTE control contract not satisfied: '+port)
     directory=Path(target['directory']); generated=directory/'gte-adapter'
     sources=adapter_sources(generated)

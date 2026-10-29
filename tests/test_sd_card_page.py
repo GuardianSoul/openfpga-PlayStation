@@ -119,12 +119,64 @@ def cue_reader_card(card):
     (card/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': CUE_READER}}))
 
 
+def folder_discs(common):
+    """Discs whose names have no disc tag, a folder each: one game's discs
+    ("Riven/disc1", "disc2", with music on disc 2; "Lost/1", "2", "3"), and
+    folders that are not one game: sequels, different titles, five discs, a
+    tagged disc. Plus a Disc 2 alone and a game's discs under different
+    folders."""
+    for folder, stem, audio in (('Riven', 'disc1', 0), ('Riven', 'disc2', 2), ('Lost', '1', 0), ('Lost', '2', 0), ('Lost', '3', 0),
+                                ('Sequels', 'Tekken 2', 0), ('Sequels', 'Tekken 3', 0), ('Mixed', 'Crash', 0), ('Mixed', 'Spyro 2', 0), ('Pair', 'Alpha 1', 0), ('Pair', 'Beta 2', 0),
+                                ('Five', 'cd1', 0), ('Five', 'cd2', 0), ('Five', 'cd3', 0), ('Five', 'cd4', 0), ('Five', 'cd5', 0),
+                                ('Tagged', 'Alone (Disc 1)', 0), ('Tagged', 'other 2', 0), ('Lonely (Disc 2)', 'Lonely (Disc 2)', 0),
+                                ('A/Spread (Disc 1)', 'Spread (Disc 1)', 0), ('B/Spread (Disc 2)', 'Spread (Disc 2)', 1),
+                                ('Gran Turismo 2 (USA)', 'Gran Turismo 2 (USA) (Disc 1) (Arcade Mode)', 0),
+                                ('Gran Turismo 2 (USA)', 'Gran Turismo 2 (USA) (Disc 2) (Simulation Mode)', 0)):
+        with_audio(common/folder, stem, audio)
+    # An earlier run named Gran Turismo 2 after disc 1's tags: its game file
+    # and playlist go, the shared card keeps that name.
+    out = common.parent/CORE
+    out.mkdir(parents=True, exist_ok=True)
+    (out/'Gran Turismo 2 (USA) (Arcade Mode).json').write_text('{}')
+    (common/'Gran Turismo 2 (USA)/Gran Turismo 2 (USA) (Arcade Mode).m3u').write_text(
+        'Gran Turismo 2 (USA) (Disc 1) (Arcade Mode).cue\nGran Turismo 2 (USA) (Disc 2) (Simulation Mode).cue\n')
+
+
 def tree(card):
     return {p.relative_to(card).as_posix(): p.read_bytes() for p in sorted(card.rglob('*')) if p.is_file()}
 
 
 @unittest.skipUnless(NODE, 'node not installed')
 class SdCardPage(unittest.TestCase):
+    def test_cores_games_elsewhere_and_bios(self):
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            make_card(card)
+            other = card/'Cores/akoaysigod.PSX'   # another developer's core: no slots 100 and 101+
+            other.mkdir()
+            (other/'core.json').write_text(json.dumps({'core': {'metadata': {'platform_ids': ['psx']}}}))
+            (other/'data.json').write_text(json.dumps({'data': {'data_slots': [{'id': 0, 'extensions': ['cue']}]}}))
+            shutil.move(card/'Assets/playstation/common', card/'Assets/psx/common')
+            (card/'Assets/playstation/common').mkdir()
+            bios = bytearray(524288)
+            bios[0x7ff32:0x7ff32 + 33] = b'System ROM Version 4.1 12/16/97 E'
+            (card/'Assets/psx/common/PSX BIOS.bin').write_bytes(bios)
+            checks = lambda: subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(card), '--checks'],
+                                            check=True, capture_output=True, text=True).stdout.splitlines()
+            self.assertEqual(checks(), [
+                'core GuardianSoul.PlayStation playstation supported', 'elsewhere Assets/psx/common',
+                "Assets/psx/common/PSX BIOS.bin is a Europe PlayStation BIOS, but the core doesn't look for it there: "
+                'copy it to Assets/playstation/common/ as scph5502.bin',
+                'core akoaysigod.PSX psx other'])
+            (card/'Assets/psx/common/PSX BIOS.bin').unlink()
+            self.assertIn("No BIOS found: the core can't start games without one. Copy your PlayStation BIOS to "
+                          'Assets/playstation/common/ as scph5501.bin (USA), scph5500.bin (Japan) or scph5502.bin (Europe)', checks())
+            (card/'Assets/playstation/common/scph1001.bin').write_bytes(bytes(1000))
+            (card/'Assets/playstation/common/SCPH5501.BIN').write_bytes(bios[:0x7ff32] + b'System ROM Version 4.1 12/16/97 A' + bios[0x7ff32+33:])
+            self.assertEqual(checks()[2:4], ['BIOS SCPH5501.BIN: USA (System ROM Version 4.1 12/16/97 A), OK',
+                                             'BIOS scph1001.bin is 1 KB, but a PlayStation BIOS is exactly 512 KB: '
+                                             "replace it with a full dump of your console's BIOS"])
+
     def test_page_matches_the_script(self):
         with TemporaryDirectory() as tmp:
             script, page = Path(tmp)/'script', Path(tmp)/'page'
@@ -143,10 +195,10 @@ class SdCardPage(unittest.TestCase):
             out = page/'Assets/playstation'/CORE
             names = sorted(p.name for p in out.iterdir())
             self.assertNotIn(help_entry.name, names)   # the release placeholder goes
-            self.assertIn('Final Fantasy IX (v1.1).json', names)
+            self.assertIn('Final Fantasy IX.json', names)
             self.assertIn('Game.json', names)
             self.assertNotIn('Final Fantasy IX (USA) (Disc 4) (Rev 1).json', names)
-            ff9 = json.loads((out/'Final Fantasy IX (v1.1).json').read_text())['instance']['data_slots']
+            ff9 = json.loads((out/'Final Fantasy IX.json').read_text())['instance']['data_slots']
             self.assertEqual([s['id'] for s in ff9], [100, 101, 201, 301, 401, 16])
             self.assertEqual((page/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').read_bytes(), b'disc 4')
             self.assertEqual((page/'Saves/playstation/common/Legend (USA).sav').read_bytes(), b'kept')
@@ -204,11 +256,11 @@ class SdCardPage(unittest.TestCase):
                                 check=True, capture_output=True, text=True)
             self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
             self.assertEqual(tree(script), tree(page))
-            self.assertIn('wrote Final Fantasy IX (v1.1).json (4 discs, playlist Final Fantasy IX (USA)/Final Fantasy IX (v1.1).m3u)', js.stdout)
+            self.assertIn('wrote Final Fantasy IX.json (4 discs, playlist Final Fantasy IX (USA)/Final Fantasy IX.m3u)', js.stdout)
             out = page/'Assets/playstation'/CORE
-            ff9 = json.loads((out/'Final Fantasy IX (v1.1).json').read_text())['instance']
+            ff9 = json.loads((out/'Final Fantasy IX.json').read_text())['instance']
             self.assertEqual(ff9, {'magic': 'APF_VER_1', 'data_path': '',
-                                   'data_slots': [{'id': 100, 'filename': 'Final Fantasy IX (USA)/Final Fantasy IX (v1.1).m3u'},
+                                   'data_slots': [{'id': 100, 'filename': 'Final Fantasy IX (USA)/Final Fantasy IX.m3u'},
                                                   {'id': 101, 'filename': 'Final Fantasy IX (USA)/Final Fantasy IX (Disc 1) (v1.1).bin'},
                                                   {'id': 16, 'filename': 'Final Fantasy IX (v1.1).sav'}]})
             self.assertFalse((out/'Final Fantasy IX (USA) (Disc 4) (Rev 1).json').exists())   # per-disc file from an earlier run
@@ -301,6 +353,39 @@ class SdCardPage(unittest.TestCase):
                 self.assertFalse((out/'Star Wars Rebel Assault II Disc2.json').exists())
                 self.assertTrue((out/'Tekken 2.json').exists() and (out/'Tekken 2 Demo.json').exists())
 
+    def test_folder_discs_match_the_script(self):
+        # Discs grouped by their folder, the folders that stay apart and the
+        # disc warnings, as the script does them, for both core kinds.
+        for reader in (False, True):
+            with self.subTest(reader=reader), TemporaryDirectory() as tmp:
+                script, page = Path(tmp)/'script', Path(tmp)/'page'
+                if reader:
+                    cue_reader_card(script)
+                    declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
+                    (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+                else:
+                    make_card(script)
+                folder_discs(script/'Assets/playstation/common')
+                shutil.copytree(script, page)
+                py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                     '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+                js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                    check=True, capture_output=True, text=True)
+                self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+                self.assertEqual(tree(script).keys(), tree(page).keys())
+                for name, data in tree(script).items():
+                    self.assertEqual(tree(page)[name], data, name)
+                self.assertIn('Riven: 2 discs in one folder, grouped as one game', js.stdout)
+                self.assertIn('warning: Spread: its discs are in different folders', js.stdout)
+                out = page/'Assets/playstation'/CORE
+                self.assertTrue((out/'Lost.json').exists())
+                self.assertEqual((out/'Riven.json').exists(), reader)   # the older core takes 2 files of disc 2
+                self.assertFalse((out/'disc1.json').exists())
+                self.assertTrue((out/'Gran Turismo 2 (USA).json').exists())
+                self.assertFalse((out/'Gran Turismo 2 (USA) (Arcade Mode).json').exists())
+                self.assertIn('Gran Turismo 2 (USA) (Arcade Mode).sav', (out/'Gran Turismo 2 (USA).json').read_text())
+                self.assertEqual((page/'Assets/playstation/common/Gran Turismo 2 (USA)/Gran Turismo 2 (USA) (Arcade Mode).m3u').exists(), not reader)
+
     def test_track_sizes_match_the_script(self):
         # A cue-reader core that declares slot 97: cues opened by path (more
         # files than 101-104) get <cue>.tsz and their game files name it,
@@ -327,7 +412,7 @@ class SdCardPage(unittest.TestCase):
                 legend = json.loads((page/'Assets/playstation'/CORE/'Legend (USA).json').read_text())['instance']['data_slots']
                 self.assertIn({'id': 97, 'filename': 'Legend (Disc 1)/Legend (USA) (Disc 1).tsz'}, legend)
                 self.assertTrue(any(n.endswith('.tsz') for n in tree(page)))
-                odd = json.loads((page/'Assets/playstation'/CORE/('Odd (v1.1).json' if playlist else 'Odd (Disc 1) (v1.1).json')).read_text())['instance']['data_slots']
+                odd = json.loads((page/'Assets/playstation'/CORE/('Odd.json' if playlist else 'Odd (Disc 1) (v1.1).json')).read_text())['instance']['data_slots']
                 self.assertIn({'id': 97, 'filename': 'Odd (USA)/Odd (Disc 1) (v1.1).tsz'}, odd)
 
     def test_cue_reader_core_matches_the_script(self):
@@ -350,7 +435,8 @@ class SdCardPage(unittest.TestCase):
                              ['Assets/playstation/common/Bin Only/Bin Only (USA).cue'])   # no .bin, no .trk
             self.assertEqual((page/'Assets/playstation/common/Bin Only/Bin Only (USA).cue').read_text(),
                              'FILE "Bin Only (USA).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
-            self.assertIn('skip Lost Cue/Lost (USA) (Track 1).bin: a track file whose .cue is missing', js.stdout)
+            self.assertIn("skip Lost Cue/Lost (USA) (Track 1).bin: it is one track of a disc whose .cue is missing: "
+                          "put the disc's .cue next to it", js.stdout)
             self.assertIn('wrote Bin Only (USA).json (1 track, cue)', js.stdout)
             out = page/'Assets/playstation'/CORE
             legend = json.loads((out/'Legend (USA).json').read_text())['instance']
@@ -364,8 +450,8 @@ class SdCardPage(unittest.TestCase):
             # FFIX's discs differ by more than their number: a playlist the core
             # file list can open, and (slot 100 takes no .m3u) one file per disc, one card.
             self.assertIn("Final Fantasy IX: the discs' names differ by more than their number: wrote the playlist "
-                          "Final Fantasy IX (USA)/Final Fantasy IX (v1.1).m3u", js.stdout)
-            self.assertEqual((page/'Assets/playstation/common/Final Fantasy IX (USA)/Final Fantasy IX (v1.1).m3u').read_text(),
+                          "Final Fantasy IX (USA)/Final Fantasy IX.m3u", js.stdout)
+            self.assertEqual((page/'Assets/playstation/common/Final Fantasy IX (USA)/Final Fantasy IX.m3u').read_text(),
                              'Final Fantasy IX (Disc 1) (v1.1).cue\nFinal Fantasy IX (Disc 2) (v1.1).cue\n'
                              'Final Fantasy IX (Disc 3) (v1.1).cue\nFinal Fantasy IX (USA) (Disc 4) (Rev 1).cue\n')
             for disc in ('Final Fantasy IX (Disc 1) (v1.1)', 'Final Fantasy IX (USA) (Disc 4) (Rev 1)'):

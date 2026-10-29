@@ -55,7 +55,7 @@ class CPUHold(unittest.TestCase):
     @unittest.skipUnless(tcl_command(),'Tcl interpreter unavailable')
     def test_only_one_complete_known_family_is_accepted(self):
         scope=ROOT/'scripts/pocket_cpu_hold_scope.tcl'
-        for fault in ('none','vram','missing','extra','period','master','hierarchy','duplicate-index','unknown','two-vram','vram-period'):
+        for fault in ('none','vram','missing','extra','period','master','hierarchy','duplicate-index','unknown','two-vram','vram-period','vram-x3'):
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as tmp:
                 clocks=['c0','c1','c2'];periods=[29.524,14.762,9.841]
                 names=[f'ic|cpu_pll|general[{i}].gpll~PLL_OUTPUT_COUNTER|divclk' for i in range(3)];masters=['cpu-vco']*3
@@ -66,8 +66,8 @@ class CPUHold(unittest.TestCase):
                 if fault=='hierarchy':names[2]='other|'+names[2]
                 if fault=='duplicate-index':names[2]=names[1]
                 if fault=='unknown':names[2]='unknown'
-                if fault in ('vram','two-vram','vram-period'):
-                    clocks.append('c3');periods.append(15.0 if fault=='vram-period' else 14.762)
+                if fault in ('vram','two-vram','vram-period','vram-x3'):
+                    clocks.append('c3');periods.append({'vram-period':15.0,'vram-x3':9.841}.get(fault,14.762))
                     names.append('ic|cpu_pll|general[3].gpll~PLL_OUTPUT_COUNTER|divclk');masters.append('cpu-vco')
                 if fault=='two-vram':clocks.append('c4');periods.append(14.762);names.append(names[3]);masters.append('cpu-vco')
                 data='\n'.join('dict set '+field+' c'+str(i)+' {'+str(value)+'}' for field,values in [('names',names),('periods',periods),('masters',masters)] for i,value in enumerate(values))
@@ -83,7 +83,7 @@ proc get_clock_info {field clock} {
 proc set_clock_uncertainty {args} {puts "APPLIED $args"}
 '''+data+'\nset clocks {'+' '.join(clocks)+'}\nsource {'+str(scope)+'}\n')
                 r=subprocess.run([*tcl_command(),str(script)],capture_output=True,text=True,timeout=15)
-                ok=fault in ('none','vram')
+                ok=fault in ('none','vram','vram-x3')
                 self.assertEqual(r.returncode==0,ok,(fault,r.stdout,r.stderr))
                 self.assertEqual('APPLIED' in r.stdout,ok)
                 if ok:self.assertEqual(sorted(l for l in r.stdout.splitlines() if l.startswith('APPLIED')),

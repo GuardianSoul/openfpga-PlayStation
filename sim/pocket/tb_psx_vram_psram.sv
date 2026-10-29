@@ -32,12 +32,23 @@ module tb_psx_vram_psram;
     parameter integer FOREIGN = 0;
     localparam [15:0] START_BCR = FOREIGN ? 16'h1D1F : 16'h9D1F;   // 1D1F: synchronous, variable latency code 3
     localparam [15:0] START_RCR = FOREIGN ? 16'h0011 : 16'h0010;   // 0011: half-array refresh
-    localparam real PERIOD = 14.763;          // clk2x 67.7376 MHz
+    parameter real PERIOD = 14.763;           // clk2x 67.7376 MHz (clk3x: 9.842)
+    parameter integer CLK_KHZ = 67738;        // controller clock, for its power-up wait
+    parameter integer SLOW_DIV = 2;           // clk3x: 3
+    parameter integer READ_PIPE = 0;          // X3: 1 (realistic pin delays put the word one clk later)
+    parameter integer OUT_REG = 0;            // X3: 1 (output register stage, per-pin DQ enables)
+    parameter integer X3 = 0;                 // controller on clk3x behind psx_vram_x3 (use PERIOD 14.766: 2:3 aligned at 1 ps)
+    parameter real T_LAT_MIN = 60.0;          // chip: latency code x tCLK (code 6 is rated to 108 MHz: 55.6 ns)
 
     `include "psx_vram_psram_windows.svh"
 
     reg clk = 0;
     always #(PERIOD/2) clk = !clk;
+    // X3: clk3x with rising edges aligned to clk's
+    reg clk3 = 0;
+    initial if (X3 != 0) begin #(PERIOD/2); forever begin clk3 = 1; #(PERIOD/3); clk3 = 0; #(PERIOD/3); end end
+    wire cclk = X3 != 0 ? clk3 : clk;     // controller and chip clock
+    localparam real CPERIOD = X3 != 0 ? PERIOD * 2 / 3 : PERIOD;
     function automatic integer now_cyc; now_cyc = $rtoi($realtime / PERIOD); endfunction
 
     reg reset = 1, park = 0;
@@ -51,17 +62,39 @@ module tb_psx_vram_psram;
     wire c0_clk, c1_clk, c0_adv_n, c1_adv_n, c0_cre, c1_cre, c0_ce0_n, c1_ce0_n, c0_ce1_n, c1_ce1_n;
     wire c0_oe_n, c1_oe_n, c0_we_n, c1_we_n, c0_ub_n, c1_ub_n, c0_lb_n, c1_lb_n;
     reg  [15:0] c0_dq_in = 16'hzzzz, c1_dq_in = 16'hzzzz;
+    wire [15:0] c0_oe_pin, c1_oe_pin;   // per-pin DQ enables; the board model uses bit 0, the rest must match it
 
-    psx_vram_psram #(.LATENCY(LATENCY), .ROW_LOG2(ROW_LOG2), .FULL_RATE(FULL_RATE != 0)) dut (
-        .clk(clk), .reset(reset), .park(park),
-        .ddr_busy(ddr_busy), .ddr_burstcnt(ddr_burstcnt), .ddr_addr(ddr_addr), .ddr_dout(ddr_dout),
-        .ddr_dout_ready(ddr_dout_ready), .ddr_rd(ddr_rd), .ddr_din(ddr_din), .ddr_be(ddr_be), .ddr_we(ddr_we),
-        .aux_req(aux_req), .aux_we(aux_we), .aux_addr(aux_addr), .aux_din(aux_din), .aux_dout(aux_dout),
-        .aux_done(aux_done), .card_write(card_write),
-        .cram0_a(c0_a), .cram0_dq_out(c0_dq_out), .cram0_dq_oe(c0_dq_oe), .cram0_dq_in(c0_dq_in),
+    // controller-side DDR/aux ports: the bench's own (X3 = 0) or psx_vram_x3's
+    wire k_busy, k_dout_ready, k_rd, k_we, k_aux_req, k_aux_we, k_aux_done, k_card_write;
+    wire [7:0] k_burstcnt, k_be; wire [24:0] k_addr; wire [63:0] k_dout, k_din;
+    wire [20:0] k_aux_addr; wire [31:0] k_aux_din;
+    generate if (X3 != 0) begin : x3
+        psx_vram_x3 bridge (.clk2x(clk), .clk3x(clk3), .reset(reset),
+            .ddr_busy(ddr_busy), .ddr_burstcnt(ddr_burstcnt), .ddr_addr(ddr_addr), .ddr_dout(ddr_dout),
+            .ddr_dout_ready(ddr_dout_ready), .ddr_rd(ddr_rd), .ddr_din(ddr_din), .ddr_be(ddr_be), .ddr_we(ddr_we),
+            .aux_req(aux_req), .aux_we(aux_we), .aux_addr(aux_addr), .aux_din(aux_din),
+            .aux_done(aux_done), .card_write(card_write),
+            .c_busy(k_busy), .c_burstcnt(k_burstcnt), .c_addr(k_addr), .c_dout(k_dout), .c_dout_ready(k_dout_ready),
+            .c_rd(k_rd), .c_din(k_din), .c_be(k_be), .c_we(k_we), .c_aux_req(k_aux_req), .c_aux_we(k_aux_we),
+            .c_aux_addr(k_aux_addr), .c_aux_din(k_aux_din), .c_aux_done(k_aux_done), .c_card_write(k_card_write));
+    end else begin : direct
+        assign ddr_busy = k_busy, ddr_dout = k_dout, ddr_dout_ready = k_dout_ready;
+        assign aux_done = k_aux_done, card_write = k_card_write;
+        assign k_burstcnt = ddr_burstcnt, k_addr = ddr_addr, k_rd = ddr_rd, k_din = ddr_din, k_be = ddr_be, k_we = ddr_we;
+        assign k_aux_req = aux_req, k_aux_we = aux_we, k_aux_addr = aux_addr, k_aux_din = aux_din;
+    end endgenerate
+
+    psx_vram_psram #(.LATENCY(LATENCY), .ROW_LOG2(ROW_LOG2), .FULL_RATE(FULL_RATE != 0 || X3 != 0), .CLK_KHZ(CLK_KHZ),
+                     .SLOW_DIV(X3 != 0 ? 3 : SLOW_DIV), .READ_PIPE(READ_PIPE), .OUT_REG(OUT_REG != 0)) dut (
+        .clk(cclk), .reset(reset), .park(park),
+        .ddr_busy(k_busy), .ddr_burstcnt(k_burstcnt), .ddr_addr(k_addr), .ddr_dout(k_dout),
+        .ddr_dout_ready(k_dout_ready), .ddr_rd(k_rd), .ddr_din(k_din), .ddr_be(k_be), .ddr_we(k_we),
+        .aux_req(k_aux_req), .aux_we(k_aux_we), .aux_addr(k_aux_addr), .aux_din(k_aux_din), .aux_dout(aux_dout),
+        .aux_done(k_aux_done), .card_write(k_card_write),
+        .cram0_a(c0_a), .cram0_dq_out(c0_dq_out), .cram0_dq_oe(c0_dq_oe), .cram0_dq_oe_pin(c0_oe_pin), .cram0_dq_in(c0_dq_in),
         .cram0_clk(c0_clk), .cram0_adv_n(c0_adv_n), .cram0_cre(c0_cre), .cram0_ce0_n(c0_ce0_n),
         .cram0_ce1_n(c0_ce1_n), .cram0_oe_n(c0_oe_n), .cram0_we_n(c0_we_n), .cram0_ub_n(c0_ub_n), .cram0_lb_n(c0_lb_n),
-        .cram1_a(c1_a), .cram1_dq_out(c1_dq_out), .cram1_dq_oe(c1_dq_oe), .cram1_dq_in(c1_dq_in),
+        .cram1_a(c1_a), .cram1_dq_out(c1_dq_out), .cram1_dq_oe(c1_dq_oe), .cram1_dq_oe_pin(c1_oe_pin), .cram1_dq_in(c1_dq_in),
         .cram1_clk(c1_clk), .cram1_adv_n(c1_adv_n), .cram1_cre(c1_cre), .cram1_ce0_n(c1_ce0_n),
         .cram1_ce1_n(c1_ce1_n), .cram1_oe_n(c1_oe_n), .cram1_we_n(c1_we_n), .cram1_ub_n(c1_ub_n), .cram1_lb_n(c1_lb_n));
 
@@ -72,11 +105,11 @@ module tb_psx_vram_psram;
     // FULL_RATE: cram*_clk is a clock enable; a DDIO output clocked PHASE ns
     // after clk sends a high half-period when it was set at that clk edge
     reg  ddio0 = 0, ddio1 = 0;
-    always @(posedge clk) if (FULL_RATE != 0) fork
+    always @(posedge cclk) if (FULL_RATE != 0 || X3 != 0) fork
         begin #(PHASE) ddio0 = c0_clk; ddio1 = c1_clk; end
-        begin #(PHASE + PERIOD/2) ddio0 = 0; ddio1 = 0; end
+        begin #(PHASE + CPERIOD/2) ddio0 = 0; ddio1 = 0; end
     join_none
-    wire pin0_clk = FULL_RATE != 0 ? ddio0 : c0_clk, pin1_clk = FULL_RATE != 0 ? ddio1 : c1_clk;
+    wire pin0_clk = FULL_RATE != 0 || X3 != 0 ? ddio0 : c0_clk, pin1_clk = FULL_RATE != 0 || X3 != 0 ? ddio1 : c1_clk;
     always @(pin0_clk) d0_clk <= #(CLK_DLY) pin0_clk;    always @(pin1_clk) d1_clk <= #(CLK_DLY) pin1_clk;
     always @(c0_a) d0_a <= #(CTL_DLY) c0_a;              always @(c1_a) d1_a <= #(CTL_DLY) c1_a;
     always @(c0_adv_n) d0_adv <= #(CTL_DLY) c0_adv_n;    always @(c1_adv_n) d1_adv <= #(CTL_DLY) c1_adv_n;
@@ -89,14 +122,16 @@ module tb_psx_vram_psram;
     always @(c0_lb_n) d0_lb <= #(CTL_DLY) c0_lb_n;       always @(c1_lb_n) d1_lb <= #(CTL_DLY) c1_lb_n;
     always @(c0_dq_out) d0_dq <= #(DQ_DLY) c0_dq_out;    always @(c1_dq_out) d1_dq <= #(DQ_DLY) c1_dq_out;
     always @(c0_dq_oe) d0_oe <= #(DQ_DLY) c0_dq_oe;      always @(c1_dq_oe) d1_oe <= #(DQ_DLY) c1_dq_oe;
+    always @(posedge cclk) #0.1 if (c0_oe_pin !== {16{c0_dq_oe}} || c1_oe_pin !== {16{c1_dq_oe}})
+        fail("per-pin DQ enables differ");
     wire [15:0] bus0 = d0_oe ? d0_dq : 16'bz;
     wire [15:0] bus1 = d1_oe ? d1_dq : 16'bz;
     always @(bus0) c0_dq_in <= #(RET_DLY) bus0;
     always @(bus1) c1_dq_in <= #(RET_DLY) bus1;
 
-    psx_cram_model #(.CHIP(0), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .T_CLK_MIN(T_CLK_MIN), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip0 (.clk(d0_clk), .host_oe(d0_oe), .a(d0_a), .dq(bus0),
+    psx_cram_model #(.CHIP(0), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .T_CLK_MIN(T_CLK_MIN), .T_LAT_MIN(T_LAT_MIN), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip0 (.clk(d0_clk), .host_oe(d0_oe), .a(d0_a), .dq(bus0),
         .ce0_n(d0_ce0), .ce1_n(d0_ce1), .adv_n(d0_adv), .oe_n(d0_oen), .we_n(d0_wen), .ub_n(d0_ub), .lb_n(d0_lb), .cre(d0_cre));
-    psx_cram_model #(.CHIP(1), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .T_CLK_MIN(T_CLK_MIN), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip1 (.clk(d1_clk), .host_oe(d1_oe), .a(d1_a), .dq(bus1),
+    psx_cram_model #(.CHIP(1), .T_ACLK(T_ACLK), .T_KOH(T_KOH), .T_CLK_MIN(T_CLK_MIN), .T_LAT_MIN(T_LAT_MIN), .START_BCR(START_BCR), .START_RCR(START_RCR)) chip1 (.clk(d1_clk), .host_oe(d1_oe), .a(d1_a), .dq(bus1),
         .ce0_n(d1_ce0), .ce1_n(d1_ce1), .adv_n(d1_adv), .oe_n(d1_oen), .we_n(d1_wen), .ub_n(d1_ub), .lb_n(d1_lb), .cre(d1_cre));
 
     // ---- golden memory

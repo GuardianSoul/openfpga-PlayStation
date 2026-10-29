@@ -121,7 +121,7 @@ def save_bridge(directory):
 def apply_gte_save_adapter(manifest):
     if set(manifest['targets'])!={'psx_top'}:raise ValueError('Save adapter requires connected psx_top')
     target=manifest['targets']['psx_top']
-    if target['fixed_ports'].get('WIDESCREEN')!='"00"' or target['fixed_ports'].get('TURBO_COMP')!="'0'":
+    if target['fixed_ports'].get('WIDESCREEN')!='"00"' or target['fixed_ports'].get('TURBO_COMP') not in ("'0'", 'turbo_en'):
         raise ValueError('GTE save adapter requires normal geometry and timing')
     directory=Path(target['directory']); generated=directory/'gte-save-adapter'
     sources=save_adapter_sources(generated); bridge=save_bridge(generated)

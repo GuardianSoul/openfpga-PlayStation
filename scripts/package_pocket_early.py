@@ -52,6 +52,7 @@ def main():
     parser.add_argument('--one-file-disc', action='store_true', help='prepare --one-file-disc: disc n is one .bin in slot 100*n+1 and its track table (.trk) in 100*n+2 (make_pocket_instances.py merges track files)')
     parser.add_argument('--multi-track', type=int, default=0, help='Discs as instance JSONs: cue slot 100, track bins 101..100+N (prepare --multi-track N)')
     parser.add_argument('--logo-skip-setting', action='store_true', help='Menu checkbox "Skip BIOS Logo" (prepare --logo-skip-setting)')
+    parser.add_argument('--turbo-setting', action='store_true', help='Menu list "Turbo Mode": Off (default) / On (scripts/prepare_turbo_setting.py, bridge 0x50000080)')
     parser.add_argument('--fast-bios-setting', action='store_true', help='Menu checkbox "Fast BIOS Boot" (scripts/prepare_fast_bios.py, bridge 0x50000070)')
     parser.add_argument('--field-swap-setting', action='store_true', help='Menu checkbox to swap the 480i field order (prepare --field-swap-setting)')
     parser.add_argument('--shoulder-setting', action='store_true', help='Menu lists for what L and R press (prepare --shoulder-setting)')
@@ -60,9 +61,11 @@ def main():
     parser.add_argument('--video-test-setting', action='store_true', help='Diagnostic Settings list "Video test" (prepare --video-test-setting)')
     parser.add_argument('--wide-lines', action='store_true', help='Scaler slots 640x240/480/288 for stretched lines (prepare --wide-lines)')
     parser.add_argument('--analog-setting', action='store_true', help='With --dualshock: the DualShock checkbox becomes a "Controller Mode" list, Digital (default) / Analog, switched without a restart (prepare --analog-setting)')
+    parser.add_argument('--track-sizes', action='store_true', help='Data slot 97 for a game JSON\'s track sizes (<cue name>.tsz, make_pocket_instances.py and the plugin): with --cue-mount the boot mount of a cue whose files are opened by path skips their openfile and size probes')
     parser.add_argument('--cheats', action='store_true', help='Data slot 98 for a game\'s cheat list and the Core Settings "Cheats" checkbox, off at every launch (prepare --cheats; make_pocket_instances.py fills the slot)')
     parser.add_argument('--true-color', action='store_true', help='Core Settings "True Color" checkbox, off by default (prepare --true-color)')
     parser.add_argument('--dither-setting', action='store_true', help='Core Settings "Dithering" checkbox, on by default (prepare --dither-setting)')
+    parser.add_argument('--deinterlace-setting', action='store_true', help='Core Settings "Deinterlacing" list (DEINTERLACE below), right under Aspect Ratio (prepare --deinterlace-setting)')
     parser.add_argument('--aspect-setting', action='store_true', help='With --hybrid-slots: Core Settings "Aspect Ratio" list (4:3 = Fit / Fill Screen = Stretch) and its slots: 640/320/256 x 240, 640x480 and 640x288 at 4:3, then 640x240, 640x480 and 640x288 at 10:9 (prepare --aspect-setting)')
     parser.add_argument('--dbl-320', action='store_true', help='With --fit-368: slot 1 is 640x480 at 10:9 instead of 320x240 (prepare --dbl-320)')
     parser.add_argument('--pal-shape', action='store_true', help='prepare --pal-shape: the PAL Fill slot is 640x512')
@@ -220,6 +223,12 @@ def main():
             # its .sbi from here.
             slots.append({'name': 'LibCrypt (sbi)', 'id': 99, 'required': False, 'parameters': '0x08', 'deferload': True,
                           'extensions': ['sbi'], 'size_maximum': '0x930'})
+        if args.track_sizes:
+            # cue_mount.c tsz_word: each FILE's sectors for a cue-only game
+            # JSON (at most 3 + 99 words).
+            if not args.cue_mount: parser.error('--track-sizes needs --cue-mount')
+            slots.append({'name': 'Track sizes', 'id': 97, 'required': False, 'parameters': '0x08', 'deferload': True,
+                          'extensions': ['tsz'], 'size_maximum': '0x200'})
         if args.cheats:
             # prepare --cheats: the cue reader's firmware reads the game's
             # GameShark list (plain or libretro .cht) from here at launch.
@@ -302,6 +311,18 @@ def main():
     write('input.json', {'input': {'magic': 'APF_VER_1', 'controllers': [{'type': 'default',
         'mappings': [{'id': i, 'name': n, 'key': k} for i, (k, n) in enumerate(buttons)]}]}})
     variables = []
+    # prepare --deinterlace-setting: the menu's name and option names live only here
+    DEINTERLACE = {'name': 'Deinterlacing', 'id': 43, 'address': '0x50000084', 'options': ('Bob', 'Weave')}
+    if args.deinterlace_setting:
+        # 0 Bob (default): each 480i field line-doubled, steadied; 1 Weave: the
+        # Pocket weaves the fields, as 0.5.6. Taken at the next frame.
+        qsf_t = (project/'apf_top.qsf').read_text()
+        tops = [Path(c) for c in re.findall(r'"([^"]*/core_top\.sv)"', qsf_t)] + list(project.rglob('core_top.sv'))
+        if not any(c.is_file() and 'deint_sync' in c.read_text() for c in tops):
+            parser.error('--deinterlace-setting: this project was not prepared with --deinterlace-setting')
+        variables.append({'name': DEINTERLACE['name'], 'id': DEINTERLACE['id'], 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': DEINTERLACE['address'], 'defaultval': 0,
+                          'options': [{'value': i, 'name': n} for i, n in enumerate(DEINTERLACE['options'])]})
     if args.weave_setting:
         # prepare --weave-setting: 480i as woven full frames (on) or plain fields.
         variables.append({'name': '480i weave', 'id': 1, 'type': 'check', 'enabled': True, 'persist': True,
@@ -320,6 +341,24 @@ def main():
         # its shell runs at full speed. Off gives the console's own timing.
         variables.append({'name': 'Fast BIOS Boot', 'id': 36, 'type': 'check', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x50000070', 'defaultval': 1, 'value': 1, 'value_off': 0})
+    if args.turbo_setting:
+        # prepare --turbo-setting: Off (default) keeps the PS1 timing; On skips PS1
+        # RAM/CPU/DMA wait states (MiSTer turbo without the GTE part). Faster than a PS1.
+        # Later steps (e.g. prepare_spu_voice_sets.py) re-point core_top/psx_top copies, so look in the
+        # compiled core_top.sv as well as for the turbo-setting folder.
+        qsf_text = (project/'apf_top.qsf').read_text()
+        cores = [Path(p) for p in re.findall(r'SYSTEMVERILOG_FILE "([^"]*/core_top\.sv)"', qsf_text)]
+        def local(c):   # a captured project keeps the fit host's absolute paths: rebase them on this project
+            if c.is_file(): return c
+            parts = c.parts
+            return project.joinpath(*parts[parts.index(project.name) + 1:]) if project.name in parts else c
+        cores = [local(c) for c in cores]
+        if 'turbo_en' not in qsf_text and not (project/'turbo-setting').is_dir() and \
+                not any(c.is_file() and 'turbo_en' in c.read_text() for c in cores):
+            parser.error('--turbo-setting: this project was not prepared with --turbo-setting')
+        variables.append({'name': 'Turbo Mode', 'id': 42, 'type': 'list', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000080', 'defaultval': 0,
+                          'options': [{'value': 0, 'name': 'Off'}, {'value': 1, 'name': 'On'}]})
     if args.analog_setting:
         if not args.dualshock: parser.error('--analog-setting needs --dualshock')
         # prepare --analog-setting: always a DualShock; Digital or Analog mode,
@@ -453,7 +492,7 @@ def main():
     # Discs, Skip BIOS Logo, Cheats), then the picture, then the controller
     # (its mode, then the button lists in their 2026-10-17 order). Ids and
     # values stay as they were, so saved settings and game files still work.
-    MENU_ORDER = (21, 2, 36, 30, 27, 35, 32, 34, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
+    MENU_ORDER = (21, 2, 36, 42, 30, 27, 43, 35, 32, 34, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
     variables.sort(key=lambda v: MENU_ORDER.index(v['id']))
     write('interact.json', {'interact': {'magic': 'APF_VER_1', 'variables': variables, 'messages': []}})
     write('variants.json', {'variants': {'magic': 'APF_VER_1', 'variant_list': []}})

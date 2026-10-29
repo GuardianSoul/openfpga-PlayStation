@@ -282,6 +282,53 @@ class MultiDiscGroup(unittest.TestCase):
             self.assertIn({'id': 16, 'filename': 'Myst (USA).sav'}, myst)
             self.assertEqual([s['id'] for s in json.loads((out/'Tekken 2.json').read_text())['instance']['data_slots']], [100, 101])
 
+    def test_folder_discs(self):
+        # A subfolder of 2-4 cues without disc tags, named as one game's discs,
+        # is one game named after the folder; other folders stay apart.
+        from tests.test_sd_card_page import folder_discs
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); folder_discs(card/'Assets/playstation/common')
+            core = card/'Cores/GuardianSoul.PSXEarlyMD'; core.mkdir(parents=True)
+            declared = ([{'id': 0}, {'id': 16}, {'id': 100}] + [{'id': 101+k} for k in range(19)]
+                        + [{'id': 100*n + k} for n in (2, 3, 4) for k in (1, 2, 3)])
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            run = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
+                                 check=True, capture_output=True, text=True).stdout
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
+            self.assertEqual(sorted(p.name for p in out.iterdir()),
+                             ['Alone.json', 'Alpha 1.json', 'Beta 2.json', 'Crash.json', 'Gran Turismo 2 (USA).json', 'Lost.json', 'Riven.json', 'Spread.json', 'Spyro 2.json', 'Tekken 2.json',
+                              'Tekken 3.json', 'cd1.json', 'cd2.json', 'cd3.json', 'cd4.json', 'cd5.json', 'other 2.json'])
+            riven = json.loads((out/'Riven.json').read_text())['instance']
+            self.assertEqual(riven['data_slots'], [{'id': 100, 'filename': 'Riven/disc1.cue'}, {'id': 101, 'filename': 'Riven/disc1 (Track 1).bin'},
+                                                   {'id': 201, 'filename': 'Riven/disc2 (Track 1).bin'}, {'id': 202, 'filename': 'Riven/disc2 (Track 2).bin'},
+                                                   {'id': 203, 'filename': 'Riven/disc2 (Track 3).bin'}, {'id': 16, 'filename': 'Riven.sav'}])
+            self.assertEqual([s['id'] for s in json.loads((out/'Lost.json').read_text())['instance']['data_slots']], [100, 101, 201, 301, 16])
+            self.assertIn('Riven: 2 discs in one folder, grouped as one game', run)
+            self.assertIn('skip Lonely: disc 1 is missing (found discs 2): put it in Assets/playstation/common too', run)
+            self.assertIn('warning: Spread: its discs are in different folders (A/Spread (Disc 1), B/Spread (Disc 2)); put them in one folder', run)
+
+    def test_tags_one_disc_has_leave_the_name(self):
+        # Gran Turismo 2's discs: "(Arcade Mode)" and "(Simulation Mode)" are
+        # not the game's name. The shared card keeps its earlier name, and
+        # the game file of the earlier name (with disc 1's tag) goes.
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp); common = card/'Assets/playstation/common'
+            stems = ('Gran Turismo 2 (USA) (Disc 1) (Arcade Mode)', 'Gran Turismo 2 (USA) (Disc 2) (Simulation Mode)')
+            for n, stem in enumerate(stems, 1):
+                game = common/stem; game.mkdir(parents=True)
+                (game/f'{stem}.bin').write_bytes(sectors(n, 4))
+                (game/f'{stem}.cue').write_text(f'FILE "{stem}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            core = card/'Cores/GuardianSoul.PSXEarlyMD'; core.mkdir(parents=True)
+            declared = [{'id': 0}, {'id': 16}, {'id': 100}] + [{'id': 101+k} for k in range(19)] + [{'id': 201}]
+            (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'; out.mkdir(parents=True)
+            (out/'Gran Turismo 2 (USA) (Arcade Mode).json').write_text('{}')   # from an earlier run
+            subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
+                           check=True, capture_output=True)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ['Gran Turismo 2 (USA).json'])
+            slots = json.loads((out/'Gran Turismo 2 (USA).json').read_text())['instance']['data_slots']
+            self.assertIn({'id': 16, 'filename': 'Gran Turismo 2 (USA) (Arcade Mode).sav'}, slots)
+
     def test_release_tags_do_not_split_a_game(self):
         with TemporaryDirectory() as tmp:
             card = Path(tmp); common = card/'Assets/playstation/common'
@@ -295,8 +342,8 @@ class MultiDiscGroup(unittest.TestCase):
             subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
                            check=True, capture_output=True)
             out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ['Game (v1.1).json'])
-            slots = json.loads((out/'Game (v1.1).json').read_text())['instance']['data_slots']
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ['Game.json'])
+            slots = json.loads((out/'Game.json').read_text())['instance']['data_slots']
             self.assertEqual([s['id'] for s in slots if s['id'] != 16], [100, 101, 201])
 
 

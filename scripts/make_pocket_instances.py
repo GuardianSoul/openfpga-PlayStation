@@ -87,6 +87,7 @@ import tempfile
 
 SECTOR = 2352
 RESERVE = 256 << 20   # space every write keeps free on the SD card
+BIOS_BYTES = 512 << 10   # a PlayStation BIOS is exactly this size; no disc image is
 PREGAP = 150
 LIBCRYPT_SLOT = 99
 CHEAT_SLOT = 98
@@ -115,11 +116,37 @@ CUE_FILE_SLOTS = 19
 RELEASE = re.compile(r'\s*\([^()]*\)')
 
 
+def folder_discs(stems):
+    """Disc numbers of the cues of one folder that no disc tag groups ("disc1",
+    "disc2"; "1", "2"): each name's last number, the rest of the names equal,
+    the numbers 1..n. None when the names point to different games ("Tekken
+    2" with "Tekken 3", "Crash" with "Spyro")."""
+    keys, numbers = set(), []
+    for stem in stems:
+        s = RELEASE.sub('', stem).lower()
+        found = list(re.finditer(r'[0-9]+', s))
+        if not found: return None
+        numbers.append(int(found[-1][0]))
+        keys.add(re.sub(r'[^a-z0-9]', '', s[:found[-1].start()] + s[found[-1].end():]))
+    return numbers if len(keys) == 1 and sorted(numbers) == list(range(1, len(stems)+1)) else None
+
+
 def shared_card_name(stem):
     """'Game (USA) (Disc 2)' -> 'Game (USA).sav' ('Game Disc2' -> 'Game.sav'); None for single-disc games."""
     if DISC.search(stem): return DISC.sub('', stem, count=1) + '.sav'
     tag = disc_tag(stem)
     return tag[1].strip() + '.sav' if tag else None
+
+
+def group_title(stems):
+    """A name-grouped game's file name: disc 1's name without its disc tag,
+    keeping only the tags in parentheses that every disc has ("Gran Turismo 2
+    (USA) (Disc 1) (Arcade Mode)" with "... (Disc 2) (Simulation Mode)" ->
+    "Gran Turismo 2 (USA)")."""
+    names = [disc_tag(s)[1] if disc_tag(s) else s for s in stems]
+    tags = [[t.strip() for t in RELEASE.findall(n)] for n in names]
+    if all(k == tags[0] for k in tags): return names[0].strip()
+    return (RELEASE.sub('', names[0]).strip() + ''.join(f' {t}' for t in tags[0] if all(t in k for k in tags))).strip()
 
 
 def group_card(stems):
@@ -234,6 +261,48 @@ def lone_bin_cue(text_name):
     return f'FILE "{text_name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
 
 
+def explain(reason):
+    """A skip reason as a plain sentence that ends with what to do about it
+    (the plugin's explain() in instances.rs, instances.js's explain())."""
+    dump = "use the disc's .cue/.bin or .chd"
+    if m := re.fullmatch(r'(.+): file missing', reason):
+        return f'{m[1]} is missing: put it next to the .cue, with the name the .cue gives it'
+    if m := re.fullmatch(r'(.+): not whole 2352-byte sectors', reason):
+        return f'{m[1]} is not a raw CD image (its size is not whole 2352-byte sectors): {dump}'
+    if m := re.fullmatch(r'track (\d+): (.+) is not 2352-byte sectors', reason):
+        return f"track {m[1]} is {m[2]}, which the core can't read: {dump} with 2352-byte sectors"
+    if re.fullmatch(r'no FILE entries|\S* ?before (TRACK|FILE)', reason):
+        return f"the .cue is damaged ({reason}): get the disc's real .cue"
+    if m := re.fullmatch(r'(\d+) track files \(core takes (\d+)\)', reason):
+        return f'{m[1]} track files, but this core takes {m[2]}: update the core to the latest version'
+    if reason.endswith('(merged image)'):
+        return f'{reason}: Generate game files again and choose to convert it'
+    return {
+        'a track file whose .cue is missing': "it is one track of a disc whose .cue is missing: put the disc's .cue next to it",
+        'not whole 2352-byte sectors': f'it is not a raw CD image (its size is not whole 2352-byte sectors): {dump}',
+        'not enough free space for its .cue': 'the SD card is full: free some space, then Generate game files again',
+        'CHD image not extracted': 'CHD image not extracted: Generate game files again and choose to convert it',
+    }.get(reason, reason)
+
+
+def disc_gap(numbers, declared, platform):
+    """Why a multi-disc game's discs (numbers, sorted) can't make one game file, and what to do."""
+    missing = next(n for n in range(1, len(numbers) + 2) if n not in numbers)
+    if missing < numbers[-1]:
+        return (f'disc {missing} is missing (found discs {", ".join(map(str, numbers))}): '
+                f'put it in Assets/{platform}/common too, in its own folder')
+    return f'{len(numbers)} discs, but this core takes {declared}: update the core to the latest version'
+
+
+def nothing_made(written, skipped, platform):
+    """The closing line when a run made no game files, or None."""
+    if written: return None
+    if not skipped:
+        return (f"No games found in Assets/{platform}/common: put each disc's .cue and .bin files in its own folder there, "
+                'then Generate game files again.')
+    return 'No game files made: fix what the skip lines above say, then Generate game files again.'
+
+
 def lone_bins(common):
     """.bin files under common that no cue in their folder names and that
     have no <name>.cue: (bin, reason or None). A reason means it is skipped:
@@ -241,7 +310,9 @@ def lone_bins(common):
     found = []
     for b in sorted(p for p in common.rglob('*') if p.suffix.lower() == '.bin' and p.is_file() and not p.name.startswith('._')):
         folder = b.parent
-        if b.name.endswith(' (one file).bin') or b.with_suffix('.cue').is_file(): continue
+        # A BIOS (512 KB, or named like one) is not a disc.
+        if (b.name.endswith(' (one file).bin') or b.with_suffix('.cue').is_file() or b.stat().st_size == BIOS_BYTES
+                or re.fullmatch(r'scph\d+\.bin', b.name, re.I)): continue
         named, broken = set(), False
         for cue in folder.iterdir():
             if cue.suffix.lower() != '.cue' or cue.name.startswith('._') or not cue.is_file(): continue
@@ -262,10 +333,10 @@ def write_lone_cues(common, log=print):
     for b, reason in lone_bins(common):
         shown = b.relative_to(common).as_posix()
         if reason:
-            log(f'skip {shown}: {reason}'); skipped += 1; continue
+            log(f'skip {shown}: {explain(reason)}'); skipped += 1; continue
         text = lone_bin_cue(b.name).encode()
         if shutil.disk_usage(common).free < len(text) + RESERVE:
-            log(f'skip {shown}: not enough free space for its .cue'); skipped += 1; continue
+            log(f'skip {shown}: {explain("not enough free space for its .cue")}'); skipped += 1; continue
         b.with_suffix('.cue').write_bytes(text)
         log(f'wrote {b.with_suffix(".cue").relative_to(common).as_posix()} (one data track; a game with CD music needs its own .cue)')
         written += 1
@@ -577,6 +648,19 @@ def main():
     for cue in visible(common, '*.cue'):
         if tag := disc_tag(cue.stem): (first if tag[0] == 1 else later).add(RELEASE.sub('', tag[1]).strip())
     untagged_first = later - first
+    # A subfolder holding only 2-4 cues that no disc tag groups, named as one
+    # game's discs, is that game ("Riven/disc1.cue", "Riven/disc2.cue"),
+    # named after the folder.
+    by_folder = {}
+    for cue in visible(common, '*.cue'):
+        if cue.parent != common: by_folder.setdefault(cue.parent, []).append(cue)
+    folder_disc = {}   # cue -> (disc number, game key)
+    for folder, cues in by_folder.items():
+        if not 2 <= len(cues) <= 4 or any(disc_tag(c.stem) or RELEASE.sub('', c.stem).strip() in untagged_first for c in cues): continue
+        numbers = folder_discs([c.stem for c in cues])
+        if numbers:
+            for c, n in zip(cues, numbers): folder_disc[c] = (n, folder.relative_to(common).as_posix() + '/')   # never a title's key
+    folder_games = {key for _, key in folder_disc.values()}
     for cue in visible(common, '*.cue'):
         folder = cue.parent
         try: files = parse_cue(cue)
@@ -596,9 +680,13 @@ def main():
         if reason is None and not (args.one_file or args.cue_reader) and len(files) > args.max_tracks: reason = f'{len(files)} track files (core takes {args.max_tracks})'
         if reason and (folder/cue.stem/(cue.stem + '.cue')).is_file(): continue  # converted copy is listed
         if reason:
-            print(f'skip {cue.relative_to(common)}: {reason}'); skipped += 1; continue
+            print(f'skip {cue.relative_to(common)}: {explain(reason)}'); skipped += 1; continue
         tag = disc_tag(cue.stem)
         if not tag and RELEASE.sub('', cue.stem).strip() in untagged_first: tag = (1, cue.stem)
+        if cue in folder_disc and discs_declared > 1:
+            number, game = folder_disc[cue]
+            games.setdefault(game, {}).setdefault(number, []).append((cue, files, [], tracks_n if args.one_file or args.cue_reader else None))
+            continue
         if tag and discs_declared > 1:
             number, name = tag
             game = RELEASE.sub('', name).strip()
@@ -611,14 +699,31 @@ def main():
         first_tags = found.get(1, [(None, None, [], None)])[0][2]
         parts = {n: next(((c, f, k) for c, f, t, k in cands if t == first_tags), (cands[0][0], cands[0][1], cands[0][3])) for n, cands in found.items()}
         numbers = sorted(parts)
+        by_folder = game in folder_games
+        label = Path(game).name if by_folder else game
         if numbers != list(range(1, len(numbers)+1)) or len(numbers) > discs_declared:
-            print(f'skip {game}: discs {numbers} (core takes discs 1-{discs_declared})'); skipped += 1; continue
+            print(f'skip {label}: {disc_gap(numbers, discs_declared, args.platform)}'); skipped += 1; continue
+        # The discs of one game in folders of different folders ("A/X (Disc
+        # 1)/", "B/X (Disc 2)/"): grouped by their names all the same.
+        if len({parts[n][0].parent.parent for n in numbers}) > 1 and len({parts[n][0].parent for n in numbers}) > 1:
+            print(f'warning: {label}: its discs are in different folders ('
+                  + ', '.join(parts[n][0].parent.relative_to(common).as_posix() for n in numbers)
+                  + '); put them in one folder')
+        if by_folder: print(f'{label}: {len(numbers)} discs in one folder, grouped as one game')
+        # A folder's discs: the game file and shared card take the folder's name.
+        # Before group_title(), disc 1's name: its game file is replaced.
+        old_title = None if by_folder else disc_tag(parts[1][0].stem)[1].strip() if disc_tag(parts[1][0].stem) else parts[1][0].stem
+        new_title = label if by_folder else group_title([parts[n][0].stem for n in numbers])
+        title = lambda cue1: new_title
+        old_names = [parts[n][0].stem for n in numbers] + ([old_title] if old_title and old_title != new_title else [])
+        card_of = lambda: label + '.sav' if by_folder else group_card(parts[n][0].stem for n in numbers)
         too_long = [] if args.one_file or args.cue_reader else [n for n in numbers[1:] if len(parts[n][1]) > disc_tracks[n]]
         if too_long:
-            print(f'skip {game}: disc {too_long[0]} has more track files than the core declares'); skipped += 1; continue
+            print(f'skip {label}: disc {too_long[0]} has more track files than the core declares: '
+                  'update the core to the latest version'); skipped += 1; continue
         if args.cue_reader and not sibling_paths(parts[1][0], {n: parts[n][0] for n in numbers[1:]}):
             # The core can't find the other discs by name: a playlist lists them.
-            name = disc_tag(parts[1][0].stem)[1].strip() if disc_tag(parts[1][0].stem) else parts[1][0].stem
+            name = title(parts[1][0])
             root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
             m3u = root/(name + '.m3u')
             if len(numbers) <= 4:
@@ -630,7 +735,7 @@ def main():
                     {'id': 101+k, 'filename': (cue1.parent/f).relative_to(root).as_posix()} for k, (f, _) in enumerate(parts[1][1])]
                 if cue1 in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': (cue1.parent/sizes_files[cue1]).relative_to(root).as_posix()})
                 prefix = data_path + '/' if data_path != '.' else ''
-                shared = group_card(parts[n][0].stem for n in numbers) if args.shared_cards else None
+                shared = card_of() if args.shared_cards else None
                 if shared:
                     for s in slots: s['filename'] = prefix + s['filename']
                     slots.append({'id': CARD_SLOT, 'filename': shared})
@@ -639,16 +744,18 @@ def main():
                 instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
                 out.mkdir(parents=True, exist_ok=True)
                 (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
-                for n in numbers:
-                    if parts[n][0].stem != name: (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
+                for stale in old_names:
+                    if stale != name: (out/(stale + '.json')).unlink(missing_ok=True)
+                old_m3u = root/(f'{old_title}.m3u')   # the playlist under the old name, if it is ours
+                if old_title and old_title != name and old_m3u.is_file() and old_m3u.read_text() == m3u.read_text(): old_m3u.unlink()
                 print(f'wrote {name}.json ({len(numbers)} discs, playlist {m3u.relative_to(common).as_posix()})'); written += 1
                 continue
             if len(numbers) <= 4:
-                print(f'{game}: the discs\' names differ by more than their number: wrote the playlist '
+                print(f'{label}: the discs\' names differ by more than their number: wrote the playlist '
                       f'{m3u.relative_to(common).as_posix()} (pick it in the core\'s file list to swap discs); each disc also gets its own game file')
             else:
-                print(f'{game}: the discs\' names differ by more than their number, so each disc gets its own game file')
-            for n in numbers: single(*parts[n], shared_card=group_card(parts[k][0].stem for k in numbers)); written += 1
+                print(f'{label}: the discs\' names differ by more than their number, so each disc gets its own game file')
+            for n in numbers: single(*parts[n], shared_card=card_of()); written += 1
             continue
         root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
         rel = lambda cue, name: (cue.parent/name).relative_to(root).as_posix()
@@ -665,7 +772,7 @@ def main():
         if cue1 in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': rel(cue1, sizes_files[cue1])})   # disc 1's, for the boot mount
         data_path = root.relative_to(common).as_posix()
         prefix = data_path + '/' if data_path != '.' else ''
-        shared = group_card(parts[n][0].stem for n in numbers) if args.shared_cards else None
+        shared = card_of() if args.shared_cards else None
         if shared:   # the same shared card as the per-disc files would use
             for s in slots: s['filename'] = prefix + s['filename']
             slots.append({'id': CARD_SLOT, 'filename': shared})
@@ -675,18 +782,20 @@ def main():
         out.mkdir(parents=True, exist_ok=True)
         # Named after disc 1 without its disc tag, as before tags were ignored
         # ("Final Fantasy VII (USA).json").
-        name = disc_tag(cue1.stem)[1].strip() if disc_tag(cue1.stem) else cue1.stem
+        name = title(cue1)
         (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
-        for n in numbers:   # per-disc files from earlier runs (not this one: an untagged disc 1 has its name)
-            if parts[n][0].stem != name: (out/(parts[n][0].stem + '.json')).unlink(missing_ok=True)
+        for stale in old_names:   # per-disc files and older names from earlier runs (not this one: an untagged disc 1 has its name)
+            if stale != name: (out/(stale + '.json')).unlink(missing_ok=True)
         print(f'wrote {name}.json ({len(numbers)} disc{"s" if len(numbers) > 1 else ""})'); written += 1
     if written:   # the release's "how to add games" placeholder
         (out/HELP_ENTRY).unlink(missing_ok=True)
     for name, stems in sorted(discs.items()):
         seeded = seed_shared_card(args.card, args.platform, args.core, stems, name)
         if seeded: print(f'shared card {name} starts from {seeded.name}')
-    print(f'{written} instance files in {out}, {skipped} skipped'
+    print(f'{written} game files in {out}, {skipped} skipped'
           + (f', {len(discs)} multi-disc games share a card' if discs else ''))
+    hint = nothing_made(written, skipped, args.platform)
+    if hint: print(hint)
 
 
 if __name__ == '__main__':

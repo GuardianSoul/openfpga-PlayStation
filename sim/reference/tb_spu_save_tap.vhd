@@ -211,6 +211,7 @@ begin
                     (FAULT = 4 and address = 4);
         end;
         variable v16 : std_logic_vector(15 downto 0);
+        variable a16 : std_logic_vector(15 downto 0);
         variable v32 : std_logic_vector(31 downto 0);
         variable waited : natural;
         variable state_diffs : natural := 0;
@@ -233,6 +234,8 @@ begin
         for i in 0 to 16#FF# loop bus_read(ba, 2 * i, v16); g(i) := v16; end loop;
         for i in 0 to 511 loop if ss_saved(i) then ss_read(ba, ssa, i, v32); s(i) := v32; end if; end loop;
         s(43) := g(16#DD#) & g(16#DC#);   -- current main volume: the port only writes it, the registers read it
+        s(37) := g(16#CF#) & g(16#CE#);   -- ENDX and STAT (IRQ9): the port no longer reads them back
+        s(40) := g(16#D7#) & x"0000";
         -- load B: SPU RAM first, as the save routine (the RAM model holds the
         -- same data for both, so only the on-chip capture and reverb areas)
         for i in 0 to 16#7FF# loop ram_copy(ba, bb, 2 * i); end loop;
@@ -265,7 +268,7 @@ begin
         -- small phase offset: its sample-position word is not compared)
         pm := g(16#C9#) & g(16#C8#);
         for i in 0 to 511 loop
-            if ss_saved(i) and i /= 43 and not (i >= 384 and i < 480 and (i - 384) mod 4 = 2 and pm((i - 384) / 4) = '1') then
+            if ss_saved(i) and i /= 43 and i /= 37 and i /= 40 and not (i >= 384 and i < 480 and (i - 384) mod 4 = 2 and pm((i - 384) / 4) = '1') then
                 ss_read(ba, ssa, i, v32); s(i) := v32;
                 ss_read(bb, ssb, i, v32);
                 if v32 /= s(i) then
@@ -274,6 +277,16 @@ begin
                     end if;
                     state_diffs := state_diffs + 1;
                 end if;
+            end if;
+        end loop;
+        for i in 0 to 2 loop   -- ENDX and STAT by guest reads
+            bus_read(ba, 16#19C# + 2 * i + 14 * (i / 2), v16); a16 := v16;
+            bus_read(bb, 16#19C# + 2 * i + 14 * (i / 2), v16);
+            if v16 /= a16 then
+                if state_diffs < 4 then
+                    report "SPU save tap: end register " & to_hstring(to_unsigned(16#19C# + 2 * i + 14 * (i / 2), 12)) & " A=" & to_hstring(a16) & " B=" & to_hstring(v16);
+                end if;
+                state_diffs := state_diffs + 1;
             end if;
         end loop;
         report "SPU save tap: cycles=" & natural'image(cycles) & " mismatches=" & natural'image(mismatches) &

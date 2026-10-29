@@ -23,7 +23,8 @@ HOLD = '6a0f9b621fb4a05f948671fb95488db90abc68759637045c15441eb14399ee53'
 # the reviewed hold scope; the second (48781c9) also accepts the --vram-full-rate
 # chip clock general[3] and leaves it out of the margin, the same 9 CPU pairs
 HOLD_SCOPE = ('90ae3ebe6be262a6198e2f9200e73a5d0806a8bbaacfdfa1cdf2a7be936636df',
-              '9b60631e6477c2b59de3da2e29730675fe99292572f4c0c51db721814536e189')
+              '9b60631e6477c2b59de3da2e29730675fe99292572f4c0c51db721814536e189',
+              '23f4cd8c9a3c94cf1fe30e845b52244517b7982d3c333168fab0c568b2ca5987')   # + --vram-x3 chip clock at the clk3x period
 LICENSE = '8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643'
 
 def require(ok, message):

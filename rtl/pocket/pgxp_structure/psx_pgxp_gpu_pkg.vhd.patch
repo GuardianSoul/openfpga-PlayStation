@@ -1,8 +1,0 @@
---- psx_pgxp_gpu_pkg.vhd
-+++ psx_pgxp_gpu_pkg.vhd
-@@ -11,4 +11,5 @@
-       quotient : signed(52 downto 0);
-       remainder : signed(32 downto 0);
-    end record;
-+   type pgxp_div_array is array(0 to 5)of pgxp_div_type;
- end package;

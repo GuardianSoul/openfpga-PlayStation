@@ -14,7 +14,7 @@ import tempfile
 
 from tool_paths import ROOT, find_tool
 sys.path.insert(0, str(ROOT/'scripts'))
-from make_pocket_instances import LIBCRYPT_MSF, SECTOR, libcrypt_mask, one_file_plan, parse_cue, track_table
+from make_pocket_instances import LIBCRYPT_MSF, SECTOR, libcrypt_mask, one_file_plan, parse_cue, track_sizes, track_table
 
 COMMON = '/Assets/playstation/common/'
 
@@ -82,7 +82,16 @@ CHEAT_RAM = [(0, 0), (1, 0), (0x8000, 0x1234), (0x8001, 0xAB00), (0x8008, 0x5555
 # allcomplete) instead of with Load disc (slot 101). 'json-cue': a game JSON
 # from the launch list with the cue in slot 100 and no track table (Pocket
 # Sync, pupdate); 'json-trk': one with the track table in slot 102
-# (make_pocket_instances.py), left to the stream.
+# (make_pocket_instances.py), left to the stream. 'json-slots': a game JSON
+# with every .bin in slots 101, 102, ... (the plugin's layout for up to four).
+DATA2 = ('FILE "Bof (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+         'FILE "Bof (Track 2).bin" BINARY\n  TRACK 02 MODE2/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n')
+EIGHT = 'FILE "Eight (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' + ''.join(
+    f'FILE "Eight (Track {k}).bin" BINARY\n  TRACK {k:02d} AUDIO\n    INDEX 01 00:00:00\n' for k in range(2, 9))
+EIGHT_SIZES = {'Eight (Track 1).bin': 40, **{f'Eight (Track {k}).bin': 20 + k for k in range(2, 9)}}
+MANY72 = 'FILE "Many72 (Track 01).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' + ''.join(
+    f'FILE "Many72 (Track {k:02d}).bin" BINARY\n  TRACK {k:02d} AUDIO\n    INDEX 01 00:00:00\n' for k in range(2, 73))
+MANY72_SIZES = {'Many72 (Track 01).bin': 40, **{f'Many72 (Track {k:02d}).bin': 3 + k % 5 for k in range(2, 73)}}
 CASES = [
     ('redump', *REDUMP, 'ok'),
     # BOM, LF only, lower case keywords, merged image with INDEX 00 inside
@@ -158,6 +167,26 @@ CASES = [
      (('Lc.sbi', sbi_bytes()), ('Lc.cht', CHEATS))),
     ('json-cheats-retro', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-ch-lc',
      (('Lc.cht', RETRO),)),
+    # A data track after track 1 (Breath of Fire IV (USA): track 2 is
+    # MODE2/2352, audio bit 0), from a game JSON with its .bin files in
+    # slots 101 and 102 and the size block, and picked with Load disc.
+    ('json-data2', 'Bof', 'Bof.cue', DATA2, {'Bof (Track 1).bin': 300, 'Bof (Track 2).bin': 170}, 'ok', 'json-slots'),
+    ('pick-data2', 'Bof', 'Bof.cue', DATA2, {'Bof (Track 1).bin': 300, 'Bof (Track 2).bin': 170}, 'ok'),
+    # Track sizes (slot 97, '-tsz'): a game JSON whose files are opened by
+    # path; the boot mount opens only the last file (its check) and the
+    # stream opens the others when it reads them. '-tszstale': the last
+    # file's size is wrong, '-tszcue': the cue's; both fall back to opening
+    # and probing every file. tsz-seg: a PREGAP splits file 1, so file and
+    # segment numbers differ.
+    ('json-tsz', 'Eight', 'Eight.cue', EIGHT, EIGHT_SIZES, 'ok', 'json-cue-tsz'),
+    ('json-tsz-stale', 'Eight', 'Eight.cue', EIGHT, EIGHT_SIZES, 'ok', 'json-cue-tszstale'),
+    ('json-tsz-cue', 'Eight', 'Eight.cue', EIGHT, EIGHT_SIZES, 'ok', 'json-cue-tszcue'),
+    # Street Fighter Collection's file count (72, one track each), from a
+    # cue-only game JSON with its track sizes.
+    ('json-tsz72', 'Many72', 'Many72.cue', MANY72, MANY72_SIZES, 'ok', 'json-cue-tsz'),
+    ('json-tsz-seg', 'Gap', 'Gap.cue', 'FILE "Gap.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     '  TRACK 02 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:02\nFILE "Gap2.bin" BINARY\n  TRACK 03 AUDIO\n'
+     '    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n', {'Gap.bin': 5, 'Gap2.bin': 160}, 'ok', 'json-cue-tsz'),
     # The Chip32 loader's size block (+sizes): the boot mount skips its probes.
     ('json-sizes', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-sbi99-lc',
      (('Lc.sbi', sbi_bytes()),)),
@@ -227,15 +256,17 @@ def expected(case, disk, cue, suffix='', mask=0):
         # JSON's slot 101.
         cue = cue + '.model'
         (disk/cue).write_text(text.replace(named[0], bins[0]))
+    data = []
     if 'PREGAP' in text or 'lead' in case.name:
         image, sources, tracks = gap_plan(disk/cue)
     else:
-        plan = one_file_plan(parse_cue(disk/cue), (disk/cue).parent)
+        data = []
+        plan = one_file_plan(parse_cue(disk/cue), (disk/cue).parent, data)
         if isinstance(plan, str): raise SystemExit(f'{case.name}: generator plan failed: {plan}')
         sources, tracks = plan
         image = b''.join(p.read_bytes() for p, _ in sources)
     sectors = len(image)//SECTOR
-    table = track_table(tracks, sectors, region=0, mask=mask)
+    table = track_table(tracks, sectors, region=0, mask=mask, data=data)
     (case/f'table{suffix}.hex').write_text(''.join(f'{w:08x}\n' for w in table))
     (case/f'image{suffix}.hex').write_text(''.join(f'{b:02x}\n' for b in image))
     bounds, at = [0, sectors - 1], 0
@@ -264,7 +295,13 @@ RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
 # Cases given the Chip32 loader's size block, and the most reads their boot
 # mount may take (the size probes alone are 13-19 reads each).
 SIZE_ARGS = {'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
-             'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36']}
+             'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36'], 'json-data2': ['+sizes']}
+
+
+# Openfile commands the boot mount of a track-sizes case takes: with the
+# sizes only the last file's check; falling back, every file (after the
+# stale check's open of the last one).
+MOUNT_OPENS = {'json-tsz72': 1, 'json-tsz': 1, 'json-tsz-stale': 9, 'json-tsz-cue': 8, 'json-tsz-seg': 1}
 
 
 def bench_firmware(work):
@@ -294,18 +331,25 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     sbi = next((disk/f for f, _ in other if f.endswith('.sbi')), None)
     disc1 = next(f for f, _ in other if f.endswith('.cue')) if cue_name.endswith('.m3u') else cue_name
     disc2 = next((f for f, _ in other if '(Disc 2)' in f and f.endswith('.cue')), None)
+    tsz = mode.split('-tsz')[1] if '-tsz' in mode else None; mode = mode.split('-tsz')[0]
     lc = mode.endswith('-lc'); mode = mode.removesuffix('-lc')
     ch = mode.endswith('-ch'); mode = mode.removesuffix('-ch')
     form = mode[-1] if '-of' in mode else ''   # '-ofN': the host takes only open form N
     mode = mode.split('-of')[0]
     if cue_text is not None: put(cue_name, cue_text.encode('utf-8'))
     picked = len(files) - 1 if cue_text is not None else 0 if files else -1
+    if tsz is not None:   # the game JSON's track sizes (slot 97)
+        data = bytearray(track_sizes(disk/cue_name))
+        if tsz == 'stale': data[-4:] = (int.from_bytes(data[-4:], 'little') + 1).to_bytes(4, 'little')
+        if tsz == 'cue': data[4:8] = (int.from_bytes(data[4:8], 'little') + 1).to_bytes(4, 'little')
+        put(cue_name.rsplit('.', 1)[0] + '.tsz', bytes(data))
     extra = []
     if mode.startswith('json'):
         extra.append(f'+cue100={picked}')
+        if tsz is not None: extra.append(f'+slot97={len(files) - 1}')
         if mode == 'json-sbi99':
             extra += ['+nogetfile', f'+slot99={next(i for i, (p, _) in enumerate(files) if p.endswith(".sbi"))}']
-        if mode in ('json-cue', 'json-052', 'json-sbi99') and (len(sizes) == 1 or mode == 'json-052'):
+        if mode in ('json-cue', 'json-052', 'json-sbi99', 'json-slots') and (len(sizes) == 1 or mode in ('json-052', 'json-slots')):
             # pupdate/Pocket Sync (and 0.5.2's layout): the .bin files in 101, 102, ...
             for k, fn in enumerate(sizes):
                 extra.append(f'+slot{101 + k}={next(i for i, (p, _) in enumerate(files) if p.endswith("/" + fn))}')
@@ -347,6 +391,9 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     out = subprocess.run([vvp, str(work/('tb_ch.vvp' if ch else 'tb_lc.vvp' if lc else 'tb.vvp')), *args], capture_output=True, text=True, timeout=1800)
     text = out.stdout + out.stderr
     ok = 'PASS' in text and 'FAIL' not in text
+    opens = re.search(r'mount_cost: .*? opens=(\d+)', text)
+    if name in MOUNT_OPENS and (not opens or int(opens[1]) != MOUNT_OPENS[name]):
+        ok = False; print(f'{name}: boot mount took {opens[1] if opens else "?"} openfiles, not {MOUNT_OPENS[name]}')
     print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("launch", "mount", "menu", "probe", "cheats", "stack"))), flush=True)
     if not ok: print(text[-3000:])
     return ok

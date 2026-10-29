@@ -20,9 +20,32 @@ class FrozenFitAdmission(unittest.TestCase):
 
     def test_legacy_job_blocks_executor(self):
         with mock.patch.dict(os.environ, {'BUILD_URL': 'https://build.session-zero.dev/job/psx-fit/7/'}), \
-             mock.patch.object(runner.subprocess, 'check_output', return_value='python\nquartus_fit\n'):
+             mock.patch.object(runner.subprocess, 'check_output', return_value='  12 python\n  13 quartus_fit\n'):
             with self.assertRaisesRegex(ValueError, 'Legacy Quartus'):
                 runner.executor_guard()
+
+    def test_other_jobs_quartus_does_not_block(self):
+        env = {'BUILD_URL': 'https://build.session-zero.dev/job/psx-fit/7/', 'JOB_NAME': 'psx-fit',
+               'WORKSPACE': '/j/workspace/psx-fit'}
+        for cwd, blocks in (('/j/workspace/nds-fit/build', False), ('/j/workspace/psx-fit@2/x', True),
+                            ('/srv/checkout/PSX_Pocket', True), (None, True)):
+            with self.subTest(cwd=cwd), mock.patch.dict(os.environ, env), \
+                 mock.patch.object(runner.subprocess, 'check_output', return_value='  13 quartus_fit\n'), \
+                 mock.patch.object(runner.os, 'readlink', side_effect=OSError if cwd is None else (lambda _: cwd)):
+                if blocks:
+                    with self.assertRaisesRegex(ValueError, 'Legacy Quartus'):
+                        runner.executor_guard()
+                else:
+                    runner.executor_guard()
+
+    def test_second_run_on_a_host_waits_for_the_lock(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(runner, 'HOST_LOCK', Path(directory) / 'host.lock'):
+            first = runner.host_lock()
+            with self.assertRaisesRegex(ValueError, 'too long'):
+                runner.host_lock(wait_s=0.05, poll_s=0.01)
+            first.close()
+            runner.host_lock(wait_s=0.05, poll_s=0.01).close()
 
     def test_nested_snapshot_refused_before_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,6 +85,20 @@ class FrozenFitAdmission(unittest.TestCase):
             rows = [dict(assignment='SDC_FILE', path=str(hold))]
             with self.assertRaisesRegex(ValueError, '150 ps'):
                 runner.hold_guard(project, rows)
+
+    def test_signoff_names_same_clock_and_crossing_setup_paths(self):
+        c0, c1, c2 = (f'ic|cpu_pll|general[{i}].gpll~PLL_OUTPUT_COUNTER|divclk' for i in range(3))
+        rows = [f'FAIL Slow_1100mV_85C_Model setup -2.305 {c1} -> {c1}: same-clock path',
+                f'FAIL Slow_1100mV_0C_Model setup -2.159 {c1} -> {c1}: same-clock path',
+                f'FAIL Slow_1100mV_85C_Model setup -0.226 {c0} -> {c2}: crossing without a waiver']
+        script = runner.setup_path_script(rows, '/out')
+        reports = [l.strip() for l in script.splitlines() if l.strip().startswith('report_timing')]
+        self.assertEqual(len(reports), 3)
+        self.assertIn(f'-from_clock [get_clocks {{{c0}}}] -to_clock [get_clocks {{{c2}}}]', script)
+        self.assertEqual(sum(f'-from_clock [get_clocks {{{c1}}}] -to_clock [get_clocks {{{c1}}}]' in r
+                             for r in reports), 2)
+        self.assertEqual(len({r.split('-file ')[1] for r in reports}), 3)   # one report file per row
+        self.assertTrue(script.rstrip().endswith('project_close -dont_export_assignments'))
 
 
 if __name__ == '__main__':

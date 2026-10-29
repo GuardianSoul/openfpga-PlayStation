@@ -1,2 +1,0 @@
-# CPU component sources; no complete PSX/Pocket project or timing constraints.
-set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) .. rtl cpu psx_cpu.sv]

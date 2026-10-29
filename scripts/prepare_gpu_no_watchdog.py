@@ -40,3 +40,21 @@ def apply_gpu_no_watchdog(manifest):
     target['gpu_no_watchdog'] = True; manifest['gpu_no_watchdog'] = True
     (directory.parent / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     return manifest
+
+
+def prepare_project(project):
+    """Post-prepare step: the edit on a copy of the gpu_rect.vhd the project's apf_top.qsf compiles."""
+    import re
+    project = Path(project).resolve(); qsf = project / 'apf_top.qsf'; q = qsf.read_text()
+    old = re.findall(r'"([^"]*/gpu_rect\.vhd)"', q)
+    if len(old) != 1: raise SystemExit(f'gpu-no-watchdog: expected one compiled gpu_rect.vhd, found {old}')
+    out = project / 'gpu-no-watchdog'; out.mkdir(); new = out / 'gpu_rect.vhd'
+    new.write_text(no_watchdog_text(Path(old[0]).read_text()))
+    qsf.write_text(q.replace(f'"{old[0]}"', f'"{new}"'))
+    return new
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 2: raise SystemExit('Usage: prepare_gpu_no_watchdog.py PROJECT  (post-prepare step)')
+    print('patched', prepare_project(sys.argv[1]))

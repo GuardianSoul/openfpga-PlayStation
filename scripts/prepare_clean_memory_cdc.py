@@ -18,7 +18,7 @@ from prepare_resource_targets import digest
 from tool_paths import ROOT
 
 CARD_SHA = '9eda6aa00f8223ac1285e20e84a48137e13276b55d7fb4e57315be064cf92712'
-VRAM_SHA = '99d8dd3ad4a5950a22dfd7c304354db83ce31ae318eeeb418081340e139efa81'
+VRAM_SHA = 'f71e8e6a85ae3e979b067fc795cb9d66ccb176daf0f85756c77d32abe53dae84'
 COMMAND_SHA = '4f558ed91203ce733187bc9c3d72cf6450102e08f25da83a927a7a59e001fcc5'
 SYNC_ATTRIBUTE = '(* preserve, dont_merge, async_reg="true" *) '
 CARD_SYNC = ('s74_rst', 's74_take', 's2x_req', 's2x_ready', 's2x_rack')

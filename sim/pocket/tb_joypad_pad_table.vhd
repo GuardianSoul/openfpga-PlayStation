@@ -19,7 +19,8 @@ use work.pJoypad.all;
 
 entity tb_joypad_pad_table is
    generic (PAD2 : integer := 0; CYCLES : integer := 400000; SEED : integer := 1;
-            STICK_DPAD : boolean := true; ANALOG_LEVEL : boolean := false);
+            STICK_DPAD : boolean := true; ANALOG_LEVEL : boolean := false;
+            DIGITAL_HOLD : boolean := false);
 end entity;
 
 architecture sim of tb_joypad_pad_table is
@@ -46,7 +47,7 @@ begin
    clk <= not clk after 5 ns when not done;
 
    dut : entity work.joypad_pad
-      generic map (STICK_DPAD => STICK_DPAD, RUMBLE_ECHO => false, ANALOG_LEVEL => ANALOG_LEVEL)
+      generic map (STICK_DPAD => STICK_DPAD, RUMBLE_ECHO => false, ANALOG_LEVEL => ANALOG_LEVEL, DIGITAL_HOLD => DIGITAL_HOLD)
       port map (clk1x => clk, ce => ce, reset => reset, DSAltSwitchMode => '0', isMultitap => '0',
          multitapDigital => '0', multitapAnalog => '0', joypad1 => j1, joypad2 => j2, joypad3 => j0, joypad4 => j0,
          joypad1_rumble => a.r1, joypad2_rumble => a.r2, joypad3_rumble => a.r3, joypad4_rumble => a.r4,
@@ -58,7 +59,7 @@ begin
          ss_in => ss0, ss_out => a.ss);
 
    ref : entity work.joypad_pad_lean
-      generic map (STICK_DPAD => STICK_DPAD, RUMBLE_ECHO => false, ANALOG_LEVEL => ANALOG_LEVEL)
+      generic map (STICK_DPAD => STICK_DPAD, RUMBLE_ECHO => false, ANALOG_LEVEL => ANALOG_LEVEL, DIGITAL_HOLD => DIGITAL_HOLD)
       port map (clk1x => clk, ce => ce, reset => reset, DSAltSwitchMode => '0', isMultitap => '0',
          multitapDigital => '0', multitapAnalog => '0', joypad1 => j1, joypad2 => j2, joypad3 => j0, joypad4 => j0,
          joypad1_rumble => b.r1, joypad2_rumble => b.r2, joypad3_rumble => b.r3, joypad4_rumble => b.r4,

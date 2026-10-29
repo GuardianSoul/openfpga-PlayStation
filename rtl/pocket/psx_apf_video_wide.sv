@@ -216,6 +216,42 @@
 // the overscan crop). PAL 480i fields keep 288 lines (576 woven) instead
 // of being cut to 240. Heights are the PSX's own, so the Pocket's Integer
 // scaling and CRT filters see whole rows.
+// BOB480 (with WEAVE576, INTERLACE_FEATURE; 2026-10-28): woven 480i is sent as
+// one finished progressive frame per field instead of a field for the Pocket to
+// weave. The scaler weaves a field into the frame it shows while its rotated
+// panel reads it, so two fields of different brightness (the BIOS logo fade)
+// met at a steady diagonal (0.5.7-test11 probe; test12 without weave had none).
+// Each source line period carries two output lines, the second half a line
+// later as for progressive Fill, in the same slots as the woven frame, without
+// the 480i frame word. The field the word would mark odd sits one output line
+// lower: its first output line of a period repeats the previous source line
+// (still in the other half of the line buffer: the next line overwrites it later
+// than it is read) and its second is the new line; its very first line repeats
+// the field's first line (never black or stale, in Fit and Fill alike). The even
+// field sends each line twice. So both fields send the same number of lines at
+// the same times after VS, with no lead line (test13 sent the odd field's lead
+// line right after VS and ended it half a line early; the Pocket showed fewer
+// frames). The GPU, its scanout and the game's timing are unchanged.
+// BOB_SMOOTH (with BOB480; 2026-10-29): the repeated line of a period is the
+// average of the lines above and below it (still UI no longer jumps a whole
+// line between fields): in the even field the second line is (k + k+1)/2, in
+// the odd field the first is (k-1 + k)/2. Lines outside the picture are never
+// averaged in: the field's first line, the last kept one (the next source
+// line not kept, or vblank) and a line next to a Hide Overscan black line repeat
+// as with BOB480. The line buffer is written
+// at {x, bank} and read two pixels wide (both banks at one x), the same block
+// RAM as a mixed-width memory, so the average costs no second read.
+// BOB_SMOOTH=2 (steady): both fields are resampled onto the same output
+// positions instead of their true heights, so still pictures barely move between
+// fields. Output pair (B of period m, A of period m+1) shows frame position
+// 2m+1.5 in both fields (even lines E_m sit at 2m, odd lines O_m at 2m+1):
+// even field (E_m + 3*E_m+1)/4, odd field (3*O_m + O_m+1)/4. In either slot the
+// buffer holds the period's line and the other one needed (A: the previous line,
+// B: the next line, being written), so each line is a 3:1 mix of the two halves;
+// the heavy half is the other one when (slot B) xor (odd field). (0.5.7-test17/18
+// had the odd field at 2m+2.5, two lines from the even one: more flicker.) The edge and
+// overscan rules of BOB_SMOOTH=1 apply; where they hold, the line is the
+// period's own line. The odd field is no longer shifted (both share positions).
 `default_nettype none
 module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter integer FIELD_INVERT=0,
     parameter integer PAL288=0, parameter integer HYBRID=0, parameter integer LEAD_LINE=0,
@@ -227,7 +263,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     parameter integer EVEN_LINES=0, parameter integer WEAVE576=0, parameter integer DOCK_TEST=0,
     parameter integer PAL_SHAPE=0, parameter integer BLEND=0, parameter integer EOL_TWICE=0,
     parameter integer FILL_BLEND=0, parameter integer PACE=0, parameter integer FILL_DISP=0,
-    parameter integer FILL_LEAD=0) (
+    parameter integer FILL_LEAD=0, parameter integer BOB480=0, parameter integer BOB_SMOOTH=0,
+    parameter integer BOB_SET=0) (
     input wire clk, ce,
     input wire hsync, vsync, hblank, vblank, interlace, blank, weave,
     input wire dispblank,             // FILL_DISP: high outside the GPU's display range
@@ -237,6 +274,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     input wire [1:0] dock_mode,       // DOCK_TEST: bit 0 paced pixels, bit 1 black tail
     input wire wide_even,             // BLEND: 368-wide lines blended too ("Wide Pixels: Even")
     input wire fill_phase,            // FILL_BLEND 2: output pixel 0 is 3 panel pixels wide
+    input wire bob_en,                // BOB_SET: "480i Mode" setting, 1 Line-doubled (BOB480), 0 Weave
     input wire [23:0] rgb_in,
     output reg hs=0, vs=0, de=0, skip=0,
     output reg [23:0] rgb=0,
@@ -253,6 +291,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
 
     // Two-line buffer
     reg [23:0] mem [0:2047];
+    reg [1:0][23:0] mem2 [0:1023];   // BOB_SMOOTH: the same buffer, written at {x, bank}, read both banks at once
     reg wb=0, rb=0, pend=0;
     // the buffer this line is read from, taken when its first read starts: the
     // GPU's next line flips rb when it ends, which can fall inside a line's copy
@@ -262,7 +301,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     reg [9:0] wx=0, wlen=0;
 
     // 480i and PAL detection, as in psx_apf_video
-    reg seen_now=0, seen_last=0, field_last=0;
+    reg seen_now=0, seen_last=0;
     wire mode480i=INTERLACE_FEATURE!=0 && weave && (seen_now || seen_last);
     reg [9:0] lines=0, lines_last=0;
     reg [8:0] hs_n=0;   // PAL_TIMING: HS this frame, held at 289
@@ -276,6 +315,17 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     // being woven, so i480 is 0 for it everywhere a progressive picture is meant.
     wire bob=PAL_BOB!=0 && pal && mode480i;
     wire i480=mode480i && !bob;
+    // BOB480: this field is doubled into a progressive frame; bob_odd (taken at
+    // VS) is the field the 480i frame word would have marked odd
+    // BOB_SET: bob_on (bob_en, taken at VS) switches BOB480 per frame; off, the
+    // field goes out woven with its 480i frame word, as a build without BOB480.
+    // bob_nx is the value the frame starting at this VS gets.
+    reg bob_on=1;
+    wire bob_nx=BOB480!=0 && (BOB_SET==0 || bob_en);
+    wire bob2=BOB480!=0 && (BOB_SET==0 || bob_on) && i480;
+    reg bob_odd=0;
+    reg field_last=0;
+    wire bob_next=!field_last^(FIELD_INVERT==0)^field_swap;   // fields alternate: the next one is the other
     wire [2:0] h_slot=mode480i ? 3'd1 : pal ? 3'd2 : 3'd0;
     reg [2:0] slot=0;
     reg [9:0] out_w=10'd640, lead=0;
@@ -316,7 +366,9 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     // FILL_LEAD: in 480i Fill the lead line is the source line above the window
     // instead of black (the scaler showed part of the black lead line on the
     // USA BIOS screens, rc1h; 0.5.5 was clean)
-    wire fd_lead=FILL_LEAD!=0 && FILL_DETECT!=0 && !fit && mode480i && fd_t!=10'd0;
+    wire fd_lead_any=FILL_LEAD!=0 && FILL_DETECT!=0 && !fit && mode480i && fd_t!=10'd0;
+    wire fd_lead=fd_lead_any && !bob2;
+    wire fd_lead_next=fd_lead_any && !(bob_nx && mode480i && !(PAL_BOB!=0 && pal));   // at VS (bob2 there, before i480 settles)
     wire fd_in=lines>=(fd_lead ? fd_t-10'd1 : fd_t) && lines<fd_e;
     wire fd_on=FILL_DETECT!=0 && !fit;
     reg os_on=0;   // hide_overscan, taken at VS
@@ -328,6 +380,10 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
 
     // Read side: DDA over the source width
     reg rd_on=0, rd_d=0, out_d=0, native=0, pix_d=0, lead_pend=0, black=0;
+    reg bob_first=0;   // BOB480: no line of this field has been read yet
+    reg sm_line=0;     // BOB_SMOOTH: the line being read is an average of both buffer halves
+    reg act_seen=0;    // BOB_SMOOTH: the source line of this period has started (not vblank)
+    reg [1:0] bk_os=0; // BOB_SMOOTH: the line in each buffer half was written black (Hide Overscan)
     reg vblank_d=0, pad_pend=0, de_odd=0;   // EVEN_LINES: de_odd = odd lines since VS
     // WEAVE576: progressive Fill lines go out twice; the copy starts half a line
     // after the source HS, with an HS of its own
@@ -395,7 +451,32 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     reg [9:0] oi=0, s=0, acc=0;
     wire [10:0] acc_next={1'b0,acc}+wlen;
     wire in_pic=!native || ({1'b0,oi}>={1'b0,lead} && {1'b0,oi}<{1'b0,lead}+pw);
-    reg [23:0] q=0;
+    reg [23:0] q_r=0;
+    // BOB_SMOOTH: both halves at one x, the half the line reads and whether it averages them
+    reg [47:0] q2=0;
+    reg q_sel=0, q_avg=0, q_hvo=0;   // q_hvo (BOB_SMOOTH=2): the other half weighs 3
+    reg sm_hvo=0;
+    function automatic [23:0] avg24(input [23:0] a, input [23:0] b);
+        reg [8:0] r, g, c;
+        begin
+            r={1'b0,a[23:16]}+{1'b0,b[23:16]}; g={1'b0,a[15:8]}+{1'b0,b[15:8]}; c={1'b0,a[7:0]}+{1'b0,b[7:0]};
+            avg24={r[8:1], g[8:1], c[8:1]};
+        end
+    endfunction
+    function automatic [23:0] mix31(input [23:0] h, input [23:0] l);   // (3h + l) / 4 per channel
+        reg [9:0] r, g, c;
+        begin
+            r={2'b0,h[23:16]}+{1'b0,h[23:16],1'b0}+{2'b0,l[23:16]};
+            g={2'b0,h[15:8]}+{1'b0,h[15:8],1'b0}+{2'b0,l[15:8]};
+            c={2'b0,h[7:0]}+{1'b0,h[7:0],1'b0}+{2'b0,l[7:0]};
+            mix31={r[9:2], g[9:2], c[9:2]};
+        end
+    endfunction
+    wire [23:0] q_cur=q_sel ? q2[47:24] : q2[23:0], q_oth=q_sel ? q2[23:0] : q2[47:24];
+    // one 3:1 mixer: the heavy and light inputs are chosen first
+    wire [23:0] q_h=q_hvo ? q_oth : q_cur, q_l=q_hvo ? q_cur : q_oth;
+    wire [23:0] q=BOB_SMOOTH==0 ? q_r : !q_avg ? q_cur : BOB_SMOOTH==2 ? mix31(q_h, q_l)
+                  : avg24(q2[47:24], q2[23:0]);
 
     // LOG state (per frame, latched at vs_edge)
     reg [9:0] hs_cnt=0, out_n=0, log_first=0, log_last=0, log_src=0;
@@ -482,7 +563,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
 
         // write
         if (active && ce) begin
-            mem[{wb,wx}]<=blank || os_line ? 24'h0 : rgb_in;
+            if (BOB_SMOOTH!=0) mem2[wx][wb]<=blank || os_line ? 24'h0 : rgb_in;
+            else mem[{wb,wx}]<=blank || os_line ? 24'h0 : rgb_in;
             if (wx!=10'h3FF) wx<=wx+1'b1;
             if (PIC) begin
                 // CRC step, x^10+x^3+1 (period 1023: no line length lines its terms up)
@@ -505,6 +587,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
         if (!active && active_d) begin
             ce_line<=ce_p;
             wlen<=wx; wx<=0; rb<=wb; wb<=~wb; pend<=keep_line;
+            if (BOB_SMOOTH!=0) bk_os[wb]<=os_line;
             if (lines!=10'h3FF) lines<=lines+1'b1;
             if (fd_on) pend<=fd_in;
             if (fit_pal) pend<=ft_in;
@@ -512,7 +595,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
         end
 
         // read
-        if (LEAD_LINE!=0 && vs_edge) lead_pend<=(LEAD_LINE==1 || mode480i) && !fd_lead;
+        if (LEAD_LINE!=0 && vs_edge) lead_pend<=(LEAD_LINE==1 || mode480i && !(bob_nx && i480)) && !fd_lead_next;
         if (PAL_SHAPE!=0) begin
             if (vs_edge) pre_n<=fit_pal && !f240_want && fsh_next[5] ? -fsh_next[4:0] : 5'd0;
             if (vblank && !vblank_d) post_n<=fit_pal && !f240 && !fsh[5] ? fsh[4:0] : 5'd0;
@@ -545,6 +628,15 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
             rep_on<=rep_pend && lp_cnt==lp_half;   // the copy's HS
             if (rep_pend && lp_cnt==lp_half+hs_w) begin
                 rep_pend<=0; rep_blk<=0; rd_on<=1; oi<=0; acc<=0; black<=rep_blk; ph<=0; s<=rep_s;
+                if (bob2) rb_l<=rb;   // BOB480: the second line of the period is the new source line
+                // BOB_SMOOTH even field: (k + k+1)/2 while line k+1 (being written now) is a kept line
+                if (BOB_SMOOTH==1) sm_line<=bob2 && !bob_odd && act_seen && (fd_on ? fd_in : fit_pal ? ft_in : keep_line)
+                                             && !bk_os[rb] && !os_line;
+                // steady, slot B: this line and the next (being written), 3:1 towards the next in the even field
+                if (BOB_SMOOTH==2) begin
+                    sm_line<=bob2 && act_seen && (fd_on ? fd_in : fit_pal ? ft_in : keep_line) && !bk_os[rb] && !os_line;
+                    sm_hvo<=!bob_odd;
+                end
                 // a blended line's copy is blended again from its start
                 if (BLX && bl && !rep_blk) begin rd_on<=0; bl_pre<=2'd3; bacc<=0; bs<=bs0; end
                 if (LOG!=0) out_n<=out_n+1'b1;
@@ -552,7 +644,15 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
         end
         if (pend && hs_end) begin
             pend<=0; rd_on<=1; oi<=0; acc<=0; black<=0; rb_l<=rb;
-            if (WEAVE576!=0) rep_pend<=!fit && !i480;
+            if (WEAVE576!=0) rep_pend<=!fit && !i480 || bob2;
+            if (bob2 && bob_odd && BOB_SMOOTH!=2) begin
+                // odd field: the previous source line first; the field's first line repeats itself
+                rb_l<=bob_first ? rb : ~rb;
+            end
+            if (BOB_SMOOTH==1) sm_line<=bob2 && bob_odd && !bob_first && bk_os==2'b00;   // odd field: (k-1 + k)/2
+            // steady, slot A: the previous line and this one, 3:1 towards the previous in the odd field
+            if (BOB_SMOOTH==2) begin sm_line<=bob2 && !bob_first && bk_os==2'b00; sm_hvo<=bob_odd; end
+            if (BOB480!=0) bob_first<=0;
             if (LOG!=0) begin
                 out_n<=out_n+1'b1;
                 if (!log_have) begin log_first<=log_src; log_have<=1'b1; end
@@ -588,7 +688,9 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
             if (bl_pre==2'd1) begin pb<=qv ? q : 24'h0; rd_on<=1; end
             bl_pre<=bl_pre-1'b1;
         end
-        if (rd_en) q<=mem[{rb_l,raddr}];
+        if (BOB_SMOOTH!=0) begin
+            if (rd_en) begin q2<=mem2[raddr]; q_sel<=rb_l; q_avg<=sm_line; q_hvo<=sm_hvo; end
+        end else if (rd_en) q_r<=mem[{rb_l,raddr}];
         if (rd_on && BLX && bl) begin
             pix_d<=!black;
             pa_r<=pa; pb_r<=pb; bt_r<=bt;   // a held clock repeats the same pixel
@@ -654,6 +756,11 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
 
         // frame
         if (INTERLACE_FEATURE!=0 && active) begin seen_now<=seen_now || interlace; field_last<=interlace; end
+        if (BOB480!=0 && vs_edge) begin bob_odd<=bob_next; bob_first<=1'b1; end
+        if (BOB_SET!=0 && vs_edge) bob_on<=bob_en;
+        if (BOB_SMOOTH!=0) begin
+            if (hsync && !hs_d) act_seen<=1'b0; else if (active) act_seen<=1'b1;
+        end
         if (vs_edge) begin
             lines_last<=lines; lines<=0;
             if (LOG!=0) begin
@@ -684,7 +791,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
             if (PAL_TIMING!=0) begin pal_frame<=hs_n==9'd289; hs_n<=0; end
             if (INTERLACE_FEATURE!=0) begin
                 seen_last<=seen_now; seen_now<=0;
-                if (i480) rgb<={21'b0,field_last^(FIELD_INVERT==0)^field_swap,2'b10};
+                if (i480 && !bob_nx) rgb<={21'b0,field_last^(FIELD_INVERT==0)^field_swap,2'b10};
             end
         end
     end

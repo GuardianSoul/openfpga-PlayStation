@@ -277,6 +277,7 @@ module tb_cue_mount;
             if($value$plusargs("trk102=%d",mi)) slot_of[102]=mi;
             if($value$plusargs("slot99=%d",mi)) slot_of[99]=mi;    // the game JSON's .sbi
             if($value$plusargs("slot98=%d",mi)) slot_of[98]=mi;    // its cheat list
+            if($value$plusargs("slot97=%d",mi)) slot_of[97]=mi;    // its track sizes
             // Its .bin files in 101, 102, ... (pupdate, Pocket Sync, 0.5.2)
             for(sk=101;sk<120;sk=sk+1) begin $sformat(pname,"slot%0d=%%d",sk); if($value$plusargs(pname,mi)) slot_of[sk]=mi; end
             // +sizes / +sizes_swap: the Chip32 loader's size block (psx_bios_check.asm

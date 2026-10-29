@@ -6,12 +6,17 @@
 //   Select+L = L2, Select+R = R2, Select+Y (Square) = L3, Select+A (Circle) = R3;
 // prepare --shoulder-setting routes combos[] through menu settings instead.
 // Select itself is held back so a combo never shows the game a Select press:
-// a short tap reaches the game as a pulse when Select is released (a press
+// a lone Select is the game's Select, at most one hold window late: a tap
+// reaches the game when Select is released, replayed as long as it was held
+// (at least the tap pulse), and a longer hold from the end of the window until
+// release (a press
 // shorter than the brush window is dropped: the Pocket's Select sits under
 // the D-pad thumb, and a brush stretched to a full pulse opened Resident
 // Evil's option screen while walking, 2026-10-17), and Select
-// held alone longer than the hold window passes through (combos then end
-// until Select is released). With every combo disabled, Select passes
+// held alone longer than the hold window passes through, for as long as it
+// stays held (combos then end until Select is released). The hold window was
+// a second until 2026-10-29: games that show something while Select is held
+// (Tenchu's map) waited that long, and held shorter saw only the tap pulse. With every combo disabled, Select passes
 // straight through. A docked controller's own L2/R2/L3/R3 bits pass through
 // (docked[] carries them alone). Button levels are independent bits,
 // synchronized into the free-running CPU clock as in psx_pocket_pad;
@@ -19,8 +24,8 @@
 // the four D-pad directions together (dpad_combos: up, down, left, right;
 // prepare --stick-settings), tie it low otherwise.
 module psx_pocket_pad #(
-    parameter HOLD_BITS=25, // 2^25 clk1x cycles: 0.99 s at 33.8688 MHz, time to reach L/R/Y/A
-    parameter TAP_BITS=22,  // tap pulse: 124 ms, several frames of pad polls
+    parameter HOLD_BITS=23, // 2^23 clk1x cycles: 0.25 s at 33.8688 MHz, time to reach L/R/Y/A or the D-pad
+    parameter TAP_BITS=22,  // shortest tap pulse: 124 ms, several frames of pad polls
     parameter BRUSH_BITS=20 // shorter Select presses are no tap: 31 ms, under two frames
 ) (
     input wire clk1x,reset_n,input wire [15:0] apf_keys,
@@ -56,12 +61,15 @@ module psx_pocket_pad #(
                     if(&timer) passed<=1;
                 end
             end else if(held) begin
-                if(!combo&!passed&!brush) tap<=1;
-                timer<=0;
+                // a tap replays as long as it was held, at least the tap pulse
+                if(!combo&!passed&!brush) begin
+                    tap<=1;
+                    if(timer<(64'd1<<TAP_BITS)) timer<=(64'd1<<TAP_BITS);
+                end else timer<=0;
                 passed<=0;
             end else if(tap) begin
-                timer<=timer+1'b1;
-                if(&timer[TAP_BITS-1:0]) tap<=0;
+                timer<=timer-1'b1;
+                if(timer==1) begin tap<=0; timer<=0; end
             end
         end
     end
