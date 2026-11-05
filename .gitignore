@@ -20,3 +20,4 @@ local-assets/
 *.rbf
 *.sof
 /.agents/
+tests/pocket_sync_host/target/

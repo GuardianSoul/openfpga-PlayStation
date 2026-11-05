@@ -24,6 +24,8 @@ pub mod convert;
 
 const SECTOR: u64 = 2352;
 const PREGAP: u64 = 150;
+/// The largest cue the core reads (cue_mount.c cue(); slot 100 takes 16 KiB).
+const CUE_BYTES: u64 = 0x3FFF;
 const LIBCRYPT_SLOT: i64 = 99;
 const CHEAT_SLOT: i64 = 98;
 /// A cue-reader core's track sizes for a game file whose files it opens by path.
@@ -122,8 +124,10 @@ fn walk(folder: &Path, test: &dyn Fn(&str) -> bool) -> Vec<PathBuf> {
     found
 }
 
+/// Compared as bytes: a name with non-ASCII letters near its end ("ポケモン.gb")
+/// has no char boundary there, and slicing the str would stop the plugin.
 fn has_ext(name: &str, ext: &str) -> bool {
-    name.len() > ext.len() && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext)
+    name.len() > ext.len() && name.as_bytes()[name.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes())
 }
 
 /// A cue's FILE names are relative to its folder.
@@ -246,7 +250,13 @@ pub fn clean_leftovers(card: &Path, platform: &str) -> usize {
     found.iter().filter(|f| fs::remove_file(f).is_ok()).count()
 }
 
+/// A small file. Left alone when it already holds data: each write is
+/// synced and read back, which is slow on an SD card, and a run again
+/// mostly writes what is already there.
 fn write_bytes(path: &Path, data: &[u8]) -> io::Result<()> {
+    if fs::metadata(path).map_or(false, |m| m.is_file() && m.len() == data.len() as u64) && fs::read(path).map_or(false, |d| d == data) {
+        return Ok(());
+    }
     write_parts(path, None, &mut |out| out.write_all(data))
 }
 
@@ -334,11 +344,13 @@ fn number(text: &str) -> Result<u64, String> {
 }
 
 /// [(filename, [track])] in cue order.
+/// Keywords in any case and a FILE line without its type are taken, as the
+/// core's cue reader takes them (cue_mount.c parse()).
 fn parse_cue_text(text: &str) -> Result<CueFiles, String> {
-    let file_quoted = regex!(r#"^FILE\s+"(.+)"\s+\S+"#);
-    let file_plain = regex!(r"^FILE\s+(\S+)\s+\S+");
-    let track = regex!(r"^TRACK\s+([0-9]+)\s+(\S+)");
-    let index = regex!(r"^(INDEX\s+([0-9]+)|PREGAP)\s+([0-9]+):([0-9]+):([0-9]+)");
+    let file_quoted = regex!(r#"(?i)^FILE\s+"(.+)""#);
+    let file_plain = regex!(r"(?i)^FILE\s+(\S+)");
+    let track = regex!(r"(?i)^TRACK\s+([0-9]+)\s+(\S+)");
+    let index = regex!(r"(?i)^(INDEX\s+([0-9]+)|PREGAP)\s+([0-9]+):([0-9]+):([0-9]+)");
     let mut files: CueFiles = vec![];
     for line in split_lines(text) {
         let words = line.trim();
@@ -349,7 +361,7 @@ fn parse_cue_text(text: &str) -> Result<CueFiles, String> {
             last.1.push(Track { number: number(&m[1])?, kind: m[2].to_uppercase(), index: BTreeMap::new(), pregap: 0 });
         } else if let Some(m) = index.captures(words) {
             let Some(t) = files.last_mut().and_then(|f| f.1.last_mut()) else {
-                return Err(format!("{} before TRACK", m[1].split_whitespace().next().unwrap_or("")));
+                return Err(format!("{} before TRACK", m[1].split_whitespace().next().unwrap_or("").to_uppercase()));
             };
             let frames = (number(&m[3])? * 60 + number(&m[4])?) * 75 + number(&m[5])?;
             match m.get(2) {
@@ -364,7 +376,9 @@ fn parse_cue_text(text: &str) -> Result<CueFiles, String> {
 fn parse_cue(path: &Path) -> Result<CueFiles, String> {
     let data = fs::read(path).map_err(|e| e.to_string())?;
     let data = data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&data);
-    let files = parse_cue_text(&String::from_utf8_lossy(data))?;
+    // Old Windows tools write names in Latin-1: read those bytes as Latin-1.
+    let text = std::str::from_utf8(data).map(String::from).unwrap_or_else(|_| data.iter().map(|&b| b as char).collect());
+    let files = parse_cue_text(&text)?;
     let names: Vec<String> = files.iter().map(|f| f.0.clone()).collect();
     Ok(files.into_iter().map(|(name, tracks)| (resolve_file(path, &name, &names), tracks)).collect())
 }
@@ -416,6 +430,11 @@ fn resolve_file(cue: &Path, name: &str, names: &[String]) -> String {
         .or_else(|| if names.len() == 1 { one(&|f| f.to_lowercase() == renamed) } else { None })
         .or_else(|| if track.is_some() && by_track { one(&|f| has_ext(f, ".bin") && track_number(f) == track) } else { None })
         .unwrap_or_else(|| name.to_string())
+}
+
+/// A track type the core's cue reader takes (cue_mount.c parse()).
+fn cue_reader_track(kind: &str) -> bool {
+    kind == "AUDIO" || kind.ends_with("/2352")
 }
 
 fn raw_track(kind: &str) -> bool {
@@ -550,7 +569,17 @@ fn one_file_plan(files: &CueFiles, folder: &Path) -> Result<(Vec<(PathBuf, u64)>
             if !tracks.is_empty() && t.kind != "AUDIO" {
                 return Err(format!("track {}: data after track 1", t.number));
             }
-            tracks.push((offset + t.index.get(&0).copied().unwrap_or(index1), offset + index1));
+            let (mut start, index1) = (offset + t.index.get(&0).copied().unwrap_or(index1), offset + index1);
+            // An audio track after the first whose gap before INDEX 01 is under
+            // 2 seconds (no INDEX 00: ISOBuster-style merged cues, per-track
+            // files with the gap at the end of the previous one): it starts 150
+            // sectors before INDEX 01 (make_pocket_instances.py's one_file_plan).
+            if let Some(&(_, previous)) = tracks.last() {
+                if t.kind == "AUDIO" && start <= index1 && index1 < start + PREGAP && index1 > previous + PREGAP {
+                    start = index1 - PREGAP;
+                }
+            }
+            tracks.push((start, index1));
         }
         sources.push((path, bytes / SECTOR));
         offset += bytes / SECTOR;
@@ -651,6 +680,9 @@ pub fn explain(reason: &str) -> String {
     if let Some(m) = regex!(r"^(.+): file missing$").captures(reason) {
         return format!("{} is missing: put it next to the .cue, with the name the .cue gives it", &m[1]);
     }
+    if let Some(m) = regex!(r"^(.+): ECM-compressed$").captures(reason) {
+        return format!("{} is ECM-compressed ({}.ecm): decompress it first, then Generate game files again", &m[1], &m[1]);
+    }
     if let Some(m) = regex!(r"^(.+): not whole 2352-byte sectors$").captures(reason) {
         return format!("{} is not a raw CD image (its size is not whole 2352-byte sectors): {DUMP}", &m[1]);
     }
@@ -666,11 +698,17 @@ pub fn explain(reason: &str) -> String {
     if reason.ends_with("(merged image)") {
         return format!("{reason}: Generate game files again and choose to convert it");
     }
+    if let Some(what) = reason.strip_prefix("format: ") {
+        return format!("it is {what}, which the core can't read: {DUMP}");
+    }
     match reason {
         "a track file whose .cue is missing" => "it is one track of a disc whose .cue is missing: put the disc's .cue next to it".into(),
         "not whole 2352-byte sectors" => format!("it is not a raw CD image (its size is not whole 2352-byte sectors): {DUMP}"),
         "not enough free space for its .cue" => "the SD card is full: free some space, then Generate game files again".into(),
         "CHD image not extracted" => "CHD image not extracted: Generate game files again and choose to convert it".into(),
+        "cue over 16 KB" => "the .cue is larger than the core reads (16 KB): remove its REM, TITLE and other comment lines".into(),
+        "compressed archive" => "it is a compressed archive: extract it on a computer first, then Generate game files again".into(),
+        "ECM-compressed image" => "it is ECM-compressed: decompress it to its .bin first, then Generate game files again".into(),
         _ => reason.to_string(),
     }
 }
@@ -752,6 +790,64 @@ fn write_lone_cues(common: &Path, log: &mut dyn FnMut(&str)) -> usize {
         }
     }
     skipped
+}
+
+// ---- other image formats -------------------------------------------------------
+
+/// Disc image files the core can't read, and why (other_images()).
+const OTHER_IMAGES: &[(&str, &str)] = &[
+    (".7z", "compressed archive"),
+    (".zip", "compressed archive"),
+    (".rar", "compressed archive"),
+    (".ecm", "ECM-compressed image"),
+    (".pbp", "format: a PSP EBOOT"),
+    (".iso", "format: an .iso (2048-byte sectors, no CD music)"),
+    (".ccd", "format: a CloneCD image (.ccd/.img/.sub)"),
+    (".mds", "format: an Alcohol image (.mds/.mdf)"),
+    (".nrg", "format: a Nero image"),
+    (".cdi", "format: a DiscJuggler image"),
+];
+
+fn other_image(name: &str) -> Option<(&'static str, &'static str)> {
+    OTHER_IMAGES.iter().copied().find(|(ext, _)| has_ext(name, ext))
+}
+
+/// Files under common in a format the core can't read (archives, ECM, PBP,
+/// .iso, CloneCD, ...) that no cue in their folder names, with the reason. A
+/// cue naming one reports it itself.
+fn other_images(common: &Path) -> Vec<(PathBuf, &'static str)> {
+    let mut found = vec![];
+    for path in walk(common, &|n| other_image(n).is_some()) {
+        let folder = path.parent().unwrap();
+        let name = name_of(&path);
+        let (ext, reason) = other_image(&name).unwrap();
+        let mut named = vec![];
+        for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
+            let cue = entry.path();
+            let cue_name = name_of(&cue);
+            if !has_ext(&cue_name, ".cue") || cue_name.starts_with("._") || !is_file(&cue) {
+                continue;
+            }
+            if let Ok(files) = parse_cue(&cue) {
+                named.extend(files.iter().map(|(f, _)| join(folder, &f.replace('\\', "/"))));
+            }
+        }
+        let bare = folder.join(&name[..name.len() - ext.len()]);
+        if named.contains(&path) || named.contains(&bare) {
+            continue;
+        }
+        found.push((path, reason));
+    }
+    found
+}
+
+/// Say why each file other_images() finds gets no game file; their count.
+fn report_other_images(common: &Path, log: &mut dyn FnMut(&str)) -> usize {
+    let found = other_images(common);
+    for (path, reason) in &found {
+        log(&format!("skip {}: {}", rel(path, common), explain(reason)));
+    }
+    found.len()
 }
 
 // ---- CHD images ------------------------------------------------------------------
@@ -1017,11 +1113,19 @@ fn cue_check(files: &CueFiles, folder: &Path) -> Option<String> {
     if files.is_empty() {
         return Some("no FILE entries".into());
     }
-    for (name, _) in files {
-        match size(&join(folder, &name.replace('\\', "/"))) {
-            None => return Some(format!("{name}: file missing")),
-            Some(bytes) if bytes % SECTOR != 0 => return Some(format!("{name}: not whole 2352-byte sectors")),
-            _ => {}
+    for (name, tracks) in files {
+        let path = join(folder, &name.replace('\\', "/"));
+        let Some(bytes) = size(&path) else {
+            if is_file(&path.with_file_name(format!("{}.ecm", name_of(&path)))) {
+                return Some(format!("{name}: ECM-compressed"));
+            }
+            return Some(format!("{name}: file missing"));
+        };
+        if let Some(t) = tracks.iter().find(|t| !cue_reader_track(&t.kind)) {
+            return Some(format!("track {}: {} is not 2352-byte sectors", t.number, t.kind));
+        }
+        if bytes % SECTOR != 0 {
+            return Some(format!("{name}: not whole 2352-byte sectors"));
         }
     }
     None
@@ -1057,6 +1161,78 @@ fn nothing_made(written: usize, skipped: usize, platform: &str) -> Option<String
     }
 }
 
+/// Two whole releases of one game ("X (USA) (Disc 1/2)" with "X (Europe)
+/// (Disc 1/2)") are two games: one per disc 1 with its own release tags,
+/// named "X (USA)" and "X (Europe)". Each takes the discs with its tags, else
+/// every candidate (the first is used).
+fn split_releases(games: BTreeMap<String, BTreeMap<u64, Vec<Part>>>) -> BTreeMap<String, BTreeMap<u64, Vec<Part>>> {
+    let mut out = BTreeMap::new();
+    for (game, found) in games {
+        let mut releases: Vec<Vec<String>> = vec![];
+        for c in found.get(&1).into_iter().flatten() {
+            if !releases.contains(&c.2) {
+                releases.push(c.2.clone());
+            }
+        }
+        if releases.len() < 2 {
+            out.insert(game, found);
+            continue;
+        }
+        for tags in releases {
+            let discs = found
+                .iter()
+                .map(|(&n, cands)| {
+                    let same: Vec<Part> = cands.iter().filter(|c| c.2 == tags).cloned().collect();
+                    (n, if same.is_empty() { cands.clone() } else { same })
+                })
+                .collect();
+            let shown: Vec<&str> = tags.iter().map(|t| t.trim()).collect();
+            out.insert(format!("{game} {}", shown.join(" ")), discs);
+        }
+    }
+    out
+}
+
+/// A .m3u's discs as the core reads them: one per line, # comments,
+/// backslashes as slashes.
+fn playlist_entries(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(|l| l.replace('\\', "/")).collect()
+}
+
+/// Why a playlist the user wrote can't be a game file, or None: the core
+/// takes up to four discs, each a .cue or .bin relative to the playlist (or
+/// from the card's root with a leading /).
+fn playlist_check(m3u: &Path, card: &Path) -> Option<String> {
+    let text = match fs::read(m3u) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => return Some(e.to_string()),
+    };
+    let entries = playlist_entries(&text);
+    if entries.is_empty() {
+        return Some("no discs listed".into());
+    }
+    if entries.len() > 4 {
+        return Some(format!("{} discs (the core takes 4)", entries.len()));
+    }
+    for entry in &entries {
+        if !has_ext(entry, ".cue") && !has_ext(entry, ".bin") {
+            return Some(format!("{entry}: not a .cue or .bin"));
+        }
+        let mut path = if entry.starts_with('/') { card.to_path_buf() } else { m3u.parent().unwrap().to_path_buf() };
+        for seg in entry.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => { path.pop(); }
+                _ => path.push(seg),
+            }
+        }
+        if !is_file(&path) {
+            return Some(format!("{entry} not found"));
+        }
+    }
+    None
+}
+
 /// What a game file needs to know about the core, and the shared cards so far.
 struct Writer<'a> {
     out: &'a Path,
@@ -1068,10 +1244,12 @@ struct Writer<'a> {
     cue_reader: bool,
     discs: BTreeMap<String, Vec<String>>, // shared card -> disc stems
     sizes: HashMap<PathBuf, String>,      // cue -> its track sizes file
+    named: std::cell::RefCell<std::collections::HashSet<String>>, // game file names written this run
 }
 
 impl Writer<'_> {
     fn write_instance(&self, name: &str, data_path: &str, slots: &[(i64, String)]) -> Result<(), String> {
+        self.named.borrow_mut().insert(name.to_string());
         write_bytes(&self.out.join(format!("{name}.json")), instance_json(data_path, slots).as_bytes()).map_err(|e| format!("{name}.json: {e}"))
     }
 
@@ -1161,7 +1339,8 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     let discs_declared = 1 + (2..10).filter(|n| disc_tracks[n] > 0).count();
     let (mut written, mut skipped) = (0, report_chds(&common, log));
     skipped += write_lone_cues(&common, log);
-    let mut writer = Writer { out: &out, common: &common, shared_cards, libcrypt, cheats, one_file, cue_reader, discs: BTreeMap::new(), sizes: HashMap::new() };
+    skipped += report_other_images(&common, log);
+    let mut writer = Writer { out: &out, common: &common, shared_cards, libcrypt, cheats, one_file, cue_reader, discs: BTreeMap::new(), sizes: HashMap::new(), named: Default::default() };
     let mut games: BTreeMap<String, BTreeMap<u64, Vec<Part>>> = BTreeMap::new();
     // An untagged cue counts as disc 1 when another cue of the same title has a
     // disc 2+ tag and none has disc 1's ("X.cue" with "X Disc2.cue").
@@ -1203,7 +1382,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
         let (mut files, mut reason) = match parse_cue(&cue) {
             Ok(files) => {
                 let reason = if cue_reader {
-                    cue_check(&files, &folder)
+                    cue_check(&files, &folder).or_else(|| (size(&cue).unwrap_or(0) > CUE_BYTES).then(|| "cue over 16 KB".to_string()))
                 } else if one_file {
                     None
                 } else {
@@ -1271,6 +1450,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
         writer.single(&cue, &files, track_count, None, log)?;
         written += 1;
     }
+    let games = split_releases(games);
     for (game, found) in &games {
         let first_tags = found.get(&1).map(|c| c[0].2.clone()).unwrap_or_default();
         // Two releases of the same disc: keep the one whose release tags
@@ -1436,6 +1616,30 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
         }
         log(&format!("wrote {name}.json ({} disc{})", numbers.len(), if numbers.len() > 1 { "s" } else { "" }));
         written += 1;
+    }
+    // Playlists the user wrote ("Game - Cheats.m3u": a cheat disc, then the
+    // game): each gets a game file naming it, so it is picked like any game
+    // and Swap Discs goes through its discs in order. Not the playlists of
+    // the multi-disc games above (their game file has the playlist's name).
+    if playlist_slot {
+        for m3u in walk(&common, &|n| has_ext(n, ".m3u")) {
+            let m3u_name = name_of(&m3u);
+            let m3u_stem = stem(&m3u_name).to_string();
+            if writer.named.borrow().contains(&m3u_stem) {
+                continue;
+            }
+            let shown = rel(&m3u, &common);
+            if let Some(reason) = playlist_check(&m3u, card) {
+                log(&format!("skip {shown}: {reason}"));
+                skipped += 1;
+                continue;
+            }
+            let data_path = rel(m3u.parent().unwrap(), &common);
+            let prefix = if data_path != "." { format!("{data_path}/") } else { String::new() };
+            writer.write_instance(&m3u_stem, &prefix, &[(100, m3u_name.clone())])?;
+            log(&format!("wrote {m3u_stem}.json (playlist {shown})"));
+            written += 1;
+        }
     }
     if written > 0 {
         let _ = fs::remove_file(out.join(HELP_ENTRY));

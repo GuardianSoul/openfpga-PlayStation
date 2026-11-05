@@ -114,6 +114,13 @@ Disc 1 before you launch another multi-disc game. Some games start from a
 disc of their own (Gran Turismo 2's Simulation Mode is disc 2): pick that
 disc, quit the game and launch it again.
 
+Discs whose names don't say "(Disc N)", such as a cheat disc you want to use
+with several games, can be one game through a playlist. Make a `.m3u` in
+`Assets/playstation/common/` with one `.cue` per line (up to four, paths
+relative to the `.m3u`), for example the cheat disc first and the game second,
+then generate game files: the playlist gets a game file of its own name, and
+Swap Discs picks its discs in that order.
+
 All discs of a game share one memory card,
 `Saves/playstation/common/<game>.sav` (the game's name without
 "(Disc n)"), so a save made on disc 1 is there on disc 2. It starts as a

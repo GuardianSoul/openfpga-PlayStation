@@ -7,10 +7,12 @@ Two models are written here:
   decode, a full-precision IDCT truncated once, floored YUV products, output
   always unsigned, the colour quant table for monochrome). The RTL must
   match it word for word, which proves the bench and the reading of the RTL.
-- "mednafen": DuckStation's default routines (Mednafen's arithmetic: 4 extra
-  coefficient bits with a +-8 bias, per-pass (sum + 0x20000) >> 18 IDCT,
-  9-bit wrap before clamping, BT.601 with Mednafen's rounding). The test
-  reports how far the RTL is from it.
+- "mednafen": Mednafen PSX's MDEC arithmetic, written from Beetle PSX
+  (Mednafen PSX) mednafen/psx/mdec.c @ e57860d8 and psx-spx (dequantization
+  with 4 extra bits and an 8 toward zero, IDCT matrix = scale >> 3 with each
+  pass rounded (sum + 0x4000) >> 15, 9-bit wrap before clamping, its YCbCr to
+  RGB rounding, signed output). The test reports how far the RTL is from it;
+  the mdec-mednafen variant (prepare_mdec_mednafen.py) must equal it.
 
 Macroblocks carry real AC data (short and long runs, small and extreme
 coefficients, qscale 0 and nonzero) with the standard PSX IDCT matrix and
@@ -63,15 +65,20 @@ def standard_scale():
 
 
 class Model:
-    """mode 'mednafen': DuckStation's default routines. mode 'mister': the
-    pinned MiSTer arithmetic (psx-spx run-length decode, full-precision IDCT
-    truncated once, YUV products floored, output always unsigned, colour
-    quant table for monochrome)."""
+    """mode 'mister': the pinned MiSTer arithmetic (psx-spx run-length decode,
+    full-precision IDCT truncated once, YUV products floored, output always
+    unsigned, colour quant table for monochrome). mode 'mednafen': Mednafen
+    PSX's MDEC arithmetic, written from Beetle PSX (Mednafen PSX)
+    mednafen/psx/mdec.c @ e57860d8 (scalar paths) and psx-spx: WriteImageData's
+    dequantization, IDCT_1D_Pass1/Pass2 with IDCTMatrix = scale >> 3,
+    Mask9ClampS8, YCbCr_to_RGB, RGB_to_RGB555 and EncodeImage's packing.
+    Both keep the pinned core's block parsing and output order."""
     def __init__(self, mode='mednafen'):
         self.mode = mode
         self.iq_y = [0] * 64
         self.iq_uv = [0] * 64
         self.scale = [0] * 64
+        self.upload = [0] * 64   # scale values in upload order (Mednafen's input)
 
     def set_quant(self, data):
         raw = b''.join(w.to_bytes(4, 'little') for w in data)
@@ -81,30 +88,8 @@ class Model:
 
     def set_scale(self, data):
         values = [sext(h, 16) for w in data for h in (w & 0xFFFF, w >> 16)]
+        self.upload = values
         self.scale = [values[x * 8 + y] for y in range(8) for x in range(8)]
-
-    def rle(self, halfwords, qt):
-        if self.mode == 'mister':
-            return self.rle_mister(halfwords, qt)
-        while halfwords[0] == 0xFE00:
-            halfwords.pop(0)
-        n = halfwords.pop(0)
-        blk = [0] * 64
-        qscale = n >> 10
-        val = sext(n, 10)
-        coeff = (val << 5) if qscale == 0 else (((val * qt[0]) << 4) + ((8 if val < 0 else -8) if val else 0))
-        blk[ZIGZAG[0]] = clamp(coeff, -0x4000, 0x3FFF)
-        k = 0
-        while True:
-            n = halfwords.pop(0)
-            k += (n >> 10) + 1
-            if k < 64:
-                val = sext(n, 10)
-                scq = qscale * qt[k]
-                coeff = (val << 5) if scq == 0 else ((((val * scq) >> 3) << 4) + ((8 if val < 0 else -8) if val else 0))
-                blk[ZIGZAG[k]] = clamp(coeff, -0x4000, 0x3FFF)
-            if k >= 63:
-                return blk
 
     def rle_mister(self, halfwords, qt):
         while halfwords[0] == 0xFE00:
@@ -143,65 +128,118 @@ class Model:
                 out[x + y * 8] = clamp(sum(temp[u + y * 8] * m[u * 8 + x] for u in range(8)) >> 32, -128, 127)
         return out
 
-    def idct(self, blk):
-        if self.mode == 'mister':
-            return self.idct_mister(blk)
-        def row(src, r, m):
-            total = sum(src[r * 8 + i] * self.scale[m * 8 + i] for i in range(8))
-            return sext((total + 0x20000) >> 18, 16)
-        temp = [0] * 64
-        for x in range(8):
-            for y in range(8):
-                temp[y * 8 + x] = row(blk, x, y)
+    # --- Mednafen (Beetle PSX mdec.c @ e57860d8, scalar paths) ---
+    def rle_mednafen(self, halfwords, qt):
+        """WriteImageData's arithmetic: Coeff[ZigZag[k]] for each value, with the
+        pinned core's run-length parsing (one block per call)."""
+        def coefficient(k, n, qscale):
+            ci = sext(n, 10)
+            q = qt[0] if k == 0 else qscale * qt[k]   # DC: the quant byte alone
+            if q:
+                p = ci * q if k == 0 else (ci * q) >> 3
+                v = p * 16 + ((8 if ci < 0 else -8) if ci else 0)
+            else:
+                v = ci * 32
+            return clamp(v, -0x4000, 0x3FFF)
+        while halfwords[0] == 0xFE00:
+            halfwords.pop(0)
+        n = halfwords.pop(0)
+        coeff = [0] * 64
+        qscale = n >> 10
+        k = 0
+        while True:
+            coeff[ZIGZAG[k]] = coefficient(k, n, qscale)
+            n = halfwords.pop(0)
+            k += (n >> 10) + 1
+            if k >= 63:
+                if k == 63:
+                    coeff[ZIGZAG[k]] = coefficient(k, n, qscale)
+                return coeff
+
+    def idct_mednafen(self, coeff):
+        """IDCT_1D_Pass1 (int16 store, transposed) then IDCT_1D_Pass2 (Mask9ClampS8);
+        IDCTMatrix[((i & 7) << 3) | ((i >> 3) & 7)] = upload[i] >> 3."""
+        matrix = [0] * 64
+        for i, value in enumerate(self.upload):
+            matrix[((i & 7) << 3) | ((i >> 3) & 7)] = value >> 3
+        tmp = [0] * 64
+        for col in range(8):
+            for x in range(8):
+                s = sum(coeff[col * 8 + u] * matrix[x * 8 + u] for u in range(8))
+                tmp[x * 8 + col] = sext((s + 0x4000) >> 15, 16)
         out = [0] * 64
-        for x in range(8):
-            for y in range(8):
-                out[x * 8 + y] = clamp(sext(row(temp, x, y), 9), -128, 127)
-        return out
+        for col in range(8):
+            for x in range(8):
+                s = sum(tmp[col * 8 + u] * matrix[x * 8 + u] for u in range(8))
+                out[col * 8 + x] = mask9(( s + 0x4000) >> 15)
+        return out   # block[y][x] = out[y * 8 + x]
+
+    def rle(self, halfwords, qt):
+        return self.rle_mister(halfwords, qt) if self.mode == 'mister' else self.rle_mednafen(halfwords, qt)
+
+    def idct(self, blk):
+        return self.idct_mister(blk) if self.mode == 'mister' else self.idct_mednafen(blk)
+
+    def rgb(self, y, cb, cr):
+        """One pixel's (r, g, b) as unsigned bytes (value + 128)."""
+        if self.mode == 'mister':
+            r = clamp(y + ((cr * 359) >> 8), -128, 127)
+            g = clamp(y + ((cb * -88 + cr * -183) >> 8), -128, 127)
+            b = clamp(y + ((cb * 454) >> 8), -128, 127)
+        else:   # YCbCr_to_RGB
+            r = mask9(y + ((359 * cr + 0x80) >> 8))
+            g = mask9(y + ((((-88 * cb) & ~0x1F) + ((-183 * cr) & ~0x07) + 0x80) >> 8))
+            b = mask9(y + ((454 * cb + 0x80) >> 8))
+        return (r + 128) & 255, (g + 128) & 255, (b + 128) & 255
 
     def macroblock(self, halfwords, depth, signed):
-        add = 0 if signed and self.mode != 'mister' else 0x80
-        if depth <= 1:
-            # MiSTer decodes monochrome blocks with the colour quant table.
-            y = self.idct(self.rle(halfwords, self.iq_uv if self.mode == 'mister' else self.iq_y))
-            return [(clamp(v, -128, 127) + add) & 0xFF for v in y]
+        """The pixels of one macroblock in the core's output order: 16x16
+        (r, g, b) unsigned bytes for depth 2/3, 8x8 bytes for depth 0/1 (the
+        byte whose top nibble is the 4-bit pixel), signed applied for Mednafen."""
+        mednafen = self.mode != 'mister'
+        if depth < 2:
+            # monochrome: the core's colour quant table (mister), luminance (Mednafen)
+            y = self.idct(self.rle(halfwords, self.iq_y if mednafen else self.iq_uv))
+            if not mednafen:
+                return [(v + 128) & 255 for v in y]
+            out = []
+            for v in y:
+                if depth == 0:
+                    v = min(v + 8, 127)
+                out.append((v & 255) ^ (0 if signed else 0x80))
+            return out
         cr = self.idct(self.rle(halfwords, self.iq_uv))
         cb = self.idct(self.rle(halfwords, self.iq_uv))
-        rgb = [0] * 256
-        for index, (xx, yy) in enumerate(((0, 0), (8, 0), (0, 8), (8, 8))):
-            yb = self.idct(self.rle(halfwords, self.iq_y))
-            for y in range(8):
-                for x in range(8):
-                    c = (xx + x) // 2 + ((yy + y) // 2) * 8
-                    Y, Cr, Cb = yb[y * 8 + x], cr[c], cb[c]
-                    if self.mode == 'mister':
-                        r = clamp(Y + ((Cr * 359) >> 8), -128, 127) + 128
-                        g = clamp(Y + ((Cb * -88 + Cr * -183) >> 8), -128, 127) + 128
-                        b = clamp(Y + ((Cb * 454) >> 8), -128, 127) + 128
-                        rgb[xx + x + (yy + y) * 16] = r | (g << 8) | (b << 16)
-                        continue
-                    r = clamp(sext(Y + ((359 * Cr + 0x80) >> 8), 9), -128, 127) + add
-                    g = clamp(sext(Y + ((((-88 * Cb) & ~0x1F) + ((-183 * Cr) & ~0x07) + 0x80) >> 8), 9), -128, 127) + add
-                    b = clamp(sext(Y + ((454 * Cb + 0x80) >> 8), 9), -128, 127) + add
-                    rgb[xx + x + (yy + y) * 16] = (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16)
-        return rgb
+        ys = [self.idct(self.rle(halfwords, self.iq_y)) for _ in range(4)]
+        pixels = []
+        for py in range(16):
+            for px in range(16):
+                y = ys[(py >= 8) * 2 + (px >= 8)][(px & 7) + (py & 7) * 8]
+                c = px // 2 + (py // 2) * 8
+                r, g, b = self.rgb(y, cb[c], cr[c])
+                if mednafen and signed and depth == 2:
+                    r, g, b = r ^ 0x80, g ^ 0x80, b ^ 0x80
+                pixels.append((r, g, b))
+        return pixels
 
-    def pack(self, pixels, depth, bit15):
-        words = []
+    def pack(self, pixels, depth, bit15, signed=0):
         if depth == 0:
-            for i in range(0, 64, 8):
-                words.append(sum((pixels[i + j] >> 4) << (4 * j) for j in range(8)))
-        elif depth == 1:
-            for i in range(0, 64, 4):
-                words.append(sum(pixels[i + j] << (8 * j) for j in range(4)))
-        elif depth == 2:
-            raw = b''.join(p.to_bytes(3, 'little') for p in pixels)
-            words = [int.from_bytes(raw[i:i + 4], 'little') for i in range(0, len(raw), 4)]
-        else:
-            def five(c): return min((c + 4) >> 3, 0x1F)
-            halves = [five(p & 0xFF) | (five((p >> 8) & 0xFF) << 5) | (five(p >> 16) << 10) | (bit15 << 15) for p in pixels]
-            words = [halves[i] | (halves[i + 1] << 16) for i in range(0, 256, 2)]
-        return words
+            nibbles = [p >> 4 for p in pixels]
+            return [sum(nibbles[i + j] << (4 * j) for j in range(8)) for i in range(0, len(nibbles), 8)]
+        if depth == 1:
+            return [sum(pixels[i + j] << (8 * j) for j in range(4)) for i in range(0, len(pixels), 4)]
+        if depth == 2:
+            data = [c for p in pixels for c in p]
+            return [sum(data[i + j] << (8 * j) for j in range(4)) for i in range(0, len(data), 4)]
+        def five(c): return min((c + 4) >> 3, 0x1F)   # RGB_to_RGB555 (and the core's roundUp8to5)
+        flip = 0x4210 if signed and self.mode != 'mister' else 0   # Mednafen's signed 15-bit XOR
+        halves = [((five(r) | (five(g) << 5) | (five(b) << 10)) ^ flip) | (bit15 << 15) for r, g, b in pixels]
+        return [halves[i] | (halves[i + 1] << 16) for i in range(0, len(halves), 2)]
+
+
+def mask9(value):
+    """Mednafen's Mask9ClampS8: the low 9 bits as a signed value, clamped to -128..127."""
+    return clamp(sext(value, 9), -128, 127)
 
 
 def block(rng, style):
@@ -262,7 +300,7 @@ def vectors(seed, mode='mister'):
         command(0x20000000 | (depth << 27) | (signed << 26) | (bit15 << 25) | len(data), data)
         queue = list(halfwords)
         for _ in range(count):
-            words = model.pack(model.macroblock(queue, depth, signed), depth, bit15)
+            words = model.pack(model.macroblock(queue, depth, signed), depth, bit15, signed)
             expected += words
             labels += [f'depth{depth} signed{signed} bit15{bit15} {style}'] * len(words)
         lines.append(f'R 00 {count * WORDS[depth]:08x}')
@@ -343,7 +381,7 @@ def main():
             failures.append(seed); continue
         _, reference, labels = vectors(seed, 'mednafen')
         off = differences(got, reference, labels)
-        print(f'PASS seed {seed}: {len(got)} words equal the MiSTer-arithmetic model; versus DuckStation/Mednafen '
+        print(f'PASS seed {seed}: {len(got)} words equal the MiSTer-arithmetic model; versus Mednafen '
               f'{sum(len(v) for v in off.values())} words differ, worst channel error by depth '
               f'{pixel_error(got, reference, labels)}', flush=True)
     # The mdec-mednafen variant must equal the Mednafen model word for word.
@@ -363,7 +401,7 @@ def main():
         if bad or len(got) != len(expected):
             failures.append(f'mednafen-{seed}')
         else:
-            print(f'PASS mdec-mednafen seed {seed}: {len(got)} words equal the DuckStation/Mednafen model', flush=True)
+            print(f'PASS mdec-mednafen seed {seed}: {len(got)} words equal the Mednafen model', flush=True)
     # Combined with mdec-idct-pipe (as in the fitted candidate).
     build(directory / 'mednafen-pipe', idct_pipe_text(mednafen_text(text)))
     ok, got, _ = run(directory / 'mednafen-pipe', 1)
@@ -372,7 +410,9 @@ def main():
         print(f'PASS mdec-mednafen + mdec-idct-pipe seed 1: {len(got)} words equal the model')
     else:
         print('FAIL mdec-mednafen + mdec-idct-pipe'); failures.append('mednafen-pipe')
-    variant_fault = mednafen_text(text).replace("to_signed(16#20000#, idct_sum'length)", "to_signed(0, idct_sum'length)")
+    # planted fault: the second pass loses its rounding
+    variant_fault = mednafen_text(text).replace('to_signed(16#4000#, 31)', 'to_signed(0, 31)')
+    assert variant_fault != mednafen_text(text)
     build(directory / 'mednafen-fault', variant_fault)
     ok, got, _ = run(directory / 'mednafen-fault', 0)
     _, expected, labels = vectors(0, 'mednafen')

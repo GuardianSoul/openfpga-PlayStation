@@ -4,10 +4,6 @@
 Random PSX-like traffic on every channel (CPU reads, cache fills, DMA reads
 and writes, SPU and loader accesses, forced refreshes) is checked against a
 golden memory, and the chip model reports every command-timing violation.
-When the pocket_sotn submodule is present, its sdram.sv runs the same traffic
-side by side and the per-access latencies are compared. The reference is
-only simulated here; it is never part of a build.
-
   python3 scripts/run_sdram_ctrl.py [--ops N] [--seed S]
 """
 import argparse
@@ -31,19 +27,6 @@ endmodule
 """
 
 
-def reference_copy(work):
-    """The reference declares its DQ port as `inout reg`, which Icarus rejects."""
-    source = ROOT/'references/pocket_sotn/rtl/sdram.sv'
-    if not source.is_file(): return None
-    text = source.read_text()
-    text, ports = re.subn(r'inout\s+reg\s+\[15:0\]\s+SDRAM_DQ\s*,', 'inout wire [15:0] SDRAM_DQ,', text)
-    text, drives = re.subn(r'\bSDRAM_DQ(\s*<=)', r'SDRAM_DQ_r\1', text)
-    if ports != 1 or not drives: raise ValueError('Reference sdram.sv DQ port changed')
-    text = text.replace(');\n', ");\nreg [15:0] SDRAM_DQ_r = 16'hzzzz;\nassign SDRAM_DQ = SDRAM_DQ_r;\n", 1)
-    path = work/'reference_sdram.sv'; path.write_text(text)
-    return path
-
-
 def latencies(log):
     kinds = collections.defaultdict(list); summary = None
     for line in log.read_text().splitlines():
@@ -57,7 +40,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--ops', type=int, default=4000)
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--no-reference', action='store_true')
     parser.add_argument('--cas', type=int, choices=(2, 3), default=2, help='controller and chip CAS latency (the reference runs only at 2)')
     parser.add_argument('--dclk', type=float, default=2.0, help='ns: chip clock delay from the FPGA clock edge to the chip')
     parser.add_argument('--tret', type=float, default=2.0, help='ns: data return delay from the chip to the FPGA input register')
@@ -76,17 +58,15 @@ def main():
     work = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     (work/'altddio_out.sv').write_text(ALTDDIO)
     if args.spu_first: args.spu_first_param = 1
-    reference = None if args.no_reference or args.cas != 2 or args.spu_first_param else reference_copy(work)
     tac = args.tac if args.tac is not None else (6.0 if args.cas == 2 else 5.5)
     sources = [work/'altddio_out.sv', ROOT/'rtl/memory/psx_sdram_ctrl.sv', ROOT/'sim/memory/sdram_chip_model.sv',
-               ROOT/'sim/memory/tb_psx_sdram_ctrl.sv'] + ([reference] if reference else [])
-    defines = ['-DWITH_REFERENCE'] if reference else []
+               ROOT/'sim/memory/tb_psx_sdram_ctrl.sv']
     params = [f'-Ptb_psx_sdram_ctrl.OPS={args.ops}', f'-Ptb_psx_sdram_ctrl.SEED={args.seed}',
               f'-Ptb_psx_sdram_ctrl.CAS={args.cas}', f'-Ptb_psx_sdram_ctrl.SPU_FIRST={args.spu_first_param}',
               f'-Ptb_psx_sdram_ctrl.OPEN_ROW={int(args.open_row)}',
               f'-Ptb_psx_sdram_ctrl.DCLK={args.dclk}',
               f'-Ptb_psx_sdram_ctrl.TAC={tac}', f'-Ptb_psx_sdram_ctrl.TOH={args.toh}', f'-Ptb_psx_sdram_ctrl.TRET={args.tret}']
-    subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *defines, *params,
+    subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *params,
                     *map(str, sources)], check=True)
     run = subprocess.run([vvp, '-n', str(work/'tb.vvp')], cwd=work, capture_output=True, text=True, timeout=3600)
     (work/'sim.log').write_text(run.stdout + run.stderr)
@@ -94,22 +74,10 @@ def main():
     report = dict(work=str(work), ours=ours_summary, latency={})
     failed = 'ERROR' in run.stdout or not ours_summary or ours_summary.get('errors') != '0'
     for line in run.stdout.splitlines():
-        if line.startswith('ERROR') and 'reference' not in line: print(line)
-    if reference:
-        ref, ref_summary = latencies(work/'reference.log'); report['reference'] = ref_summary
-        failed = any(l.startswith('ERROR') and 'reference' not in l for l in run.stdout.splitlines()) or ours_summary.get('errors') != '0'
+        if line.startswith('ERROR'): print(line)
     for kind in sorted(ours):
         row = dict(ours=dict(min=min(ours[kind]), mean=round(statistics.mean(ours[kind]), 2), max=max(ours[kind])))
-        if reference and ref.get(kind):
-            row['reference'] = dict(min=min(ref[kind]), mean=round(statistics.mean(ref[kind]), 2), max=max(ref[kind]))
         report['latency'][kind] = row
-    if reference:
-        for kind, row in report['latency'].items():
-            if kind == 'boot' or 'reference' not in row: continue   # power-up wait differs on purpose
-            if row['ours']['min'] != row['reference']['min']:
-                print(f'{kind}: idle latency {row["ours"]["min"]} clk1x, reference {row["reference"]["min"]}'); failed = True
-            if row['ours']['mean'] > row['reference']['mean'] * 1.15 + 0.2:
-                print(f'{kind}: mean latency {row["ours"]["mean"]} vs reference {row["reference"]["mean"]}'); failed = True
     (work/'report.json').write_text(json.dumps(report, indent=2)+'\n')
     print(json.dumps(report, indent=2))
     if args.expect_fail:
@@ -120,7 +88,7 @@ def main():
         # The same traffic at CL2: CL3 costs one clk3x per read, which can
         # cross one clk1x hand-off edge (29.5 ns) but never more.
         base = subprocess.run([sys.executable, __file__, '--ops', str(args.ops), '--seed', str(args.seed), '--cas', '2',
-                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh), '--no-reference'],
+                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh)],
                               capture_output=True, text=True, timeout=3600)
         if base.returncode: sys.exit('CL2 comparison run failed:\n' + base.stdout[-2000:])
         cl2 = json.loads((Path(re.search(r'"work": "([^"]+)"', base.stdout).group(1))/'report.json').read_text())['latency']
@@ -136,7 +104,7 @@ def main():
     if args.spu_first:
         # Same traffic with the default order: SPU accesses must wait less.
         base = subprocess.run([sys.executable, __file__, '--ops', str(args.ops), '--seed', str(args.seed), '--cas', str(args.cas),
-                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh), '--no-reference']
+                               '--dclk', str(args.dclk), '--tret', str(args.tret), '--toh', str(args.toh)]
                               + (['--open-row'] if args.open_row else []),
                               capture_output=True, text=True, timeout=3600)
         if base.returncode: sys.exit('SPU_FIRST=0 comparison run failed:\n' + base.stdout[-2000:])

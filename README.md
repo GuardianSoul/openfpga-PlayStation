@@ -13,6 +13,17 @@ You need an Analogue Pocket with the latest firmware, a PlayStation BIOS
 dumped from your own console, and your own game discs as `.cue`/`.bin`
 images. The BIOS and games are not included and cannot be shared.
 
+### Disc formats
+
+Use `.cue` and `.bin` files. A program such as ImgBurn makes them from
+your own discs. `.chd` files work too: the plugin (step 4) turns them into
+`.cue` and `.bin` for you. The core can't play `.chd` files directly
+because they are compressed. Unpacking them while the game runs needs
+either a separate processor, which the Pocket doesn't have, or room on the
+Pocket's chip, which the PlayStation core already fills. Other formats,
+such as `.pbp` or `.ecm`, and zipped games don't work; turn them into
+`.cue` and `.bin` first.
+
 ### First time
 
 1. **Core:** download the latest `GuardianSoul.PlayStation_<version>_<date>.zip`
@@ -139,6 +150,7 @@ remembers your choices.
 
 | Setting | Choices | What it does |
 | --- | --- | --- |
+| Restart Game | (press it) | Restarts the console with the disc that is in the drive, like the PlayStation's reset button |
 | Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
 | Skip BIOS Logo | On, **Off** | Starts the game without the PlayStation intro |
 | Fast BIOS Boot | **On**, Off | Runs the BIOS's own start-up faster, so games reach the Sony screen about 2 seconds sooner; the Sony screen and every game keep the console's timing |
@@ -246,6 +258,13 @@ by hardware tests. Even so, review it with that origin in mind.
   Peip (FPGAzumSpass) and contributors: the PlayStation itself.
 - [PS-FPGA](https://github.com/PS-FPGA/ps-fpga) GTE by Romain Piquois
   (Laxer3a).
+- [pocket_sotn](https://github.com/akoaysigod/pocket_sotn) by akoaysigod: the
+  memory layout, SDRAM wiring, memory card slot setup and shared CPU multiplier.
+- [Mednafen](https://mednafen.github.io/) by the Mednafen team, through
+  [Beetle PSX](https://github.com/libretro/beetle-psx-libretro): the video
+  decoder's arithmetic, so FMVs match it exactly.
+- [SERV](https://github.com/olofk/serv) by Olof Kindgren: the small RISC-V CPU
+  that reads cue files in the core.
 - Adam Gastineau (agg23) and [MIRLO64](https://github.com/tortugaveloz/MIRLO64)
   by tortuga: Pocket platform glue and audio output.
 
@@ -255,6 +274,9 @@ by hardware tests. Even so, review it with that origin in mind.
   frame causes the red line at the top of the screen, and fixed it by keeping
   every frame's line count even
   ([issue #5](https://github.com/GuardianSoul/openfpga-PlayStation/issues/5)).
+- [OperationNT414C](https://github.com/OperationNT414C): asked for Restart Game
+  and for multi-disc games with any file names through `.m3u` playlists
+  ([issue #25](https://github.com/GuardianSoul/openfpga-PlayStation/issues/25)).
 
 ## License
 

@@ -1,6 +1,6 @@
 .PHONY: test test-python test-rtl test-references test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache resources resource-targets resource-fit resource-cluster resource-peripherals resource-system resource-system-area resource-system-reset resource-platform resource-laxer-gte
 
-test: test-python test-rtl test-references test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-sim-memory-models test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-gpu-mul-retime test-gpu-no-watchdog test-gpu-area-reg test-spu-static-readback test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-dualshock test-joypad-dualshock-lean test-joypad-pad-table test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-gpu-sort-reread test-gpu-recip test-gpu-poly-stepadd test-gpu-poly-diffmux test-vram-psram test-memcard-slot test-memorymux-fifo-ram test-sdram-ref-owed
+test: test-python test-rtl test-references test-gte-adapter test-cpu-gte-adapter test-cd-arithmetic test-no-turbo-cache test-sim-memory-models test-cd-controller test-spu-cd-mix test-spu-voices test-spu-context-ram test-gpu-divider-unit test-gpu-read-math test-gpu-coordinates test-gpu-borrowed test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-gpu-mul-retime test-gpu-no-watchdog test-gpu-area-reg test-spu-static-readback test-dma-m10k test-gte-m10k test-gte-shadow-m10k test-spu-engine-m10k test-gpu-read-late test-memctrl-lean test-cd-sector-pack test-cd-disc-swap test-disc-swap-seq test-cd-xa test-mdec-reference test-gte-reference test-joypad-dualshock test-joypad-dualshock-lean test-joypad-pad-table test-ntsc-fixed-vblank test-joypad-replay test-psx-apf-video test-config-cdc test-video-config-cdc test-sdram-selector test-native-sdram-spec test-spu-adsr-lean test-gpu-dy-ram test-gpu-sort-reread test-gpu-recip test-gpu-poly-stepadd test-gpu-poly-diffmux test-vram-psram test-memcard-slot test-memorymux-fifo-ram test-sdram-ref-owed
 
 .PHONY: test-sdram-selector test-sdram-ctrl release
 .PHONY: test-native-sdram-spec check-native-sdram-spec
@@ -40,7 +40,7 @@ test-sdram-ctrl:
 .PHONY: test-sdram-ref-owed
 test-sdram-ref-owed:
 	python3 scripts/run_sdram_ref_owed.py
-	python3 scripts/run_sdram_ctrl.py --cas 2 --ops 300 --dclk 5 --tret 5 --no-reference --expect-fail
+	python3 scripts/run_sdram_ctrl.py --cas 2 --ops 300 --dclk 5 --tret 5 --expect-fail
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 4 --open-row
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 2000 --seed 6 --open-row --spu-first
 	python3 scripts/run_sdram_ctrl.py --cas 3 --ops 300 --dclk 0.5 --tret 0.5 --open-row --expect-fail
@@ -118,7 +118,7 @@ test-spu-cd-mix:
 test-spu-voices:
 	python3 scripts/run_spu_cd_mix.py --voices
 
-.PHONY: test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-gpu-mul-retime test-gpu-no-watchdog test-cd-disc-swap test-disc-swap-seq test-cd-xa test-cd-xa-stream test-mdec-reference test-gte-reference
+.PHONY: test-spu-reverb-table test-gte-control-ram test-gte-matrix-ram test-gpu-poly-share test-gpu-vertex-ram test-gpu-tag-generation test-gte-multicycle test-spu-reverb-resample test-mdec-idct-pipe test-spu-guest-m10k test-gpu-mul-narrow test-gpu-half-pipe test-gte-add-table test-gpu-mul-retime test-gpu-no-watchdog test-cd-disc-swap test-disc-swap-seq test-cd-xa test-cd-xa-stream test-mdec-reference test-gte-reference
 test-disc-swap-seq:
 	python3 scripts/run_disc_swap_seq.py
 
@@ -146,7 +146,7 @@ test-memcard-slot:
 test-memorymux-fifo-ram:
 	python3 scripts/run_memorymux_fifo_ram.py --quick
 
-.PHONY: test-vram-psram test-memcard-slot test-memorymux-fifo-ram
+.PHONY: test-memcard-format test-vram-psram test-memcard-slot test-memorymux-fifo-ram
 # Slow (GHDL SPU benches): run after changing the SPU save tap or the SPU chain.
 .PHONY: test-spu-save-tap
 test-spu-save-tap:
@@ -232,6 +232,9 @@ test-gpu-mul-narrow:
 
 test-spu-guest-m10k:
 	python3 scripts/run_spu_guest_m10k.py
+
+test-mdec-idct-pipe:
+	python3 scripts/run_mdec_idct_pipe.py
 
 test-gte-multicycle:
 	python3 scripts/run_gte_multicycle.py

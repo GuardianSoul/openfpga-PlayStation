@@ -24,7 +24,7 @@ from tool_paths import ROOT
 
 CPU_SHA='e238aa73e7ae5617e5686bf636b68eb7f453336d63f844eafdde34c12d38efba'
 SPU_SHA='6399255d10dcabc98068bac155c0124e1f49bbcd67843f46b2d52ac7cf51bd22'
-CPU_PRODUCT_SHA='e7fac3b0ebed127f8ff2f6b763419e6dbe92c84a54c94f1440470a57c95cdf65'
+CPU_PRODUCT_SHA='3ddea0f071ceebae45e5405c542b6dbcce631dd837e0ad171a563cad4c31ef04'
 SPU_QUEUE_SHA='169813eeab5a521bc897cc7a5c64923571a4fd52f2454ab49758ce27d11361be'
 # rtl/pocket/joypad_pad_table.vhd (prepare --pad-table, make test-joypad-pad-table)
 PAD_TABLE_SHA='2f845f92c56c82fde1d933c4889a89968628246009e384fb969c5b87c61951e6'
@@ -42,6 +42,7 @@ def product_text(t):
  if hashlib.sha256(t.encode()).hexdigest()!=CPU_SHA:raise ValueError('Unreviewed DualShock-fit CPU')
  t=once(t,'   signal mulResultS                   : signed(63 downto 0);\n   signal mulResultU                   : unsigned(63 downto 0);',
  '''   -- One product for MULT/MULTU; launch-latched signedness, original wait.
+   -- Shared 33x33 multiplier after pocket_sotn by akoaysigod (GPL-2.0).
    signal mulSigned                    : std_logic := '0';
    signal mulResult                    : signed(65 downto 0);''')
  t=once(t,'            mulResultS <= signed(mul1) * signed(mul2);\n            mulResultU <= mul1 * mul2;',
@@ -117,6 +118,7 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
             # prepare --pad-table: the table pad with the replaced pad's
             # STICK_DPAD/ANALOG_LEVEL defaults; checked with both at false.
             text=one('joypad_pad_table.vhd').read_text()
+            text=text.replace('-- Derived from PSX_MiSTer joypad_pad.vhd (Robert Peip) through joypad_pad_dualshock.vhd.\n','')
             text=re.sub(r'(STICK_DPAD|ANALOG_LEVEL|DIGITAL_HOLD) : boolean := true',r'\1 : boolean := false',text)
             sha=hashlib.sha256(text.encode()).hexdigest()
             return sha if sha in PAD_TABLE_SHAS else None

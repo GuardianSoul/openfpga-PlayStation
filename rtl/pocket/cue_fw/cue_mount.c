@@ -134,8 +134,22 @@ static void setf(u32 f) { flags = f; IO[W_FLAGS] = f; }
 // after the first getfile, +5 and +6 the last 8 path bytes of that failed
 // getfile or open (first byte in bits 31:24), +7 the LibCrypt mask.
 #define W_DBG 8
+#ifdef CUE_DEBUG   // only a debug readout build (psx_cue_mount DEBUG=1) shows the words below: code space
 static u32 ncmd, dbg_got;
 NOINLINE static u32 pack4(u32 i) { return (u32)PATH[i] << 24 | (u32)PATH[i + 1] << 16 | (u32)PATH[i + 2] << 8 | PATH[i + 3]; }
+#endif
+
+// A launch mount ends on a definite answer. APF's result codes: a read's 1 is
+// a slot not defined; its 2 is any error or a read out of range, so it means
+// the card only for a file the Chip32 loader's sizes list (known()), read in
+// range; an open's 2, 3 and 4 are no slot, no such file, a bad path, and its 5
+// a general error. Those card errors set again: this launch is tried again,
+// without end, the CPU waiting (the boot gate); no such error, no retry.
+static u32 again;
+static u32 known(u32 slot);
+NOINLINE static void cmd_failed(u32 kind, u32 id, u32 s) {
+    if (kind == K_OPEN ? s == 5 : kind == K_READ && s == 2 && known(id)) again = 1;
+}
 
 // One APF target command; its error (0 = done).
 NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
@@ -145,6 +159,8 @@ NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
     u32 s;
     while ((s = IO[R_STATUS]) & ST_CMD) ;
     s &= ST_ERR;
+    if (s) cmd_failed(kind, id, s);
+#ifdef CUE_DEBUG
     u32 d = kind | id << 4 | s << 16 | ++ncmd << 20;
     IO[W_DBG + 1] = d;
     if (kind == K_GETFILE && !dbg_got) { dbg_got = 1; IO[W_DBG + 3] = pack4(0); IO[W_DBG + 4] = pack4(4); }
@@ -154,6 +170,7 @@ NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
         IO[W_DBG + 2] = d;
         if (i >= 8) { IO[W_DBG + 5] = pack4(i - 8); IO[W_DBG + 6] = pack4(i - 4); }
     }
+#endif
     return s;
 }
 
@@ -161,7 +178,9 @@ NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
 static u32 oerr;
 NOINLINE static u32 opn(u32 slot) {
     oerr = cmd(K_OPEN, slot, 0, 0);
+#ifdef CUE_DEBUG
     IO[W_DBG] = oerr << 12;
+#endif
     return oerr;
 }
 
@@ -258,7 +277,8 @@ static int finish(int has0, int has1, u32 i0, u32 i1, int audio, u32 pg) {
         } else if (i1) return 0;   // before a file's first track, at its first sector
         else fname[f] |= pg << 24;
     }
-    // Indexes count from the segment's start.
+    // Indexes count from the segment's start. An audio track's gap shorter
+    // than 2 seconds is widened in cue() once the disc is laid out.
     u32 b = fseg[f] & 0xffffff;
     if ((has0 ? i0 : i1) < b) return 0;
     tstart[r] = ((has0 ? i0 : i1) - b) | f << 24;
@@ -404,22 +424,24 @@ NOINLINE static u32 table_word(u32 w) {
 enum { M_PICK, M_LAUNCH, M_MENU, PRESET = 4 };   // PRESET: the path struct holds the cue's path
 
 static u32 bin_slot;                     // a plain image's slot (bin)
-static u32 m3u_n, m3u_slot, m3u_ent[4];  // playlist entries: offset | length << 16
+static u32 m3u_n, m3u_slot, m3u_ent[4];  // the playlist's slot | its size << 8; entries: offset | length << 16
 
 static int is_disc(u32 id) { return id == 101 || id == 201 || id == 301 || id == 401; }
 
-// Launch tries left after this one: a launch mount that fails is tried up
-// to three times, a pause before each retry, before the stream (and the
-// BIOS) sees no disc. retry_wait (start.S, at 0x10 so the bench can shorten
-// it) is the pause in loop turns.
-static u32 retry;
+// The pause before a launch retry: retry_wait (start.S, at 0x10 so the bench
+// can shorten it) in loop turns, doubling to 4 x retry_wait.
 extern const u32 retry_wait;
 
+#ifdef CUE_DEBUG
 #define fail(mode) fail_at(mode, __LINE__)
 NOINLINE static void fail_at(int mode, u32 line) {
     IO[W_DBG] = line | oerr << 12;
+#else
+#define fail(mode) fail_at(mode)
+NOINLINE static void fail_at(int mode) {
+#endif
     bin = 0;
-    setf((flags & ~(F_MOUNTED | F_VDISC | F_VTABLE)) | F_FAILED | (mode == M_LAUNCH && !retry ? F_ALLC : 0));
+    setf((flags & ~(F_MOUNTED | F_VDISC | F_VTABLE)) | F_FAILED | (mode == M_LAUNCH && !again ? F_ALLC : 0));
     if (mode == M_PICK) IO[W_UPD] = 0;
 }
 
@@ -430,11 +452,11 @@ static void cue(u32 slot, u32 size, int mode);
 // cue in CUE_SLOT and its files, so the cue is read as if it had been picked.
 static void game_json(void) {
     // A track table is 1,600 bytes; a 0.5.2 JSON has track 2's .bin there.
-    // No cue readable: a cold card's failed read is tried again; after the
-    // last try it is left to APF.
+    // No cue readable, none listed: left to APF. A listed one that does not
+    // read is the card: tried again (cmd_failed).
     if (!cmd(K_READ, TABLE_SLOT, 0, 4) && cmd(K_READ, TABLE_SLOT, 1600, 4)) goto apf;
     if (cmd(K_READ, CUE_SLOT, 0, 4)) {
-        if (retry) { fail(M_LAUNCH); return; }
+        if (again) { fail(M_LAUNCH); return; }
     apf:
         setf((flags & ~F_FAILED) | F_ALLC); return;
     }
@@ -448,7 +470,9 @@ static void mount(u32 slot) {
     int mode = slot == LAUNCH_SLOT ? M_LAUNCH : M_PICK;
     pick = slot; cur = 0; m3u_n = 0;
     if (cmd(K_READ, slot, 0, 4)) {
-        if (mode == M_LAUNCH) game_json();   // nothing readable: APF's game JSON
+        // Nothing readable: APF's game JSON, which may well read so with its
+        // disc in slot 101. Picked cues and images have no slot 101.
+        if (mode == M_LAUNCH) { if (known(DISC_SLOT)) again = 0; game_json(); }
         else fail(mode);
         return;
     }
@@ -567,7 +591,9 @@ static void cue(u32 slot, u32 size, int mode) {
     }
     PATHW[64] = 0; PATHW[65] = 0;   // openfile flags and size: open an existing file (the .sbi too)
     lcmask = IO[R_STATUS] & ST_LC ? sbi_mask(i) : 0;
+#ifdef CUE_DEBUG
     IO[W_DBG + 7] = lcmask;
+#endif
     if (!parse()) { fail(mode); return; }
     total = 0;
     // A game JSON whose slots 101, 102, ... hold the cue's files (pupdate,
@@ -617,6 +643,14 @@ static void cue(u32 slot, u32 size, int mode) {
         else s += fsec[f];
         if (!f) { s = s > lead ? s - lead : 0; x = x > lead ? x - lead : 0; }
         x += fsec[f];
+        // An audio track after the first whose gap before INDEX 01 is under
+        // 150 sectors (no INDEX 00: ISOBuster's merged cues, per-track files
+        // with the gap at the end of the previous file or dropped; or a short
+        // INDEX 00): it starts 150 sectors before INDEX 01 when that is after
+        // the previous track's INDEX 01. cd_top counts a track's first 150
+        // sectors as index 00 and Play(track) starts after them, so a shorter
+        // gap would skip the start of the song (Tomb Raider waits for ever).
+        if (a && r && x - s < 150 && x > prev + 150) s = x - 150;
         if (r == 0 ? (a || s || x) : s <= prev) { fail(mode); return; }
         if (s > x || x >= total) { fail(mode); return; }
         tstart[r] = s; ti1[r] = x | a << 31; prev = x;
@@ -629,17 +663,18 @@ static void cue(u32 slot, u32 size, int mode) {
 
 // Open playlist entry k (1-4) into CUE2_SLOT: the playlist's folder
 // (base up to dirlen) and the entry, or the entry alone if it starts with
-// '/'. Its error.
+// '/'. Its error. The entry is read with getb(), which never reads past the
+// playlist's end (a last line without a newline: APF fails such reads).
 static u32 m3u_dir;
 NOINLINE static u32 open_entry(u32 k) {
-    u32 off = m3u_ent[k - 1] & 0xffff, len = m3u_ent[k - 1] >> 16, at = off & 3, d = 0, err;
-    clen = 0;
-    if ((err = cmd(K_READ, m3u_slot, off & ~3u, (len + at + 3) & ~3u))) return err;
-    if (CHUNK[at] != '/') d = m3u_dir;
+    u32 off = m3u_ent[k - 1] & 0xffff, len = m3u_ent[k - 1] >> 16, d = 0, err;
+    pick = m3u_slot & 0xff; cue_size = m3u_slot >> 8; clen = 0; cpos = off;
+    if (getb() != '/') d = m3u_dir;
+    cpos = off;
     fb = 0;
     if (d + len > 255) return 1;
     for (u32 i = 0; i < d; i++) PATH[i] = base[i];
-    for (u32 i = 0; i < len; i++) { u32 x = CHUNK[at + i]; PATH[d + i] = x == '\\' ? '/' : x; }
+    for (u32 i = 0; i < len; i++) { int x = getb(); PATH[d + i] = x == '\\' ? '/' : x; }
     PATH[d + len] = 0;
     PATHW[64] = 0; PATHW[65] = 0;
     err = opn(CUE2_SLOT);
@@ -667,7 +702,7 @@ static void entry(u32 k, int mode) {
 // A playlist in slot (base holds its path): up to four entries, then the
 // first one.
 static void playlist(u32 slot, int mode) {
-    m3u_slot = slot; m3u_dir = dirlen; m3u_n = 0; nmarks = 0;
+    m3u_slot = slot | cue_size << 8; m3u_dir = dirlen; m3u_n = 0; nmarks = 0;
     cbase = clen = cpos = 0;
     c = getb();
     while (c >= 0 && m3u_n < 4) {
@@ -833,15 +868,17 @@ void main(void) {
         if (IO[R_STATUS] & ST_U) serve();
         u32 m = menu_now();
         if (s & ST_BOOT) {
-            // A cold first launch (after a restart or card writes) can fail a
-            // read; a later try reads cached data.
+            // A cold first launch (after a restart, a core switch or card
+            // writes) can fail reads and opens: tried until APF gives an answer.
             IO[W_CLR] = ST_BOOT | CLR_MENU;
             setf(flags & ~F_FAILED);
             boot_sizes = 1;
-            for (retry = 2;; retry--) {
+            for (u32 w = retry_wait;;) {
+                again = 0;
                 mount(LAUNCH_SLOT);
-                if (!(flags & F_FAILED) || !retry) break;
-                for (u32 n = retry_wait; n; n--) __asm__ volatile("");
+                if (!again || !(flags & F_FAILED)) break;
+                for (u32 n = w; n; n--) __asm__ volatile("");
+                if (w >> 2 < retry_wait) w <<= 1;
             }
         }
         else if (s & ST_UPD) { IO[W_CLR] = ST_UPD | CLR_MENU; ncheat = 0; mount(DISC_SLOT); }

@@ -15,6 +15,9 @@ the SD card, the same way the core's `make_pocket_instances.py` script does:
   When a game's disc names differ by more than their number (Final Fantasy
   IX's "(Disc 3) (v1.1)" and "(USA) (Disc 4) (Rev 1)"), it writes a `.m3u`
   playlist of the discs next to them and the game file names that;
+- a game file for each `.m3u` playlist you write yourself (up to four discs,
+  one `.cue` per line, relative to the playlist), so discs with any names can
+  be one game: a cheat disc first, then the game, picked in Swap Discs;
 - for one-file test cores, each disc's track table (`.trk`), joining
   per-track files into `<name> (one file).bin`;
 - for older cores, LibCrypt `.sbi` files next to a cue, and splitting merged
@@ -51,7 +54,9 @@ replace them, or skip them. A full SD card corrupts easily, so:
 ## What it checks
 
 Every run reports what it finds, and each problem comes with what to do
-about it:
+about it. The window keeps it short (a few example lines per kind of
+problem); the full report, with every game file and every skipped folder,
+is saved next to the game files as `Game files report.txt`:
 
 - **The core.** It makes game files only for the GuardianSoul.PlayStation
   core. Another developer's PlayStation core on the card is not listed; if
@@ -66,7 +71,9 @@ about it:
   - a `.bin` with no `.cue` that is one track of a bigger disc;
   - a file that is not a raw CD image (2352-byte sectors), such as an
     `.iso` or a damaged download;
-  - a damaged `.cue`;
+  - a damaged `.cue`, or one whose tracks aren't 2352-byte sectors;
+  - a format the core can't read (`.iso`, `.pbp`, ECM, CloneCD and other
+    disc-image formats), or a zipped game;
   - a multi-disc game with a disc missing, or more discs or tracks than the
     installed core takes (update the core);
   - a `.chd` that wasn't converted.
@@ -77,8 +84,8 @@ about it:
   does when it starts: one of the names the core looks for (such as
   `scph5501.bin`), exactly 512 KB, and a real PlayStation BIOS (with its
   "System ROM Version" line). It reports each one as OK, the wrong size or
-  not a BIOS. With no usable BIOS there, it looks for one elsewhere on the
-  card (under another name, in another core's folder, in the card's root)
+  not a BIOS. With no usable BIOS there, it looks for one under another
+  name there, in `Assets/psx/common/` and in the core's own Assets folder,
   and says where to copy it and what to call it. A BIOS in
   `Assets/playstation/common/` is never mistaken for a disc.
 

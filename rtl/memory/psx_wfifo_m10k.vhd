@@ -1,5 +1,5 @@
--- SPDX-License-Identifier: MIT
--- Copyright (c) 2026 PSX Pocket contributors
+-- SPDX-License-Identifier: GPL-2.0-only
+-- After MiSTer PSX_MiSTer SyncFifoFallThroughMLAB.vhd (Robert Peip, GPL-2.0).
 --
 -- Fall-through FIFO with its storage in M10K block RAM, a drop-in for the
 -- MiSTer SyncFifoFallThroughMLAB used as memorymux's CPU write FIFO.

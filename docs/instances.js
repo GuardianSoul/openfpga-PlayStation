@@ -13,6 +13,7 @@
   const SECTOR = 2352;
   const BIOS_BYTES = 512 << 10;   // a PlayStation BIOS is exactly this size; no disc image is
   const PREGAP = 150;
+  const CUE_BYTES = 0x3FFF;   // the largest cue the core reads (cue_mount.c cue(); slot 100 takes 16 KiB)
   const LIBCRYPT_SLOT = 99;
   const CHEAT_SLOT = 98;
   const CARD_SLOT = 16;
@@ -155,20 +156,22 @@
 
   // ---- cue sheets ----------------------------------------------------------
 
-  // [[filename, [[track, type, {index: frames}]]]] in cue order.
+  // [[filename, [[track, type, {index: frames}]]]] in cue order. Keywords in
+  // any case and a FILE line without its type are taken, as the core's cue
+  // reader takes them (cue_mount.c parse()).
   function parseCue(text) {
     const files = [];
     for (const line of text.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/)) {
       const words = line.trim();
       let m;
-      if ((m = /^FILE\s+"(.+)"\s+\S+/.exec(words) || /^FILE\s+(\S+)\s+\S+/.exec(words))) {
+      if ((m = /^FILE\s+"(.+)"/i.exec(words) || /^FILE\s+(\S+)/i.exec(words))) {
         files.push([m[1], []]);
-      } else if ((m = /^TRACK\s+(\d+)\s+(\S+)/.exec(words))) {
+      } else if ((m = /^TRACK\s+(\d+)\s+(\S+)/i.exec(words))) {
         if (!files.length) throw new Error('TRACK before FILE');
         files[files.length - 1][1].push([parseInt(m[1], 10), m[2].toUpperCase(), {}]);
-      } else if ((m = /^(INDEX\s+(\d+)|PREGAP)\s+(\d+):(\d+):(\d+)/.exec(words))) {
+      } else if ((m = /^(INDEX\s+(\d+)|PREGAP)\s+(\d+):(\d+):(\d+)/i.exec(words))) {
         const tracks = files.length ? files[files.length - 1][1] : [];
-        if (!tracks.length) throw new Error(m[1].split(/\s/)[0] + ' before TRACK');
+        if (!tracks.length) throw new Error(m[1].split(/\s/)[0].toUpperCase() + ' before TRACK');
         const key = m[2] !== undefined ? parseInt(m[2], 10) : 'pregap';
         tracks[tracks.length - 1][2][key] = (parseInt(m[3], 10) * 60 + parseInt(m[4], 10)) * 75 + parseInt(m[5], 10);
       }
@@ -178,7 +181,12 @@
 
   async function readCue(card, path) {
     const file = await fileAt(card, path);
-    const files = parseCue(new TextDecoder('utf-8').decode(await file.arrayBuffer()));
+    let bytes = new Uint8Array(await file.arrayBuffer()), text;
+    if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) bytes = bytes.subarray(3);
+    // Old Windows tools write names in Latin-1: read those bytes as Latin-1.
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch (e) { text = Array.from(bytes, (b) => String.fromCharCode(b)).join(''); }
+    const files = parseCue(text);
     const out = [];
     for (const [name, tracks] of files) out.push([await resolveFile(card, path, name, files.map(([n]) => n)), tracks]);
     return out;
@@ -214,14 +222,22 @@
       || name;
   }
 
+  // A track type the core's cue reader takes (cue_mount.c parse()).
+  const cueReaderTrack = (kind) => kind === 'AUDIO' || kind.endsWith('/2352');
+
   const rawTrack = (kind) => kind === 'AUDIO' || kind.endsWith('/2352') || kind.endsWith('/RAW');
 
   // Reason a cue-reader core cannot open this cue's files, or null.
   async function cueCheck(card, files, folder) {
     if (!files.length) return 'no FILE entries';
-    for (const [name] of files) {
-      const file = await fileAt(card, join(folder, name.replace(/\\/g, '/')));
-      if (!file) return `${name}: file missing`;
+    for (const [name, tracks] of files) {
+      const path = join(folder, name.replace(/\\/g, '/'));
+      const file = await fileAt(card, path);
+      if (!file) {
+        if (await fileAt(card, [...path.slice(0, -1), path[path.length - 1] + '.ecm'])) return `${name}: ECM-compressed`;
+        return `${name}: file missing`;
+      }
+      for (const [number, kind] of tracks) if (!cueReaderTrack(kind)) return `track ${number}: ${kind} is not 2352-byte sectors`;
       if (file.size % SECTOR) return `${name}: not whole 2352-byte sectors`;
     }
     return null;
@@ -316,7 +332,15 @@
         if (!(1 in index)) return `track ${number}: no INDEX 01`;
         if (index.pregap) return `track ${number}: PREGAP outside the image`;
         if (tracks.length && kind !== 'AUDIO') return `track ${number}: data after track 1`;
-        tracks.push([offset + (0 in index ? index[0] : index[1]), offset + index[1]]);
+        let start = offset + (0 in index ? index[0] : index[1]);
+        const index01 = offset + index[1];
+        // An audio track after the first whose gap before INDEX 01 is under
+        // 2 seconds (no INDEX 00: ISOBuster-style merged cues, per-track
+        // files with the gap at the end of the previous one): it starts 150
+        // sectors before INDEX 01 (make_pocket_instances.py's one_file_plan).
+        if (tracks.length && kind === 'AUDIO' && start <= index01 && index01 < start + PREGAP
+            && index01 - PREGAP > tracks[tracks.length - 1][1]) start = index01 - PREGAP;
+        tracks.push([start, index01]);
       }
       sources.push([path, file.size / SECTOR]); offset += file.size / SECTOR;
     }
@@ -579,15 +603,15 @@
       else lines.push(`BIOS ${hit[0]} is not a PlayStation BIOS (it has no "System ROM Version" line): replace it with a dump of your console's BIOS`);
     }
     if (usable) return lines;
-    // A usable BIOS elsewhere: in common under another name, another platform's
-    // common, the core's own Assets folder or the card's root.
-    const folders = [[], ['Assets', platform, core]];
-    const assets = await dirAt(card, ['Assets']);
-    for (const [name, kind] of assets ? await list(assets) : []) if (kind === 'directory') folders.push(['Assets', name, 'common']);
+    // A usable BIOS elsewhere: in common under another name, the other
+    // PlayStation platform's common (psx) or the core's own Assets folder.
+    // Only these few folders, at most 2000 entries each: never the whole card.
+    const folders = [common, ['Assets', platform, core]];
+    for (const other of ['psx', 'playstation']) if (other !== platform) folders.push(['Assets', other, 'common']);
     const found = [];
     for (const folder of folders) {
       const dir = await dirAt(card, folder);
-      for (const [name, kind] of dir ? await list(dir) : []) {
+      for (const [name, kind] of (dir ? await list(dir) : []).slice(0, 2000)) {
         if (kind !== 'file' || name.startsWith('._') || !(/\.(bin|rom|mcr)$/i.test(name) || !name.includes('.'))) continue;
         if (folder.join('/') === place && names.some((n) => n.toLowerCase() === name.toLowerCase())) continue;
         const result = await examineBios(await fileAt(card, [...folder, name]));
@@ -621,16 +645,21 @@
     const dump = "use the disc's .cue/.bin or .chd";
     let m;
     if ((m = /^(.+): file missing$/.exec(reason))) return `${m[1]} is missing: put it next to the .cue, with the name the .cue gives it`;
+    if ((m = /^(.+): ECM-compressed$/.exec(reason))) return `${m[1]} is ECM-compressed (${m[1]}.ecm): decompress it first, then Generate game files again`;
     if ((m = /^(.+): not whole 2352-byte sectors$/.exec(reason))) return `${m[1]} is not a raw CD image (its size is not whole 2352-byte sectors): ${dump}`;
     if ((m = /^track (\d+): (.+) is not 2352-byte sectors$/.exec(reason))) return `track ${m[1]} is ${m[2]}, which the core can't read: ${dump} with 2352-byte sectors`;
     if (/^(no FILE entries|\S* ?before (TRACK|FILE))$/.test(reason)) return `the .cue is damaged (${reason}): get the disc's real .cue`;
     if ((m = /^(\d+) track files \(core takes (\d+)\)$/.exec(reason))) return `${m[1]} track files, but this core takes ${m[2]}: update the core to the latest version`;
     if (reason.endsWith('(merged image)')) return `${reason}: Generate game files again and choose to convert it`;
+    if (reason.startsWith('format: ')) return `it is ${reason.slice(8)}, which the core can't read: ${dump}`;
     return {
       'a track file whose .cue is missing': "it is one track of a disc whose .cue is missing: put the disc's .cue next to it",
       'not whole 2352-byte sectors': `it is not a raw CD image (its size is not whole 2352-byte sectors): ${dump}`,
       'not enough free space for its .cue': 'the SD card is full: free some space, then Generate game files again',
       'CHD image not extracted': 'CHD image not extracted: Generate game files again and choose to convert it',
+      'cue over 16 KB': 'the .cue is larger than the core reads (16 KB): remove its REM, TITLE and other comment lines',
+      'compressed archive': 'it is a compressed archive: extract it on a computer first, then Generate game files again',
+      'ECM-compressed image': 'it is ECM-compressed: decompress it to its .bin first, then Generate game files again',
     }[reason] || reason;
   }
 
@@ -697,6 +726,70 @@
     return skipped;
   }
 
+  // Disc image files the core can't read, and why (otherImages()).
+  const OTHER_IMAGES = {
+    '.7z': 'compressed archive', '.zip': 'compressed archive', '.rar': 'compressed archive',
+    '.ecm': 'ECM-compressed image', '.pbp': 'format: a PSP EBOOT',
+    '.iso': 'format: an .iso (2048-byte sectors, no CD music)',
+    '.ccd': 'format: a CloneCD image (.ccd/.img/.sub)', '.mds': 'format: an Alcohol image (.mds/.mdf)',
+    '.nrg': 'format: a Nero image', '.cdi': 'format: a DiscJuggler image',
+  };
+  const extOf = (name) => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i).toLowerCase() : ''; };
+
+  // Files under common in a format the core can't read (archives, ECM, PBP,
+  // .iso, CloneCD, ...) that no cue in their folder names: [[path, reason]].
+  // A cue naming one reports it itself.
+  async function otherImages(card, common) {
+    const found = [];
+    for (const rel of await walk(await dirAt(card, common), (n) => extOf(n) in OTHER_IMAGES)) {
+      const path = [...common, ...rel], folder = path.slice(0, -1), name = path[path.length - 1];
+      const named = new Set();
+      for (const [cueName, kind] of await list(await dirAt(card, folder))) {
+        if (kind !== 'file' || !/\.cue$/i.test(cueName) || cueName.startsWith('._')) continue;
+        try {
+          for (const [f] of await readCue(card, [...folder, cueName])) named.add(join(folder, f.replace(/\\/g, '/')).join('/'));
+        } catch (e) { /* a damaged cue names nothing */ }
+      }
+      const bare = [...folder, name.slice(0, name.length - extOf(name).length)].join('/');
+      if (named.has(path.join('/')) || named.has(bare)) continue;
+      found.push([path, OTHER_IMAGES[extOf(name)]]);
+    }
+    return found;
+  }
+
+  // Say why each file otherImages() finds gets no game file; their count.
+  async function reportOtherImages(card, common, say) {
+    const found = await otherImages(card, common);
+    for (const [path, reason] of found) say(`skip ${path.slice(common.length).join('/')}: ${explain(reason)}`);
+    return found.length;
+  }
+
+  // A .m3u's discs as the core reads them: one per line, # comments,
+  // backslashes as slashes.
+  function playlistEntries(text) {
+    return text.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).map((l) => l.replace(/\\/g, '/'));
+  }
+
+  // Why a playlist the user wrote can't be a game file, or null: the core
+  // takes up to four discs, each a .cue or .bin relative to the playlist
+  // (or from the card's root with a leading /).
+  async function playlistCheck(card, m3u) {
+    const file = await fileAt(card, m3u);
+    if (!file) return 'not readable';
+    const entries = playlistEntries(await file.text());
+    if (!entries.length) return 'no discs listed';
+    if (entries.length > 4) return `${entries.length} discs (the core takes 4)`;
+    for (const entry of entries) {
+      if (!/\.(cue|bin)$/i.test(entry)) return `${entry}: not a .cue or .bin`;
+      const path = [];   // with ".." resolved
+      for (const seg of entry.startsWith('/') ? entry.split('/') : [...m3u.slice(0, -1), ...entry.split('/')]) {
+        if (seg === '..') path.pop(); else if (seg && seg !== '.') path.push(seg);
+      }
+      if (!await fileAt(card, path)) return `${entry} not found`;
+    }
+    return null;
+  }
+
   async function makeInstances(card, options, log = () => {}) {
     const { core, platform = 'playstation' } = options;
     let declared = null;
@@ -727,13 +820,16 @@
       say(`${summary.converted} images converted, ${summary.convertFailed} failed`);
     }
     summary.skipped += await writeLoneCues(card, common, say);
+    summary.skipped += await reportOtherImages(card, common, say);
     const discTracks = {};
     for (let n = 2; n < 10; n++) discTracks[n] = ids.filter((id) => id >= 100 * n + 1 && id <= 100 * n + 99).length;
     let discsDeclared = 1;
     for (let n = 2; n < 10; n++) if (discTracks[n]) discsDeclared++;
     const discs = new Map();   // shared card name -> stems of its discs
     const games = new Map();   // game name -> Map(disc number -> [[cue, files, tags]])
+    const named = new Set();   // game file names written this run
     const writeInstance = async (name, slots, prefix) => {
+      named.add(name);
       const instance = { instance: { magic: 'APF_VER_1', data_path: prefix, data_slots: slots } };
       await writeFile(card, [...out, name + '.json'], jsonDumps(instance) + '\n');
     };
@@ -796,6 +892,7 @@
       try {
         files = await readCue(card, cue);
         reason = cueReader ? await cueCheck(card, files, folder) : oneFile ? null : await check(card, files, folder);
+        if (!reason && cueReader && (await fileAt(card, cue)).size > CUE_BYTES) reason = 'cue over 16 KB';
       } catch (e) { reason = e.message; }
       if ((oneFile || cueReader) && folder[folder.length - 1] === cueStem && await fileAt(card, [...folder.slice(0, -1), cueName])) continue;   // split copy of a merged cue
       if (!reason && oneFile) {
@@ -837,6 +934,24 @@
       }
       await single(cue, files, trackCount);
       summary.written++;
+    }
+    // Two whole releases of one game ("X (USA) (Disc 1/2)" with "X (Europe)
+    // (Disc 1/2)") are two games: one per disc 1 with its own release tags,
+    // named "X (USA)" and "X (Europe)". Each takes the discs with its tags,
+    // else every candidate (the first is used).
+    for (const game of [...games.keys()]) {
+      const found = games.get(game);
+      const releases = [...new Set((found.get(1) || []).map((c) => JSON.stringify(c[2])))];
+      if (releases.length < 2) continue;
+      games.delete(game);
+      for (const tags of releases) {
+        const discs = new Map();
+        for (const [n, candidates] of found) {
+          const same = candidates.filter((c) => JSON.stringify(c[2]) === tags);
+          discs.set(n, same.length ? same : candidates);
+        }
+        games.set(`${game} ${JSON.parse(tags).map((t) => t.trim()).join(' ')}`, discs);
+      }
     }
     for (const game of [...games.keys()].sort()) {
       const found = games.get(game);
@@ -953,6 +1068,22 @@
       }
       say(`wrote ${name}.json (${numbers.length} disc${numbers.length > 1 ? 's' : ''})`);
       summary.written++;
+    }
+    // Playlists the user wrote ("Game - Cheats.m3u": a cheat disc, then the
+    // game): each gets a game file naming it, so it is picked like any game
+    // and Swap Discs goes through its discs in order. Not the playlists of
+    // the multi-disc games above (their game file has the playlist's name).
+    if (playlistSlot) {
+      for (const rel of await walk(commonDir, (n) => /\.m3u$/i.test(n))) {
+        const m3u = [...common, ...rel], m3uStem = stem(rel[rel.length - 1]);
+        if (named.has(m3uStem)) continue;
+        const reason = await playlistCheck(card, m3u);
+        if (reason) { say(`skip ${rel.join('/')}: ${reason}`); summary.skipped++; continue; }
+        const dataPath = posix(m3u.slice(common.length, -1));
+        await writeInstance(m3uStem, [{ id: 100, filename: rel[rel.length - 1] }], dataPath !== '.' ? dataPath + '/' : '');
+        say(`wrote ${m3uStem}.json (playlist ${rel.join('/')})`);
+        summary.written++;
+      }
     }
     // The release's "how to add games" placeholder (package_release.py).
     if (summary.written) await removeFile(card, [...out, '! How to add games (see README).json']);

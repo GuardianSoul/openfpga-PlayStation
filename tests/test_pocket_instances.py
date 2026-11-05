@@ -33,6 +33,27 @@ def merged_image(folder):
     (folder/'Game.cue').write_text(MERGED)
 
 
+class ParseCue(unittest.TestCase):
+    def test_variants_read_as_the_core_reads_them(self):
+        # The core's cue reader (cue_mount.c parse()) takes keywords in any
+        # case, a FILE line without its type, a BOM, tabs, CR-only line ends
+        # and lines it doesn't know (scripts/run_cue_mount.py lower, meta,
+        # no-type): the generator must read them the same.
+        want = [('Game.bin', [(1, 'MODE2/2352', {1: 0}), (2, 'AUDIO', {0: 150, 1: 225, 2: 230})])]
+        texts = ['\ufefffile "Game.bin" binary\r\ttrack 01 mode2/2352\r\t\tindex 01 00:00:00\r\ttrack 02 audio\r'
+                 '\t\tindex 00 00:02:00\r\t\tindex 01 00:03:00\r\t\tindex 02 00:03:05\r',
+                 'REM GENRE Game\nCATALOG 0000000000000\nCDTEXTFILE "Game.cdt"\nTITLE "Game"\nFILE "Game.bin"\n'
+                 '  TRACK 01 MODE2/2352\n    FLAGS DCP\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    ISRC ABCDE1234567\n'
+                 '    PERFORMER "x"\n    INDEX 00 00:02:00\n    INDEX 01 00:03:00\n    INDEX 02 00:03:05\n']
+        with TemporaryDirectory() as tmp:
+            (Path(tmp)/'Game.bin').write_bytes(sectors(1, 300))
+            for text in texts:
+                (Path(tmp)/'Game.cue').write_bytes(text.encode('utf-8'))
+                self.assertEqual(parse_cue(Path(tmp)/'Game.cue'), want)
+            (Path(tmp)/'Game.cue').write_text('index 01 00:00:00\n')
+            with self.assertRaisesRegex(ValueError, '^INDEX before TRACK$'): parse_cue(Path(tmp)/'Game.cue')
+
+
 class SplitCue(unittest.TestCase):
     def test_merged_image_becomes_redump_layout(self):
         with TemporaryDirectory() as tmp:
@@ -296,7 +317,7 @@ class MultiDiscGroup(unittest.TestCase):
                                  check=True, capture_output=True, text=True).stdout
             out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
             self.assertEqual(sorted(p.name for p in out.iterdir()),
-                             ['Alone.json', 'Alpha 1.json', 'Beta 2.json', 'Crash.json', 'Gran Turismo 2 (USA).json', 'Lost.json', 'Riven.json', 'Spread.json', 'Spyro 2.json', 'Tekken 2.json',
+                             ['Alone.json', 'Alpha 1.json', 'Beta 2.json', 'Crash.json', 'Gran Turismo 2 (USA).json', 'Lost.json', 'Parasite Eve II (Europe).json', 'Parasite Eve II (USA).json', 'Riven.json', 'Spread.json', 'Spyro 2.json', 'Tekken 2.json',
                               'Tekken 3.json', 'cd1.json', 'cd2.json', 'cd3.json', 'cd4.json', 'cd5.json', 'other 2.json'])
             riven = json.loads((out/'Riven.json').read_text())['instance']
             self.assertEqual(riven['data_slots'], [{'id': 100, 'filename': 'Riven/disc1.cue'}, {'id': 101, 'filename': 'Riven/disc1 (Track 1).bin'},
@@ -373,7 +394,7 @@ class SharedCard(unittest.TestCase):
             saves.mkdir(parents=True)
             (saves/'Game (Disc 1).sav').write_bytes(b'old')
             (saves/'Game (Disc 2).sav').write_bytes(b'new')
-            os.utime(saves/'Game (Disc 1).sav', (1, 1))
+            os.utime(saves/'Game (Disc 1).sav', (400000000, 400000000))  # 1982: exFAT starts at 1980
             run = lambda: subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'T'],
                                          check=True, capture_output=True)
             run()

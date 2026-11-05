@@ -86,7 +86,7 @@ module tb_cue_mount;
     // the stack (0x3E00-0x3FFF): the lowest firmware store in it
     always @(posedge clk) if(dut.a_we && dut.adr[13:0]>=14'h3E00 && dut.adr[13:0]<min_store) min_store=dut.adr[13:0];
 
-    integer errors=0, commands=0, opens=0, reads=0, cold=0, launch_tries=0, want_tries=0;
+    integer apf_lat=0, coldopen=0, hold=0, errors=0, commands=0, opens=0, reads=0, cold=0, launch_tries=0, want_tries=0;
     time last_cmd=0, retry_gap=0;
     integer mount_commands, mount_opens, mount_reads;
     time mount_time;
@@ -123,11 +123,12 @@ module tb_cue_mount;
             if($test$plusargs("trace")) $display("%0t cmd kind %0d id %0d off %0d br %08x len %0d",$time,kind,d_id,d_offset,d_bridge,d_length);
             repeat(3) @(negedge clk); d_done=0; d_error=0;
             repeat(5) @(negedge clk);
+            repeat(apf_lat) @(negedge clk);     // +apf_lat=N: a slow answer that still succeeds
             if(commands<=cold) d_error=2;   // a cold card's failed read, getfile or open
             else if(kind==0) begin
                 reads=reads+1;
                 f=slot_of[d_id];
-                if(f==255) d_error=3;
+                if(f==255) d_error=$test$plusargs("empty2") ? 2 : 3;   // +empty2: a defined slot with no file (APF's 2)
                 else begin
                     start=fs_meta[2*f]; size=fs_meta[2*f+1];
                     if(d_offset+d_length>size) d_error=2;
@@ -182,6 +183,7 @@ module tb_cue_mount;
                 else slot_of[d_id]=match;
             end
             if($test$plusargs("trace")) $display("%0t   done err %0d",$time,d_error);
+            if(kind==2 && opens<=coldopen) d_error=5;   // +coldopen=N: an open's general error
             @(negedge clk); d_done=1; last_cmd=$time;
         end
         prev_rd=d_read;prev_gf=d_getfile;prev_of=d_openfile;
@@ -261,6 +263,9 @@ module tb_cue_mount;
         launch=$test$plusargs("launch");
         expect_json=$test$plusargs("json");
         if(!$value$plusargs("cold=%d",cold)) cold=0;
+        if(!$value$plusargs("apf_lat=%d",apf_lat)) apf_lat=0;
+        if(!$value$plusargs("coldopen=%d",coldopen)) coldopen=0;
+        if(!$value$plusargs("hold=%d",hold)) hold=0;   // a card that never answers: after this many tries the stream must still wait
         if(!$value$plusargs("tries=%d",want_tries)) want_tries=0;
         if(nsectors!=0) begin $readmemh({base,"/table.hex"},table_exp); $readmemh({base,"/image.hex"},image); $readmemh({base,"/bounds.hex"},bounds); end
         for(mi=0;mi<1024;mi=mi+1) slot_of[mi]=255;
@@ -278,6 +283,7 @@ module tb_cue_mount;
             if($value$plusargs("slot99=%d",mi)) slot_of[99]=mi;    // the game JSON's .sbi
             if($value$plusargs("slot98=%d",mi)) slot_of[98]=mi;    // its cheat list
             if($value$plusargs("slot97=%d",mi)) slot_of[97]=mi;    // its track sizes
+            if($test$plusargs("no102")) begin slot_of[102]=255; slot_of[100]=255; slot_of[101]=0; end   // a plain image: slot 101 only
             // Its .bin files in 101, 102, ... (pupdate, Pocket Sync, 0.5.2)
             for(sk=101;sk<120;sk=sk+1) begin $sformat(pname,"slot%0d=%%d",sk); if($value$plusargs(pname,mi)) slot_of[sk]=mi; end
             // +sizes / +sizes_swap: the Chip32 loader's size block (psx_bios_check.asm
@@ -288,13 +294,19 @@ module tb_cue_mount;
                 for(mi=0;mi<6;mi=mi+1) begin
                     sk=mi==0 ? 0 : mi==1 ? 99 : mi==2 ? 100 : mi==3 ? 101 : mi==4 ? 102 : 98;
                     w=slot_of[sk]!=255 ? fs_meta[2*slot_of[sk]+1] : 0;
+                    if(sk==0 && $test$plusargs("size0")) w=512;   // a game JSON in slot 0
                     bwrite(32'h2C0001C4+4*mi, sw ? {w[7:0],w[15:8],w[23:16],w[31:24]} : w);
                 end
                 bwrite(32'h2C0001C0, sw ? 32'h455A4953 : 32'h53495A45);
             end
             @(negedge clk); allcomplete=1; last_cmd=$time;
             tries=0;
-            while(!s_allcomplete && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
+            while(!s_allcomplete && tries<MOUNT_LIMIT && !(hold && launch_tries>=hold)) begin @(negedge clk); tries=tries+1; end
+            if(hold) begin
+                if(s_allcomplete || launch_tries<hold) fail("a card that never answers must keep the stream waiting");
+                else $display("launch: %0d tries, still waiting",launch_tries);
+                if(errors==0) $display("PASS"); $finish;
+            end
             if(!s_allcomplete) begin fail("stream allcomplete never released"); $finish; end
             $display("launch: %0d tries, shortest pause before a retry %0d cycles",launch_tries,retry_gap/10);
             if(want_tries && launch_tries!=want_tries) fail("launch tries");

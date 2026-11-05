@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""core_top: --boot-waits-disc's 14.5 s timer waits while the cue reader mounts.
+"""core_top: --boot-waits-disc releases the CPU on the mount alone, with no timer.
 
---boot-waits-disc holds the CPU in reset until the first disc mount reaches
-cd_top, or 14.46 s (2^30 clk_74a cycles) after Reset Exit. A cue whose track
-files are opened one by one can take longer than that to mount (Street
-Fighter Collection, 72 files; Tomb Raider II, 61): the CPU then left reset
-with no disc and the BIOS booted to its menu (0.5.5 and 0.5.6 alike).
+--boot-waits-disc held the CPU in reset until the first disc mount reached
+cd_top, or a timer ran out: 1.8 s, 14.46 s, then 14.46 s plus the cue reader's
+mount with a 57.8 s cap. Each timer lost a race with a cold card (hardware test
+2026-11-05: BIOS menu after a core switch or cold boot), since a CPU let go
+before the mount sees no disc and boots to the menu.
 
-The cue reader's launch mount is running while APF's allcomplete is up and
-the reader has not released its own (psx_cue_mount s_allcomplete: the
-firmware sets it when the launch mount ends, mounted or failed). After 14.46 s
-the timer now waits for that, so a slow mount still boots its disc; with no
-mount running (no game, APF still loading, a plain .bin) it ends as before.
-2^32 cycles (57.8 s) is the cap, so a hung mount cannot hold the CPU forever.
-The counter grows from 30 to 32 bits; no other state.
+The stream's first mount needs APF's allcomplete and the cue reader's answer,
+and every mount reports, no disc included: the firmware only keeps a launch
+waiting while APF reports card errors on a file the Chip32 loader listed. Slot
+0 is required, so a launch always has a pick and APF's allcomplete comes. So
+disc_settled is the whole condition, and the 30-bit counter goes.
 Usage: prepare_boot_waits_mount.py PROJECT_OR_core_top.sv (after
 prepare_pocket_early.py with --boot-waits-disc --cue-mount)
 """
@@ -27,26 +25,15 @@ OLD_ALWAYS = '''    always @(posedge clk_74a)
         if (!power_reset_n) begin disc_wait<=0; disc_wait_done<=0; end
         else if (reset_n && !disc_wait_done) begin disc_wait<=disc_wait+1'b1; if (&disc_wait) disc_wait_done<=1'b1; end
 '''
-NEW_REG = '''    // prepare_boot_waits_mount.py: past 14.46 s the timer waits for the cue
-    // reader's launch mount (below, after psx_cue_mount); 57.8 s is the cap.
-    reg [31:0] disc_wait=0; reg disc_wait_done=0;
-'''
-ANCHOR = '    wire cue_s_allcomplete, cue_table_grant;\n'
-NEW_ALWAYS = '''    // prepare_boot_waits_mount.py: the launch mount runs while APF's
-    // allcomplete is up and the cue reader has not released its own.
-    wire cue_mount_busy=dataslot_allcomplete && !cue_s_allcomplete;
-    always @(posedge clk_74a)
-        if (!power_reset_n) begin disc_wait<=0; disc_wait_done<=0; end
-        else if (reset_n && !disc_wait_done) begin disc_wait<=disc_wait+1'b1; if (((|disc_wait[31:30] || &disc_wait[29:0]) && !cue_mount_busy) || &disc_wait) disc_wait_done<=1'b1; end
-'''
+GATE = re.compile(r'(boot_disc_gate<=[^;\n]*?)\(disc_settled_sync\[1\] \|\| disc_wait_done\)')
 
 
 def transform(text):
-    for name, part in (('disc_wait register', OLD_REG), ('disc_wait timer', OLD_ALWAYS), ('cue reader allcomplete', ANCHOR)):
+    for name, part in (('disc_wait register', OLD_REG), ('disc_wait timer', OLD_ALWAYS), ('cue reader allcomplete', '    wire cue_s_allcomplete, cue_table_grant;\n')):
         if text.count(part) != 1: raise ValueError(f'{name} not found once (needs --boot-waits-disc and --cue-mount)')
-    if text.count('    wire dataslot_allcomplete;\n') != 1: raise ValueError('dataslot_allcomplete not found')
-    text = text.replace(OLD_REG, NEW_REG).replace(OLD_ALWAYS, '')
-    return text.replace(ANCHOR, ANCHOR + NEW_ALWAYS)
+    text, n = GATE.subn(lambda m: m[1] + 'disc_settled_sync[1]', text)
+    if n != 1: raise ValueError('boot_disc_gate condition not found once')
+    return text.replace(OLD_REG, '').replace(OLD_ALWAYS, '')
 
 
 def main():
@@ -59,7 +46,7 @@ def main():
         path = Path(core[0])
     try: path.write_text(transform(path.read_text()))
     except ValueError as error: raise SystemExit(f'{path}: {error}')
-    print(f'{path}: boot timer waits for the cue mount (cap 57.8 s)')
+    print(f'{path}: CPU waits for the mount, no timer')
 
 
 if __name__ == '__main__':

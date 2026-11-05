@@ -17,6 +17,8 @@ const BIOS_NAMES: [&str; 16] = [
     "scph5500.bin", "scph7000.bin", "scph3500.bin", "scph100.bin",
     "scph5502.bin", "scph7002.bin", "scph1002.bin", "scph7502.bin", "scph9002.bin", "scph102.bin",
 ];
+/// Entries looked at per folder when searching for a BIOS elsewhere.
+const MAX_LISTED: usize = 2000;
 const VERSION_AT: u64 = 0x7ff32;
 const VERSION_PREFIX: &[u8] = b"System ROM Version ";
 const VERSION_BYTES: usize = 33;
@@ -89,16 +91,19 @@ fn name_for(names: &[String], region: &str) -> String {
 }
 
 /// Files elsewhere on the card that are a usable BIOS: in common under
-/// another name, in another platform's common, the core's own Assets folder
-/// or the card's root.
+/// another name, in the other PlayStation platform's common (psx) or the
+/// core's own Assets folder. Only these few folders, and at most
+/// MAX_LISTED entries each: this runs at the end of every run without a
+/// BIOS, so it never walks the whole card (other cores' folders, the root).
 fn strays(card: &Path, platform: &str, core: &str, names: &[String]) -> Vec<(PathBuf, &'static str)> {
-    let mut folders = vec![card.to_path_buf(), card.join("Assets").join(platform).join(core)];
-    for entry in fs::read_dir(card.join("Assets")).into_iter().flatten().flatten() {
-        folders.push(entry.path().join("common"));
+    let assets = card.join("Assets");
+    let mut folders = vec![assets.join(platform).join("common"), assets.join(platform).join(core)];
+    for other in ["psx", "playstation"].iter().filter(|p| **p != platform) {
+        folders.push(assets.join(other).join("common"));
     }
     let mut found = vec![];
     for folder in folders {
-        for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+        for entry in fs::read_dir(&folder).into_iter().flatten().flatten().take(MAX_LISTED) {
             let path = entry.path();
             let name = super::name_of(&path);
             let candidate = (has_ext(&name, ".bin") || has_ext(&name, ".rom") || has_ext(&name, ".mcr") || !name.contains('.'))

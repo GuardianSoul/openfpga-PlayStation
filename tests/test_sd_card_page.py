@@ -9,7 +9,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-from tests.test_pocket_instances import MERGED, sectors
+from tests.test_pocket_instances import MERGED, SECTOR, sectors
 
 ROOT = Path(__file__).resolve().parents[1]
 NODE = shutil.which('node')
@@ -20,6 +20,32 @@ def one_track(folder, stem, tag=1, extra=''):
     folder.mkdir(parents=True, exist_ok=True)
     (folder/f'{stem}.bin').write_bytes(sectors(tag, 4))
     (folder/f'{stem}.cue').write_text(f'FILE "{stem}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' + extra)
+
+
+def index01_only_twin(common):
+    """A redump disc (data + 2 audio tracks, INDEX 00/01) and the same disc as
+    one merged .bin whose cue gives the audio tracks INDEX 01 only (as
+    ISOBuster writes them): their one-file track tables must match."""
+    with_audio(common/'Twin', 'Twin (USA)', 2)
+    (common/'Twin Merged').mkdir()
+    (common/'Twin Merged/Twin Merged.bin').write_bytes(
+        b''.join((common/f'Twin/Twin (USA) (Track {k}).bin').read_bytes() for k in (1, 2, 3)))
+    (common/'Twin Merged/Twin Merged.cue').write_text(
+        'FILE "Twin Merged.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+        '  TRACK 02 AUDIO\n    INDEX 01 00:02:04\n  TRACK 03 AUDIO\n    INDEX 01 00:04:14\n')
+    # And split at each INDEX 01 with INDEX 01 only (EAC's "gaps appended
+    # to previous track"): each audio track's gap ends the file before it.
+    (common/'Twin Split').mkdir()
+    image = (common/'Twin Merged/Twin Merged.bin').read_bytes()
+    lines = []
+    for k, (a, b) in enumerate(((0, 154), (154, 314), (314, 324)), 1):
+        (common/f'Twin Split/Twin Split (Track {k}).bin').write_bytes(image[a*SECTOR:b*SECTOR])
+        lines += [f'FILE "Twin Split (Track {k}).bin" BINARY', f'  TRACK 0{k} {"AUDIO" if k > 1 else "MODE2/2352"}', '    INDEX 01 00:00:00']
+    (common/'Twin Split/Twin Split.cue').write_text('\n'.join(lines) + '\n')
+
+
+def twin_tables(common):
+    return [next((common/f).glob('*.trk')).read_bytes() for f in ('Twin', 'Twin Merged', 'Twin Split')]
 
 
 def with_audio(folder, stem, audio):
@@ -99,7 +125,7 @@ def make_card(card):
     saves.mkdir(parents=True)
     (saves/'Final Fantasy IX (Disc 1) (v1.1).sav').write_bytes(b'disc 1')
     (saves/'Final Fantasy IX (USA) (Disc 4) (Rev 1).sav').write_bytes(b'disc 4')
-    os.utime(saves/'Final Fantasy IX (Disc 1) (v1.1).sav', (1, 1))
+    os.utime(saves/'Final Fantasy IX (Disc 1) (v1.1).sav', (400000000, 400000000))  # 1982: exFAT starts at 1980
     (card/'Saves/playstation/common').mkdir(parents=True)
     (card/'Saves/playstation/common/Legend (USA).sav').write_bytes(b'kept')
     (saves/'Legend (USA) (Disc 1).sav').write_bytes(b'not copied')
@@ -112,6 +138,73 @@ CUE_READER = ([{'id': 0, 'extensions': ['json', 'cue', 'm3u']}, {'id': 16}, {'id
                {'id': 101, 'extensions': ['cue', 'bin', 'm3u']}, {'id': 102, 'extensions': ['trk']},
                {'id': 103, 'extensions': ['bin']}, {'id': 104, 'extensions': ['cue']}]
               + [{'id': 100*n + k, 'extensions': ['bin' if k == 1 else 'trk']} for n in (2, 3, 4) for k in (1, 2)])
+
+
+def cue_variants_card(card):
+    """A cue-reader card with the cue and image variants other tools write
+    (2026-11-04 audit), and VARIANT_LINES: what every tool must say."""
+    cue_reader_card(card)
+    common = card/'Assets/playstation/common'
+    def put(rel, data):
+        (common/rel).parent.mkdir(parents=True, exist_ok=True)
+        (common/rel).write_bytes(data if isinstance(data, bytes) else data.encode('utf-8'))
+    # Lower case keywords and CR-only line ends (the core reads them).
+    put('Lower/Lower.bin', sectors(1, 300))
+    put('Lower/Lower.cue', 'file "Lower.bin" binary\r  track 01 mode2/2352\r    index 01 00:00:00\r'
+                           '  track 02 audio\r    index 00 00:02:00\r    index 01 00:03:00\r')
+    # CDRWin/EAC metadata lines, FLAGS and ISRC.
+    put('Meta/Meta.bin', sectors(2, 300))
+    put('Meta/Meta.cue', 'REM GENRE Game\nCATALOG 0000000000000\nPERFORMER "x"\nTITLE "Meta"\nFILE "Meta.bin" BINARY\n'
+                         '  TRACK 01 MODE2/2352\n    FLAGS DCP\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n'
+                         '    ISRC ABCDE1234567\n    INDEX 00 00:02:00\n    INDEX 01 00:03:00\n')
+    # A FILE line without its type (hand-written).
+    put('No Type/No Type.bin', sectors(3, 4))
+    put('No Type/No Type.cue', 'FILE "No Type.bin"\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    # Track types the core can't read: told, not given a game file (this
+    # .bin's size is whole 2352-byte sectors too).
+    put('M2336/M2336.bin', bytes(2336*SECTOR))
+    put('M2336/M2336.cue', 'FILE "M2336.bin" BINARY\n  TRACK 01 MODE2/2336\n    INDEX 01 00:00:00\n')
+    put('Cooked/Cooked.iso', bytes(2048*300))
+    put('Cooked/Cooked.cue', 'FILE "Cooked.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
+    # An ECM-compressed .bin next to its cue, formats the core can't read
+    # and archives: each gets a line saying what to do.
+    put('Ecm/Ecm.bin.ecm', b'ECM\0' + bytes(100))
+    put('Ecm/Ecm.cue', 'FILE "Ecm.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    put('Loose.bin.ecm', b'ECM\0' + bytes(100))
+    put('Iso Only/Iso Only.iso', bytes(2048*300))
+    put('Clone/Clone.img', sectors(4, 4))
+    put('Clone/Clone.sub', bytes(96*4))
+    put('Clone/Clone.ccd', '[CloneCD]\nVersion=3\n')
+    put('Psp/EBOOT.PBP', b'\0PBP' + bytes(100))
+    put('Zipped (USA).7z', b'7z\xbc\xaf' + bytes(100))
+    put('Zipped (Europe).ZIP', b'PK\3\4' + bytes(100))
+    # A cue in Latin-1 (old Windows tools) naming two files with accents.
+    put('Cafe/Café (Track 1).bin', sectors(5, 4))
+    put('Cafe/Café (Track 2).bin', sectors(6, 160))
+    put('Cafe/Café.cue', ('FILE "Café (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+                          'FILE "Café (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n'
+                          '    INDEX 01 00:02:00\n').encode('latin-1'))
+    # A cue over the 16 KB the core reads.
+    put('Big/Big.bin', sectors(7, 4))
+    put('Big/Big.cue', 'REM ' + 'x' * 16400 + '\nFILE "Big.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+
+
+VARIANT_LINES = [
+    'skip Clone/Clone.ccd: it is a CloneCD image (.ccd/.img/.sub), which the core can\'t read: use the disc\'s .cue/.bin or .chd',
+    'skip Iso Only/Iso Only.iso: it is an .iso (2048-byte sectors, no CD music), which the core can\'t read: use the disc\'s .cue/.bin or .chd',
+    'skip Loose.bin.ecm: it is ECM-compressed: decompress it to its .bin first, then Generate game files again',
+    'skip Psp/EBOOT.PBP: it is a PSP EBOOT, which the core can\'t read: use the disc\'s .cue/.bin or .chd',
+    'skip Zipped (Europe).ZIP: it is a compressed archive: extract it on a computer first, then Generate game files again',
+    'skip Zipped (USA).7z: it is a compressed archive: extract it on a computer first, then Generate game files again',
+    'skip Cooked/Cooked.cue: track 1 is MODE1/2048, which the core can\'t read: use the disc\'s .cue/.bin or .chd with 2352-byte sectors',
+    'skip Ecm/Ecm.cue: Ecm.bin is ECM-compressed (Ecm.bin.ecm): decompress it first, then Generate game files again',
+    'wrote Lower.json (2 tracks, cue)',
+    'skip M2336/M2336.cue: track 1 is MODE2/2336, which the core can\'t read: use the disc\'s .cue/.bin or .chd with 2352-byte sectors',
+    'wrote Meta.json (2 tracks, cue)',
+    'wrote No Type.json (1 track, cue)',
+    'wrote Café.json (2 tracks, cue)',
+    'skip Big/Big.cue: the .cue is larger than the core reads (16 KB): remove its REM, TITLE and other comment lines',
+]
 
 
 def cue_reader_card(card):
@@ -131,7 +224,12 @@ def folder_discs(common):
                                 ('Tagged', 'Alone (Disc 1)', 0), ('Tagged', 'other 2', 0), ('Lonely (Disc 2)', 'Lonely (Disc 2)', 0),
                                 ('A/Spread (Disc 1)', 'Spread (Disc 1)', 0), ('B/Spread (Disc 2)', 'Spread (Disc 2)', 1),
                                 ('Gran Turismo 2 (USA)', 'Gran Turismo 2 (USA) (Disc 1) (Arcade Mode)', 0),
-                                ('Gran Turismo 2 (USA)', 'Gran Turismo 2 (USA) (Disc 2) (Simulation Mode)', 0)):
+                                ('Gran Turismo 2 (USA)', 'Gran Turismo 2 (USA) (Disc 2) (Simulation Mode)', 0),
+                                # Two whole releases of one game: a game file each.
+                                ('Parasite Eve II (USA) (Disc 1)', 'Parasite Eve II (USA) (Disc 1)', 0),
+                                ('Parasite Eve II (USA) (Disc 2)', 'Parasite Eve II (USA) (Disc 2)', 0),
+                                ('Parasite Eve II (Europe) (Disc 1)', 'Parasite Eve II (Europe) (Disc 1)', 0),
+                                ('Parasite Eve II (Europe) (Disc 2)', 'Parasite Eve II (Europe) (Disc 2)', 0)):
         with_audio(common/folder, stem, audio)
     # An earlier run named Gran Turismo 2 after disc 1's tags: its game file
     # and playlist go, the shared card keeps that name.
@@ -265,6 +363,51 @@ class SdCardPage(unittest.TestCase):
                                                   {'id': 16, 'filename': 'Final Fantasy IX (v1.1).sav'}]})
             self.assertFalse((out/'Final Fantasy IX (USA) (Disc 4) (Rev 1).json').exists())   # per-disc file from an earlier run
 
+    def test_user_playlist_gets_a_game_file(self):
+        # Issue #25: a cheat disc shared by several games through playlists
+        # the user wrote (the cheat disc first, then the game). Each playlist
+        # gets a game file naming it; one with a missing disc or more than
+        # four is skipped; a disc may sit beside the playlist's folder (..).
+        with TemporaryDirectory() as tmp:
+            script, page = Path(tmp)/'script', Path(tmp)/'page'
+            cue_reader_card(script)
+            declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
+            (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+            common = script/'Assets/playstation/common'
+            one_track(common/'CodePatch', 'CodePatch')
+            one_track(common/'Ace Combat 2 (USA)', 'Ace Combat 2 (USA)')
+            (common/'Ace Combat 2 (USA) - Cheats.m3u').write_text('#EXTM3U\r\nCodePatch/CodePatch.cue\r\nAce Combat 2 (USA)\\Ace Combat 2 (USA).cue  \r\n')
+            (common/'Ace Combat 2 (USA)/Ace - Cheats.m3u').write_text('../CodePatch/CodePatch.cue\nAce Combat 2 (USA).cue\n')
+            (common/'Broken.m3u').write_text('CodePatch/CodePatch.cue\nNope/Nope.cue\n')
+            (common/'Many.m3u').write_text('CodePatch/CodePatch.cue\n' * 5)
+            shutil.copytree(script, page)
+            py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                 '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+            js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                check=True, capture_output=True, text=True)
+            self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+            self.assertEqual(tree(script), tree(page))
+            out = page/'Assets/playstation'/CORE
+            cheat = json.loads((out/'Ace Combat 2 (USA) - Cheats.json').read_text())['instance']
+            self.assertEqual(cheat, {'magic': 'APF_VER_1', 'data_path': '',
+                                     'data_slots': [{'id': 100, 'filename': 'Ace Combat 2 (USA) - Cheats.m3u'}]})
+            inner = json.loads((out/'Ace - Cheats.json').read_text())['instance']
+            self.assertEqual(inner, {'magic': 'APF_VER_1', 'data_path': 'Ace Combat 2 (USA)/',
+                                     'data_slots': [{'id': 100, 'filename': 'Ace - Cheats.m3u'}]})
+            self.assertIn('skip Broken.m3u: Nope/Nope.cue not found', js.stdout)
+            self.assertIn('skip Many.m3u: 5 discs (the core takes 4)', js.stdout)
+            self.assertTrue((out/'CodePatch.json').is_file() and (out/'Ace Combat 2 (USA).json').is_file())
+        # A core without .m3u in slot 100 makes no playlist game files.
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            cue_reader_card(card)
+            common = card/'Assets/playstation/common'
+            one_track(common/'CodePatch', 'CodePatch')
+            (common/'Cheats.m3u').write_text('CodePatch/CodePatch.cue\n')
+            subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PlayStation'],
+                           check=True, capture_output=True)
+            self.assertFalse((card/'Assets/playstation'/CORE/'Cheats.json').exists())
+
     def test_one_file_core_matches_the_script(self):
         # --one-file-disc core: merged images used as they are, per-track
         # files merged into "(one file).bin", a .trk table per disc.
@@ -273,6 +416,7 @@ class SdCardPage(unittest.TestCase):
             make_card(script)
             common = script/'Assets/playstation/common'
             with_audio(common/'Rayman', 'Rayman (USA)', 50)
+            index01_only_twin(common)
             (common/'Plain').mkdir()
             (common/'Plain/Game.bin').write_bytes(sectors(1, 10) + sectors(2, 200) + sectors(3, 100))
             (common/'Plain/Plain.cue').write_text(MERGED.replace('    PREGAP 00:02:00\n    INDEX 01 00:02:60\n',
@@ -295,6 +439,9 @@ class SdCardPage(unittest.TestCase):
             self.assertIn('LibCrypt Ape Escape (Europe).sbi', js.stdout)
             self.assertTrue((page/'Assets/playstation/common/Rayman/Rayman (USA) (one file).trk').is_file())
             self.assertFalse((page/'Assets/playstation/common/Merged/Game').exists())   # nothing split
+            redump, merged, split = twin_tables(page/'Assets/playstation/common')
+            self.assertEqual(redump, merged)
+            self.assertEqual(redump, split)
 
     def test_cheat_slot_names_the_cht(self):
         # A core declaring slot 98 (--cheats): <cue name>.cht, or the game's name without its disc tag.
@@ -382,6 +529,9 @@ class SdCardPage(unittest.TestCase):
                 self.assertEqual((out/'Riven.json').exists(), reader)   # the older core takes 2 files of disc 2
                 self.assertFalse((out/'disc1.json').exists())
                 self.assertTrue((out/'Gran Turismo 2 (USA).json').exists())
+                for region in ('USA', 'Europe'):
+                    self.assertIn(f'Parasite Eve II ({region}).sav', (out/f'Parasite Eve II ({region}).json').read_text())
+                    self.assertIn(f'Parasite Eve II ({region}) (Disc 1)', (out/f'Parasite Eve II ({region}).json').read_text())
                 self.assertFalse((out/'Gran Turismo 2 (USA) (Arcade Mode).json').exists())
                 self.assertIn('Gran Turismo 2 (USA) (Arcade Mode).sav', (out/'Gran Turismo 2 (USA).json').read_text())
                 self.assertEqual((page/'Assets/playstation/common/Gran Turismo 2 (USA)/Gran Turismo 2 (USA) (Arcade Mode).m3u').exists(), not reader)
@@ -414,6 +564,29 @@ class SdCardPage(unittest.TestCase):
                 self.assertTrue(any(n.endswith('.tsz') for n in tree(page)))
                 odd = json.loads((page/'Assets/playstation'/CORE/('Odd.json' if playlist else 'Odd (Disc 1) (v1.1).json')).read_text())['instance']['data_slots']
                 self.assertIn({'id': 97, 'filename': 'Odd (USA)/Odd (Disc 1) (v1.1).tsz'}, odd)
+
+    def test_cue_variants_match_the_script(self):
+        # Other tools' cues and images: what the core reads gets a game file,
+        # the rest a line saying what to do.
+        with TemporaryDirectory() as tmp:
+            script, page = Path(tmp)/'script', Path(tmp)/'page'
+            cue_variants_card(script)
+            shutil.copytree(script, page)
+            py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                 '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+            js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                check=True, capture_output=True, text=True)
+            self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+            self.assertEqual(tree(script).keys(), tree(page).keys())
+            for name, data in tree(script).items():
+                self.assertEqual(tree(page)[name], data, name)
+            lines = js.stdout.splitlines()
+            for line in VARIANT_LINES: self.assertIn(line, lines)
+            self.assertEqual([l for l in lines if l.startswith('skip ') and 'Zipped' in l], VARIANT_LINES[4:6])
+            out = page/'Assets/playstation'/CORE
+            self.assertEqual(json.loads((out/'Lower.json').read_text())['instance']['data_slots'][:2],
+                             [{'id': 100, 'filename': 'Lower.cue'}, {'id': 101, 'filename': 'Lower.bin'}])
+            for gone in ('M2336', 'Cooked', 'Ecm', 'Clone', 'Iso Only', 'EBOOT'): self.assertFalse((out/f'{gone}.json').exists())
 
     def test_cue_reader_core_matches_the_script(self):
         # --cue-mount core: game files name the cue and disc 1's files; nothing is joined.

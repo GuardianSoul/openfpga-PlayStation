@@ -15,7 +15,8 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tests.test_pocket_instances import MERGED, sectors
-from tests.test_sd_card_page import CORE, CUE_READER, cue_reader_card, folder_discs, make_card, one_track, tree, with_audio
+from tests.test_sd_card_page import (CORE, CUE_READER, VARIANT_LINES, cue_reader_card, cue_variants_card, folder_discs,
+                                     index01_only_twin, make_card, one_track, tree, twin_tables, with_audio)
 
 ONE_FILE = ([{'id': 0}, {'id': 16}, {'id': 100}]
             + [{'id': 100*n + k, 'extensions': ['bin' if k == 1 else 'trk']} for n in (1, 2, 3, 4) for k in (1, 2)])
@@ -80,6 +81,7 @@ def one_file_card(card, chds=None):
     make_card(card)
     common = card/'Assets/playstation/common'
     with_audio(common/'Rayman', 'Rayman (USA)', 50)
+    index01_only_twin(common)
     (common/'Plain').mkdir()
     (common/'Plain/Game.bin').write_bytes(sectors(1, 10) + sectors(2, 200) + sectors(3, 100))
     (common/'Plain/Plain.cue').write_text(MERGED.replace('    PREGAP 00:02:00\n    INDEX 01 00:02:60\n',
@@ -100,8 +102,9 @@ class PocketPlugin(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(['cargo', 'build', '--release', '--quiet'], cwd=CRATE, check=True)
 
-    def plugin(self, card, *answers, host=None, card_bytes=None, stop_at=None):
+    def plugin(self, card, *answers, host=None, card_bytes=None, stop_at=None, verbose=True):
         cmd = [sys.executable, str(HOST), str(WASM), str(card)] + [a for x in answers for a in ('--answer', x)]
+        if verbose: cmd += ['--config', 'verbose=1']   # a line per game file, as the script prints
         if host: cmd += ['--host-folder', str(host)]
         if card_bytes: cmd += ['--config', f'test_card_bytes={card_bytes}']
         if stop_at: cmd += ['--config', f'test_stop_at={stop_at}']
@@ -170,6 +173,9 @@ class PocketPlugin(unittest.TestCase):
             self.assertIn('wrote Rayman (USA).json (51 tracks, one file)', out)
             self.assertIn('  joining 51 files into Rayman (USA) (one file).bin', out)
             self.assertIn('LibCrypt Ape Escape (Europe).sbi', out)
+            redump, merged, split = twin_tables(plugin/'Assets/playstation/common')
+            self.assertEqual(redump, merged)
+            self.assertEqual(redump, split)
             # Nothing is left to convert: the menu goes straight to the game files.
             before = tree(plugin)
             again = self.plugin(plugin, MAKE)
@@ -209,6 +215,9 @@ class PocketPlugin(unittest.TestCase):
                 out = self.compare(script, plugin, MAKE if reader else SKIP)
                 self.assertIn('Lost: 3 discs in one folder, grouped as one game', out)
                 self.assertIn('warning: Spread: its discs are in different folders', out)
+                out_dir = plugin/'Assets/playstation'/CORE
+                self.assertTrue((out_dir/'Parasite Eve II (USA).json').exists())
+                self.assertTrue((out_dir/'Parasite Eve II (Europe).json').exists())
 
     def test_cue_reader_core_matches_the_script(self):
         # --cue-mount core: merged and multi-file discs need no converting.
@@ -243,6 +252,27 @@ class PocketPlugin(unittest.TestCase):
             (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
             out = self.compare(script, plugin, MAKE)
             self.assertIn('wrote Final Fantasy IX.json (4 discs, playlist Final Fantasy IX (USA)/Final Fantasy IX.m3u)', out)
+        # Playlists the user wrote (issue #25: a cheat disc shared by games):
+        # a game file each; a missing disc or more than four is skipped.
+        with TemporaryDirectory() as tmp:
+            script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
+            cue_reader_card(script)
+            declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
+            (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+            common = script/'Assets/playstation/common'
+            one_track(common/'CodePatch', 'CodePatch')
+            (common/'Ape - Cheats.m3u').write_text('#EXTM3U\r\nCodePatch/CodePatch.cue\r\nApe Escape (Europe)\\Ape Escape (Europe).cue  \r\n')
+            (common/'Ape Escape (Europe)/Ape Inner.m3u').write_text('../CodePatch/CodePatch.cue\nApe Escape (Europe).cue\n')
+            (common/'Broken.m3u').write_text('CodePatch/CodePatch.cue\nNope/Nope.cue\n')
+            (common/'Many.m3u').write_text('CodePatch/CodePatch.cue\n' * 5)
+            out = self.compare(script, plugin, MAKE)
+            self.assertIn('wrote Ape - Cheats.json (playlist Ape - Cheats.m3u)', out)
+            self.assertIn('wrote Ape Inner.json (playlist Ape Escape (Europe)/Ape Inner.m3u)', out)
+            self.assertIn('skip Broken.m3u: Nope/Nope.cue not found', out)
+            self.assertIn('skip Many.m3u: 5 discs (the core takes 4)', out)
+            inner = json.loads((plugin/'Assets/playstation'/CORE/'Ape Inner.json').read_text())['instance']
+            self.assertEqual(inner, {'magic': 'APF_VER_1', 'data_path': 'Ape Escape (Europe)/',
+                                     'data_slots': [{'id': 100, 'filename': 'Ape Inner.m3u'}]})
         # Declaring slot 99 (0.5.4): a game file's .sbi goes there, as the cue has no path on the Pocket.
         with TemporaryDirectory() as tmp:
             script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
@@ -263,6 +293,14 @@ class PocketPlugin(unittest.TestCase):
             self.assertIn('cheats Ape Escape (Europe).cht)', out)
             legend = json.loads((plugin/'Assets/playstation'/CORE/'Legend (USA).json').read_text())['instance']
             self.assertIn({'id': 98, 'filename': 'Legend (Disc 1)/Legend (USA).cht'}, legend['data_slots'])
+
+    def test_cue_variants_match_the_script(self):
+        # Other tools' cues and images: the same game files and lines as the script.
+        with TemporaryDirectory() as tmp:
+            script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
+            cue_variants_card(script)
+            lines = report(self.compare(script, plugin, MAKE))
+            for line in VARIANT_LINES: self.assertIn(line, lines)
 
     @unittest.skipUnless(CHDMAN, 'chdman (MAME tools) not installed')
     def test_chd_keep_matches_chdman(self):
@@ -448,6 +486,78 @@ class PocketPlugin(unittest.TestCase):
             self.assertNotIn('skip scph1001', out)   # named like a BIOS: the BIOS check reports it
             self.assertIn('skip Odd/Odd.bin: it is not a raw CD image (its size is not whole 2352-byte sectors)', out)
             self.assertFalse((common/'SCPH5501.cue').exists())
+
+    def test_short_log_for_pocket_sync(self):
+        """Without "verbose" (as Pocket Sync and pupdate run it) the log stays
+        short: Pocket Sync's log stops following a burst that overflows its
+        window and its "can be closed" line can drop below it, so a large
+        library looked hung. No line per game file, progress at 100, 200,
+        400, ... game files, at most 4 skip lines and a count of the rest,
+        then the summary, the BIOS check and a line saying it has finished."""
+        for broken in (0, 80):
+            with self.subTest(broken=broken), TemporaryDirectory() as tmp:
+                card = Path(tmp)
+                make_card(card)
+                common = card/'Assets/playstation/common'
+                for k in range(230):
+                    one_track(common/f'Library {k:03d} (USA)', f'Library {k:03d} (USA)')
+                for k in range(broken):
+                    one_track(common/f'Missing {k:02d}', f'Missing {k:02d}')
+                    (common/f'Missing {k:02d}/Missing {k:02d}.bin').unlink()
+                out = self.plugin(card, SKIP, verbose=False)
+                lines = [l for l in out.splitlines() if not l.startswith(('  ', '['))]
+                self.assertNotIn('wrote Library 000 (USA).json', out)
+                self.assertNotIn('shared card ', out)
+                self.assertIn('100 game files so far ...', lines)
+                self.assertIn('200 game files so far ...', lines)
+                self.assertNotIn('400 game files so far ...', lines)
+                self.assertEqual(len([l for l in lines if l.startswith(('skip ', 'warning: ', 'wrote '))]), 4)
+                summary = next(i for i, l in enumerate(lines) if ' game files in Assets/playstation/' + CORE in l)
+                self.assertRegex(lines[summary - 1], r'^\.\.\. and \d+ more like these: the report file named below lists them all\.$')
+                self.assertEqual(lines[-2:], [f'Every line, with each game file: Assets/playstation/{CORE}/Game files report.txt',
+                                              'Finished. You can close this window.'])
+                self.assertLessEqual(len(lines), 17)
+                self.assertTrue((card/'Assets/playstation'/CORE/'Library 229 (USA).json').exists())
+                # Nothing is lost: the report file has every line the script prints.
+                report = (card/'Assets/playstation'/CORE/'Game files report.txt').read_text().splitlines()
+                for line in ('wrote Library 000 (USA).json (1 track)', 'wrote Library 229 (USA).json (1 track)'):
+                    self.assertIn(line, report)
+                self.assertTrue(any(l.startswith('shared card ') for l in report))
+                self.assertEqual(len([l for l in report if l.startswith('skip Missing')]), broken)
+                self.assertFalse(any(l.startswith('... and') for l in report))
+                self.assertFalse(any(l.startswith('Every line') for l in report))
+
+    def test_report_file_cannot_be_saved(self):
+        """If the report file can't be written, the window says so and shows
+        the skip lines it left out, so nothing is lost."""
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            make_card(card)
+            common = card/'Assets/playstation/common'
+            for k in range(8):
+                one_track(common/f'Missing {k:02d}', f'Missing {k:02d}')
+                (common/f'Missing {k:02d}/Missing {k:02d}.bin').unlink()
+            (card/'Assets/playstation'/CORE/'Game files report.txt').mkdir(parents=True)
+            out = self.plugin(card, SKIP, verbose=False)
+            self.assertIn(f'Could not save the report file Assets/playstation/{CORE}/Game files report.txt', out)
+            self.assertNotIn('Every line, with each game file', out)
+            for k in range(8):
+                self.assertIn(f'skip Missing {k:02d}/', out)
+            self.assertEqual(out.splitlines()[-1], 'Finished. You can close this window.')
+
+    def test_non_ascii_names_elsewhere(self):
+        """Another core's files with non-ASCII letters near the end of their
+        names ("ポケモン.gb") don't stop the BIOS check that ends every run."""
+        with TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            make_card(card)
+            (card/'Assets/gb/common').mkdir(parents=True)
+            (card/'Assets/gb/common/ポケモン.gb').write_bytes(bytes(100))
+            (card/'Assets/gb/common/ゲーム').write_bytes(bytes(100))
+            (card/'Assets/playstation/common/メモ.md').write_bytes(bytes(100))
+            out = self.plugin(card, SKIP)
+            self.assertIn('Checking the BIOS', out)
+            self.assertIn('No BIOS found', out)
 
 
 if __name__ == '__main__':

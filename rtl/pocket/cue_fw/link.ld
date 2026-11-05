@@ -13,7 +13,7 @@ MEMORY {
 SECTIONS {
     /* First: an input section goes to the first output section naming it. */
     .high : {
-        *(.text.parse) *(.text.sbi_mask) *(.text.playlist) *(.text.entry) *(.text.open_entry) *(.text.load_cheats)
+        *(.text.parse) *(.text.msf) *(.text.sbi_mask) *(.text.playlist) *(.text.entry) *(.text.open_entry) *(.text.load_cheats)
         *(.rodata*) *(.srodata*) *(.data*) *(.sdata*) *(.sbss*) *(.bss*) *(COMMON)
     } > HIGH
     .text : { *(.init) *(.text*) } > CODE

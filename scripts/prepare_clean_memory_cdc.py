@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from prepare_pocket_card_cdc import TOP_NEW, TOP_OLD, ready_source
+from prepare_pocket_disc_swap import BOOT_WAIT
 from prepare_pocket_config_cdc import assignments
 from prepare_resource_targets import digest
 from tool_paths import ROOT
@@ -20,8 +20,20 @@ from tool_paths import ROOT
 CARD_SHA = '9eda6aa00f8223ac1285e20e84a48137e13276b55d7fb4e57315be064cf92712'
 VRAM_SHA = 'f71e8e6a85ae3e979b067fc795cb9d66ccb176daf0f85756c77d32abe53dae84'
 COMMAND_SHA = '4f558ed91203ce733187bc9c3d72cf6450102e08f25da83a927a7a59e001fcc5'
+TOP_OLD = '    (* async_reg="true" *) reg [1:0] mc_idle74=0;'
+TOP_NEW = TOP_OLD.replace('async_reg="true"', 'async_reg="true", preserve, dont_merge')
 SYNC_ATTRIBUTE = '(* preserve, dont_merge, async_reg="true" *) '
 CARD_SYNC = ('s74_rst', 's74_take', 's2x_req', 's2x_ready', 's2x_rack')
+
+
+def ready_source(text):
+    if re.search(r'\bboot_disc_gate\b', text):
+        if text.count(BOOT_WAIT.replace('READY_SIGNAL', 'bios_go')) != 1:
+            raise ValueError('Native card disc-ready launch contract differs')
+        if text.count('.disc_settled(cd_disc_settled)') != 1:
+            raise ValueError('Native card disc-ready source differs')
+        return 'boot_disc_gate'
+    return 'bios_go'
 
 
 def preserved(text, sha, *, card):

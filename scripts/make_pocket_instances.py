@@ -57,10 +57,19 @@ one game file naming it; otherwise each disc keeps its own game file
 (sharing one card) and the playlist can be picked in the core's file list
 to swap discs. A disc's LibCrypt .sbi must have the cue's name.
 
+A .m3u playlist written by hand (up to four discs, one .cue per line,
+relative to the playlist: "Game - Cheats.m3u" with a cheat disc, then the
+game) gets a game file naming it when the core's slot 100 takes .m3u, so
+discs with any names can be one game.
+
 A .bin with no cue (no cue in its folder names it, and there is no
 "<name>.cue") gets "<name>.cue" with one MODE2/2352 data track, so it gets a
 game file too; a game with CD music needs its real cue. A "(Track n)" file
 without its cue is reported instead.
+
+Images in formats the core can't read (.iso, .pbp, ECM, CloneCD, Alcohol,
+Nero, DiscJuggler) and archives (.7z, .zip, .rar) get a skip line saying
+what to do, as do cues whose tracks aren't raw 2352-byte sectors.
 
 Multi-disc games (names with "(Disc N)") share one memory card: the Pocket
 names a save after the game file, so each disc would otherwise get its own
@@ -89,6 +98,7 @@ SECTOR = 2352
 RESERVE = 256 << 20   # space every write keeps free on the SD card
 BIOS_BYTES = 512 << 10   # a PlayStation BIOS is exactly this size; no disc image is
 PREGAP = 150
+CUE_BYTES = 0x3FFF   # the largest cue the core reads (cue_mount.c cue(); slot 100 takes 16 KiB)
 LIBCRYPT_SLOT = 99
 CHEAT_SLOT = 98
 CARD_SLOT = 16
@@ -154,6 +164,23 @@ def group_card(stems):
     return next((c for c in map(shared_card_name, stems) if c), None)
 
 
+def split_releases(games):
+    """Two whole releases of one game ("X (USA) (Disc 1/2)" with "X (Europe)
+    (Disc 1/2)") are two games: one per disc 1 with its own release tags,
+    named "X (USA)" and "X (Europe)". Each takes the discs with its tags, else
+    every candidate (the first is used)."""
+    out = {}
+    for game, found in games.items():
+        releases = []
+        for c in found.get(1, []):
+            if c[2] not in releases: releases.append(c[2])
+        if len(releases) < 2:
+            out[game] = found; continue
+        for tags in releases:
+            out[f"{game} {' '.join(t.strip() for t in tags)}"] = {n: [c for c in cands if c[2] == tags] or cands for n, cands in found.items()}
+    return out
+
+
 def seed_shared_card(card, platform, core, stems, name):
     """Start Saves/<platform>/common/<name> from the newest per-disc card. Never overwrites."""
     shared = card/'Saves'/platform/'common'/name
@@ -200,17 +227,23 @@ def track_sizes(cue):
 
 
 def parse_cue(path):
-    """[(filename, [(track, type, {index: frames})])] in cue order."""
+    """[(filename, [(track, type, {index: frames})])] in cue order. Keywords
+    in any case and a FILE line without its type are taken, as the core's
+    cue reader takes them (cue_mount.c parse())."""
     files = []
-    for line in path.read_text(encoding='utf-8-sig', errors='replace').splitlines():
+    data = path.read_bytes().removeprefix(b'\xef\xbb\xbf')
+    # Old Windows tools write names in Latin-1: read those bytes as Latin-1.
+    try: text = data.decode('utf-8')
+    except UnicodeDecodeError: text = data.decode('latin-1')
+    for line in text.splitlines():
         words = line.strip()
-        if m := re.match(r'FILE\s+"(.+)"\s+\S+', words) or re.match(r'FILE\s+(\S+)\s+\S+', words):
+        if m := re.match(r'FILE\s+"(.+)"', words, re.I) or re.match(r'FILE\s+(\S+)', words, re.I):
             files.append((m.group(1), []))
-        elif m := re.match(r'TRACK\s+(\d+)\s+(\S+)', words):
+        elif m := re.match(r'TRACK\s+(\d+)\s+(\S+)', words, re.I):
             if not files: raise ValueError('TRACK before FILE')
             files[-1][1].append((int(m.group(1)), m.group(2).upper(), {}))
-        elif m := re.match(r'(INDEX\s+(\d+)|PREGAP)\s+(\d+):(\d+):(\d+)', words):
-            if not files or not files[-1][1]: raise ValueError(m.group(1).split()[0] + ' before TRACK')
+        elif m := re.match(r'(INDEX\s+(\d+)|PREGAP)\s+(\d+):(\d+):(\d+)', words, re.I):
+            if not files or not files[-1][1]: raise ValueError(m.group(1).split()[0].upper() + ' before TRACK')
             mm, ss, ff = int(m.group(3)), int(m.group(4)), int(m.group(5))
             key = int(m.group(2)) if m.group(2) else 'pregap'
             files[-1][1][-1][2][key] = (mm*60+ss)*75+ff
@@ -267,6 +300,8 @@ def explain(reason):
     dump = "use the disc's .cue/.bin or .chd"
     if m := re.fullmatch(r'(.+): file missing', reason):
         return f'{m[1]} is missing: put it next to the .cue, with the name the .cue gives it'
+    if m := re.fullmatch(r'(.+): ECM-compressed', reason):
+        return f'{m[1]} is ECM-compressed ({m[1]}.ecm): decompress it first, then Generate game files again'
     if m := re.fullmatch(r'(.+): not whole 2352-byte sectors', reason):
         return f'{m[1]} is not a raw CD image (its size is not whole 2352-byte sectors): {dump}'
     if m := re.fullmatch(r'track (\d+): (.+) is not 2352-byte sectors', reason):
@@ -277,11 +312,16 @@ def explain(reason):
         return f'{m[1]} track files, but this core takes {m[2]}: update the core to the latest version'
     if reason.endswith('(merged image)'):
         return f'{reason}: Generate game files again and choose to convert it'
+    if reason.startswith('format: '):
+        return f"it is {reason[8:]}, which the core can't read: {dump}"
     return {
         'a track file whose .cue is missing': "it is one track of a disc whose .cue is missing: put the disc's .cue next to it",
         'not whole 2352-byte sectors': f'it is not a raw CD image (its size is not whole 2352-byte sectors): {dump}',
         'not enough free space for its .cue': 'the SD card is full: free some space, then Generate game files again',
         'CHD image not extracted': 'CHD image not extracted: Generate game files again and choose to convert it',
+        'cue over 16 KB': "the .cue is larger than the core reads (16 KB): remove its REM, TITLE and other comment lines",
+        'compressed archive': 'it is a compressed archive: extract it on a computer first, then Generate game files again',
+        'ECM-compressed image': 'it is ECM-compressed: decompress it to its .bin first, then Generate game files again',
     }.get(reason, reason)
 
 
@@ -341,6 +381,42 @@ def write_lone_cues(common, log=print):
         log(f'wrote {b.with_suffix(".cue").relative_to(common).as_posix()} (one data track; a game with CD music needs its own .cue)')
         written += 1
     return written, skipped
+
+
+# Disc image files the core can't read, and why (other_images()).
+OTHER_IMAGES = {'.7z': 'compressed archive', '.zip': 'compressed archive', '.rar': 'compressed archive',
+                '.ecm': 'ECM-compressed image', '.pbp': 'format: a PSP EBOOT',
+                '.iso': 'format: an .iso (2048-byte sectors, no CD music)',
+                '.ccd': 'format: a CloneCD image (.ccd/.img/.sub)', '.mds': 'format: an Alcohol image (.mds/.mdf)',
+                '.nrg': 'format: a Nero image', '.cdi': 'format: a DiscJuggler image'}
+
+
+def other_images(common):
+    """Files under common in a format the core can't read (archives, ECM,
+    PBP, .iso, CloneCD, ...) that no cue in their folder names: (file,
+    reason). A cue naming one reports it itself."""
+    found = []
+    for f in sorted(p for p in common.rglob('*') if p.suffix.lower() in OTHER_IMAGES and p.is_file() and not p.name.startswith('._')):
+        named = set()
+        for cue in f.parent.iterdir():
+            if cue.suffix.lower() != '.cue' or cue.name.startswith('._') or not cue.is_file(): continue
+            try: named |= {os.path.normpath(f.parent/n.replace('\\', '/')) for n, _ in parse_cue(cue)}
+            except ValueError: pass
+        if os.path.normpath(f) in named or os.path.normpath(f.with_suffix('')) in named: continue
+        found.append((f, OTHER_IMAGES[f.suffix.lower()]))
+    return found
+
+
+def report_other_images(common, log=print):
+    """Say why each file other_images() finds gets no game file; their count."""
+    found = other_images(common)
+    for f, reason in found: log(f'skip {f.relative_to(common).as_posix()}: {explain(reason)}')
+    return len(found)
+
+
+def cue_reader_track(kind):
+    """A track type the core's cue reader takes (cue_mount.c parse())."""
+    return kind == 'AUDIO' or kind.endswith('/2352')
 
 
 def raw_track(kind):
@@ -404,8 +480,10 @@ def one_file_plan(files, folder, data=None):
     """(sources, tracks) for a one-file disc, or a reason string.
 
     sources: [(path, sectors)] concatenated in order; tracks: [(start,
-    index01)] in sectors from the start of the image (start is INDEX 00, or
-    INDEX 01 without one). data: a list to take the indexes of data tracks
+    index01)] in sectors from the start of the image (start is INDEX 00, else
+    INDEX 01; an audio track after the first with a gap under 150 sectors
+    starts 150 sectors before its INDEX 01 when that is after the previous
+    track's INDEX 01). data: a list to take the indexes of data tracks
     after track 1 (the cue reader's table, Breath of Fire IV); without it
     such a track is refused."""
     if not files: return 'no FILE entries'
@@ -422,7 +500,15 @@ def one_file_plan(files, folder, data=None):
             if tracks and kind != 'AUDIO':
                 if data is None: return f'track {number}: data after track 1'
                 data.append(len(tracks))
-            tracks.append((offset + index.get(0, index[1]), offset + index[1]))
+            start, index01 = offset + index.get(0, index[1]), offset + index[1]
+            # An audio track after the first whose gap before INDEX 01 is under
+            # 2 seconds (no INDEX 00: ISOBuster-style merged cues, per-track
+            # files with the gap at the end of the previous one): it starts 150
+            # sectors before INDEX 01, as the disc's pregap (the cue reader's
+            # cue() does the same; cd_top's Play starts 150 sectors in).
+            if tracks and kind == 'AUDIO' and start <= index01 < start + PREGAP and index01 - PREGAP > tracks[-1][1]:
+                start = index01 - PREGAP
+            tracks.append((start, index01))
         sources.append((path, size//SECTOR)); offset += size//SECTOR
     if not tracks or files[0][1][0][1] == 'AUDIO' or tracks[0] != (0, 0): return 'track 1 must be data with INDEX 01 at 00:00:00'
     if len(tracks) > 99: return f'{len(tracks)} tracks (a CD has at most 99)'
@@ -531,9 +617,13 @@ def convert(common, chdman, one_file=False):
 def cue_check(files, folder):
     """Reason a cue-reader core cannot open this cue's files, or None."""
     if not files: return 'no FILE entries'
-    for name, _ in files:
+    for name, tracks in files:
         path = folder/name.replace('\\', '/')
-        if not path.is_file(): return f'{name}: file missing'
+        if not path.is_file():
+            if path.with_name(path.name + '.ecm').is_file(): return f'{name}: ECM-compressed'
+            return f'{name}: file missing'
+        for number, kind, _ in tracks:
+            if not cue_reader_track(kind): return f'track {number}: {kind} is not 2352-byte sectors'
         if path.stat().st_size % SECTOR: return f'{name}: not whole 2352-byte sectors'
     return None
 
@@ -542,6 +632,27 @@ def sibling_paths(cue1, others):
     """Whether every disc's cue is disc 1's path with "(Disc 1)" renumbered,
     as the core's cue reader finds them."""
     return all(re.sub(r'\(Disc 1\)', f'(Disc {n})', str(cue1)) == str(cue) for n, cue in others.items())
+
+
+def playlist_entries(text):
+    """A .m3u's discs as the core reads them: one per line, # comments,
+    backslashes as slashes."""
+    return [line.strip().replace('\\', '/') for line in text.splitlines() if line.strip() and not line.strip().startswith('#')]
+
+
+def playlist_check(m3u, card):
+    """Why a playlist the user wrote can't be a game file, or None: the core
+    takes up to four discs, each a .cue or .bin relative to the playlist
+    (or from the card's root with a leading /)."""
+    try: entries = playlist_entries(m3u.read_text(errors='replace'))
+    except OSError as error: return str(error)
+    if not entries: return 'no discs listed'
+    if len(entries) > 4: return f'{len(entries)} discs (the core takes 4)'
+    for entry in entries:
+        path = Path(os.path.normpath(card/entry.lstrip('/') if entry.startswith('/') else m3u.parent/entry))
+        if Path(entry).suffix.lower() not in ('.cue', '.bin'): return f'{entry}: not a .cue or .bin'
+        if not path.is_file(): return f'{entry} not found'
+    return None
 
 
 def playlist_text(m3u, cues):
@@ -608,7 +719,9 @@ def main():
                    for n in range(2, 10)}
     discs_declared = 1 + sum(1 for n in range(2, 10) if disc_tracks[n])
     written = skipped = 0
+    named = set()   # game file names written this run
     skipped += write_lone_cues(common)[1]
+    skipped += report_other_images(common)
     discs = {}
     games = {}   # --disc-menu cores: game name -> {disc number: (cue, files, tracks)}
     sizes_files = {}   # cue -> its track sizes file (cores that declare slot 97)
@@ -638,6 +751,7 @@ def main():
         instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
         out.mkdir(parents=True, exist_ok=True)
         (out/(cue.stem + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
+        named.add(cue.stem)
         count = tracks_n if args.one_file or args.cue_reader else len(files)
         kind = ', one file' if args.one_file else ', cue' if args.cue_reader else ''
         print(f'wrote {cue.stem}.json ({count} track{"s" if count > 1 else ""}{kind}{", LibCrypt " + sbi.name if sbi else ""}{", cheats " + cht.name if cht else ""})')
@@ -666,6 +780,7 @@ def main():
         try: files = parse_cue(cue)
         except ValueError as error: files, reason = None, str(error)
         else: reason = cue_check(files, folder) if args.cue_reader else None if args.one_file else check(files, folder)
+        if reason is None and args.cue_reader and cue.stat().st_size > CUE_BYTES: reason = 'cue over 16 KB'
         if (args.one_file or args.cue_reader) and folder.name == cue.stem and (folder.parent/cue.name).is_file(): continue  # split copy of a merged cue
         if reason is None and args.one_file:
             made = write_one_file(cue, files, find_sbi(cue))
@@ -695,6 +810,7 @@ def main():
             games.setdefault(game, {}).setdefault(number, []).append((cue, files, RELEASE.findall(name), tracks_n if args.one_file or args.cue_reader else None))
             continue
         single(cue, files, tracks_n if args.one_file or args.cue_reader else None); written += 1
+    games = split_releases(games)
     for game, found in sorted(games.items()):
         first_tags = found.get(1, [(None, None, [], None)])[0][2]
         parts = {n: next(((c, f, k) for c, f, t, k in cands if t == first_tags), (cands[0][0], cands[0][1], cands[0][3])) for n, cands in found.items()}
@@ -744,6 +860,7 @@ def main():
                 instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
                 out.mkdir(parents=True, exist_ok=True)
                 (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
+                named.add(name)
                 for stale in old_names:
                     if stale != name: (out/(stale + '.json')).unlink(missing_ok=True)
                 old_m3u = root/(f'{old_title}.m3u')   # the playlist under the old name, if it is ours
@@ -784,9 +901,27 @@ def main():
         # ("Final Fantasy VII (USA).json").
         name = title(cue1)
         (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
+        named.add(name)
         for stale in old_names:   # per-disc files and older names from earlier runs (not this one: an untagged disc 1 has its name)
             if stale != name: (out/(stale + '.json')).unlink(missing_ok=True)
         print(f'wrote {name}.json ({len(numbers)} disc{"s" if len(numbers) > 1 else ""})'); written += 1
+    # Playlists the user wrote ("Game - Cheats.m3u": a cheat disc, then the
+    # game): each gets a game file naming it, so it is picked like any game
+    # and Swap Discs goes through its discs in order. Not the playlists of
+    # the multi-disc games above (their game file has the playlist's name).
+    if playlist_slot:
+        for m3u in visible(common, '*.m3u'):
+            if m3u.stem in named: continue
+            reason = playlist_check(m3u, args.card)
+            if reason:
+                print(f'skip {m3u.relative_to(common)}: {reason}'); skipped += 1; continue
+            data_path = m3u.parent.relative_to(common).as_posix()
+            prefix = data_path + '/' if data_path != '.' else ''
+            instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': [{'id': 100, 'filename': m3u.name}]}}
+            out.mkdir(parents=True, exist_ok=True)
+            (out/(m3u.stem + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
+            named.add(m3u.stem)
+            print(f'wrote {m3u.stem}.json (playlist {m3u.relative_to(common).as_posix()})'); written += 1
     if written:   # the release's "how to add games" placeholder
         (out/HELP_ENTRY).unlink(missing_ok=True)
     for name, stems in sorted(discs.items()):

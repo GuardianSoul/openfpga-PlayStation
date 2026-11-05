@@ -127,7 +127,7 @@ def primitive(text, reverse=False):
                 for a, b in (('a', 'b'), ('b', 'a'))}
         ports = re.sub(r'(=>\s*)(\w+)', lambda m: m[1]+swap.get(m[2], m[2]), ports)
         result = before+sep+ports
-    return result
+    return '-- GPL-2.0 MiSTer PSX_MiSTer dpram.vhd, simple dual-port specialization.\n'+result
 
 
 def prepare_project(directory):

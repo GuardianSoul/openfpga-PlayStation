@@ -75,7 +75,7 @@ def fifo_ram_text(text, mode='BYPASS'):
             raise ValueError('Pinned memorymux write FIFO instance changed: ' + line)
     new = block[0]
     new = _replace(new, '   iwritefifo: entity mem.SyncFifoFallThroughMLAB\n',
-                   '   -- memorymux-fifo-ram: block RAM storage, MLAB FIFO timing (PSX Pocket, MIT).\n'
+                   '   -- memorymux-fifo-ram: block RAM storage, MLAB FIFO timing (after MiSTer, GPL-2.0).\n'
                    '   iwritefifo: entity mem.psx_wfifo_m10k\n')
     new = _replace(new, '      NEAREMPTYDISTANCE => 2\n',
                    f'      NEAREMPTYDISTANCE => 2,\n      READ_MODE         => "{mode}"\n')

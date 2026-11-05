@@ -100,6 +100,15 @@ CASES = [
      '﻿FILE "Merged.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 00:00:20\n'
      '    INDEX 01 00:02:20\n  TRACK 03 AUDIO\n    INDEX 00 00:04:00\n    INDEX 01 00:06:01',
      {'Merged.bin': 500}, 'ok'),
+    # ISOBuster-style merged image (Tomb Raider, 2026-10-30): REM lines and
+    # audio tracks with INDEX 01 only. Tracks 2 and 3 take the 150 sectors
+    # before INDEX 01 as their pregap; track 4's INDEX 01 is too close to
+    # track 3's for one, so it starts at INDEX 01.
+    ('isobuster', 'Iso', 'Iso.cue',
+     'REM SESSION 01\r\nFILE "Iso [X].bin" BINARY\r\n  TRACK 01 MODE2/2352\r\n    INDEX 01 00:00:00\r\n'
+     '  TRACK 02 AUDIO\r\n    INDEX 01 00:04:00\r\n  TRACK 03 AUDIO\r\n    INDEX 01 00:07:10\r\n'
+     '  TRACK 04 AUDIO\r\n    INDEX 01 00:08:00\r\n',
+     {'Iso [X].bin': 700}, 'ok'),
     ('unquoted', 'Abc/Sub folder', 'Game.cue', 'FILE Game.bin BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
      {'Game.bin': 12}, 'ok'),
     ('plain-bin', 'Plain', 'Plain.bin', None, {'Plain.bin': 4}, 'bin'),
@@ -145,10 +154,23 @@ CASES = [
     ('json-redump', *REDUMP, 'ok', 'json-cue'),
     ('json-many', 'Many', 'Many.cue', MANY, {'Many.bin': 800}, 'ok', 'json-cue'),
     ('json-trk', *REDUMP, 'json', 'json-trk'),
+    # Its slot 0 not readable, and nothing else to read: left to APF at once (slot 101 is listed).
+    ('json-trk-cold', *REDUMP, 'json', 'json-trk'),
     ('launch-bad', 'Cooked', 'Cooked.cue', 'FILE "Cooked.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n', {'Cooked.bin': 3}, 'fail', 'launch'),
     # A cold card (the first launch after a restart or card writes): the
     # first two tries' reads fail (TRIES, COLD), the third mounts.
     ('json-cold', *REDUMP, 'ok', 'json-cue'),
+    # The loader's sizes list the files, so APF errors are a cold card: tried
+    # until it answers. It recovers on the eighth try; never (the CPU stays held);
+    # a cue picked from the launch list; a track open's general error (5) twice;
+    # a slow card that never errs. Nothing listed answers at once.
+    ('json-cold-long', *REDUMP, 'ok', 'json-cue'),
+    ('json-cold-dead', *REDUMP, 'hold', 'json-cue'),
+    ('json-cold-open', *REDUMP, 'ok', 'json-cue'),
+    ('launch-cold-long', *REDUMP, 'ok', 'launch'),
+    ('json-slow', *REDUMP, 'ok', 'json-cue'),
+    ('launch-none-sizes', 'x', 'none', None, {}, 'json', 'launch'),
+    ('launch-none-empty', 'x', 'none', None, {}, 'json', 'launch'),
     # A 0.5.2 game JSON for a three-file game: cue in 100, the .bin files in
     # 101-103 (track 2's .bin where 0.5.3 has its track table), read there.
     ('json-052', *REDUMP, 'ok', 'json-052'),
@@ -156,6 +178,11 @@ CASES = [
     # A DuckStation-style playlist from the launch list: a comment, a
     # backslash and trailing spaces.
     ('launch-m3u', 'Two', 'Two.m3u', '#EXTM3U\r\nTwo (Disc 1)/Two (Disc 1).cue\r\nTwo (Disc 2)\\Two (Disc 2).cue  \r\n',
+     {D1 + '.bin': 40, D2 + ' (Track 1).bin': 30, D2 + ' (Track 2).bin': 170}, 'ok', 'launch', (DISC1, DISC2)),
+    # Issue #25: a playlist whose last line has no newline. Its entry ends
+    # 1-3 bytes short of a word, so a word-rounded read of it would pass the
+    # end of the file (APF fails those reads).
+    ('launch-m3u-eof', 'Two', 'Two.m3u', '#EXTM3U\nTwo (Disc 1)/Two (Disc 1).cue\nTwo (Disc 2)/Two (Disc 2).cue',
      {D1 + '.bin': 40, D2 + ' (Track 1).bin': 30, D2 + ' (Track 2).bin': 170}, 'ok', 'launch', (DISC1, DISC2)),
     ('json-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-lc',
      (('Lc.sbi', sbi_bytes()),)),
@@ -204,7 +231,58 @@ CASES = [
     # firmware tries the bytes swapped in each word, then a second struct.
     ('libcrypt-off', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', '',
      (('Lc.sbi', sbi_bytes()),)),
+    # Cue variants from other tools (2026-11-04 audit). Each gives the
+    # normalised cue the model reads (MODEL): the firmware must mount the
+    # variant as that cue.
+    # Lower case keywords, tabs, old Mac CR-only line ends and a BOM.
+    ('lower', 'Low', 'Low.cue',
+     '\ufefffile "Low.bin" binary\r\ttrack 01 mode2/2352\r\t\tindex 01 00:00:00\r\ttrack 02 audio\r\t\tindex 00 00:02:00\r'
+     '\t\tindex 01 00:04:00\r', {'Low.bin': 400}, 'ok'),
+    # CDRWin/EAC metadata: CATALOG, CDTEXTFILE, TITLE, PERFORMER, SONGWRITER,
+    # FLAGS, ISRC, REM and an INDEX 02, all ignored.
+    ('meta', 'Meta', 'Meta.cue',
+     'REM GENRE Game\nCATALOG 0000000000000\nCDTEXTFILE "Meta.cdt"\nPERFORMER "Someone"\nTITLE "Meta Game"\n'
+     'FILE "Meta.bin" BINARY\n  TRACK 01 MODE2/2352\n    TITLE "Data"\n    FLAGS DCP\n    INDEX 01 00:00:00\n'
+     '  TRACK 02 AUDIO\n    FLAGS DCP PRE\n    ISRC ABCDE1234567\n    SONGWRITER "Someone"\n    INDEX 00 00:02:00\n'
+     '    INDEX 01 00:04:00\n    INDEX 02 00:04:30\n', {'Meta.bin': 400}, 'ok'),
+    # FILE with no type word (hand-written cues).
+    ('no-type', 'NoType', 'NoType.cue', 'FILE "NoType.bin"\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'NoType.bin': 6}, 'ok'),
+    # A file name in UTF-8 (accents, Japanese).
+    ('utf8-name', 'Pokémon', 'Pokémon ポケモン.cue',
+     'FILE "Pokémon ポケモン (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     'FILE "Pokémon ポケモン (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n',
+     {'Pokémon ポケモン (Track 1).bin': 8, 'Pokémon ポケモン (Track 2).bin': 160}, 'ok'),
+    # The ripping PC's absolute path (old CDRWin/Alcohol cues), a one-file
+    # disc whose .bin has the cue's name: "<cue name>.bin" is opened.
+    ('abs-path', 'Abs', 'Abs.cue', 'FILE "C:\\Rips\\Old Name.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Abs.bin': 6}, 'ok'),
+    # A MODE2/2336 track (some CloneCD/Alcohol conversions) can't be read.
+    # Audio gaps under 2 seconds (cd_top's Play starts 150 sectors into a
+    # track): per-track files with INDEX 01 only and each gap at the end of
+    # the previous file (EAC-style), and a redump-style disc whose INDEX 00
+    # gaps are 1 s (track 2) and 3 s (track 3, left as it is). Tracks 2 and
+    # 3 of the first start 150 sectors before INDEX 01, in the previous file.
+    ('gap-appended', 'App', 'App.cue',
+     'FILE "App (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     'FILE "App (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+     'FILE "App (Track 3).bin" BINARY\n  TRACK 03 AUDIO\n    INDEX 01 00:00:00\n',
+     {'App (Track 1).bin': 200, 'App (Track 2).bin': 180, 'App (Track 3).bin': 30}, 'ok'),
+    ('gap-short', 'Short', 'Short.cue',
+     'FILE "Short (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+     'FILE "Short (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:01:00\n'
+     'FILE "Short (Track 3).bin" BINARY\n  TRACK 03 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:03:00\n',
+     {'Short (Track 1).bin': 200, 'Short (Track 2).bin': 180, 'Short (Track 3).bin': 240}, 'ok'),
+    ('mode2-2336', 'M2', 'M2.cue', 'FILE "M2.bin" BINARY\n  TRACK 01 MODE2/2336\n    INDEX 01 00:00:00\n', {'M2.bin': 3}, 'fail'),
 ]
+
+# The cue the model reads for a case whose cue the model's parser doesn't
+# take as it is.
+MODEL = {
+    'lower': 'FILE "Low.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 00:02:00\n'
+             '    INDEX 01 00:04:00\n',
+    'meta': 'FILE "Meta.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 00:02:00\n'
+            '    INDEX 01 00:04:00\n',
+    'no-type': 'FILE "NoType.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+}
 
 
 def words_hex(data):
@@ -217,21 +295,25 @@ def gap_plan(cue):
     sectors on the disc that are not in the files, before its track's INDEX 01
     (before the file when it is the file's first track), and a first file
     holding track 1's pregap (INDEX 01 past its start) starts the disc at
-    INDEX 01. (image bytes, sources, tracks)."""
-    files = []   # [name, [[index00 or None, index01, pregap]]]
+    INDEX 01. An audio track after the first whose gap before INDEX 01 is
+    under 150 sectors starts 150 sectors before INDEX 01 when that is after
+    the previous track's INDEX 01 (the firmware's cue()). (image bytes,
+    sources, tracks)."""
+    files = []   # [name, [[index00 or None, index01, pregap, audio]]]
     msf = lambda t: (lambda m, s, f: (m*60 + s)*75 + f)(*map(int, t.split(':')))
     for line in cue.read_text().splitlines():
         w = line.split()
         if w[0] == 'FILE': files.append([line.split('"')[1], []])
-        elif w[0] == 'TRACK': files[-1][1].append([None, None, 0])
+        elif w[0] == 'TRACK': files[-1][1].append([None, None, 0, w[2].upper() == 'AUDIO'])
         elif w[0] == 'PREGAP': files[-1][1][-1][2] = msf(w[1])
         elif w[0] == 'INDEX': files[-1][1][-1][int(w[1])] = msf(w[2])
     lead = files[0][1][0][1]
-    image, sources, tracks = b'', [], []
+    image, sources, tracks, audios = b'', [], [], []
     for k, (name, ts) in enumerate(files):
         data = (cue.parent/name).read_bytes()[(lead if k == 0 else 0)*SECTOR:]
         at, start = 0, len(image)//SECTOR   # file sectors emitted; the disc sector it began at
-        for i0, i1, gap in ts:
+        for i0, i1, gap, audio in ts:
+            audios.append(audio)
             if k == 0: i0, i1 = max((i0 if i0 is not None else i1) - lead, 0), i1 - lead
             else: i0 = i1 if i0 is None else i0
             if gap:   # the file's data up to INDEX 01, then the silence
@@ -243,11 +325,17 @@ def gap_plan(cue):
                 tracks.append((here + i0 - at, here + i1 - at))
         image += data[at*SECTOR:]
         sources.append((cue.parent/name, len(image)//SECTOR - start))
+    for r in range(1, len(tracks)):
+        s, x = tracks[r]
+        if audios[r] and x - s < 150 and x > tracks[r - 1][1] + 150: tracks[r] = (x - 150, x)
     return image, sources, tracks
 
 
 def expected(case, disk, cue, suffix='', mask=0):
     """Write the one-file image, table and test sectors of a cue; (bytes, sectors)."""
+    if case.name in MODEL:
+        (disk/(cue + '.model')).write_text(MODEL[case.name])
+        cue = cue + '.model'
     text = (disk/cue).read_text()
     named = [(l.split('"')[1] if '"' in l else l.split()[1]) for l in text.splitlines() if l.startswith('FILE')]
     bins = sorted(f.name for f in (disk/cue).parent.glob('*.bin'))
@@ -279,11 +367,11 @@ def expected(case, disk, cue, suffix='', mask=0):
     return len(image), sectors
 
 
-# Launch tries (reads of slot 0) a case takes: a failed launch mount is
-# tried three times, the stream's allcomplete held until the last. Other
-# launches take one.
-TRIES = {'launch-bad': 3, 'launch-json': 3, 'launch-none': 3, 'json-cold': 3}
-COLD = {'json-cold': 6}   # commands the host fails first: slot 0, slot 102 and the cue in slot 100, twice
+# Launch tries (reads of slot 0) a case takes: only a card error on a listed
+# file (with the loader's sizes) tries again, the stream's allcomplete held
+# until an answer. Others take one, a bad cue or no file at once.
+TRIES = {'json-cold': 3, 'json-cold-long': 8, 'json-cold-open': 3, 'launch-cold-long': 4}
+COLD = {'json-trk-cold': 1, 'json-cold': 6, 'json-cold-long': 21, 'json-cold-dead': 100000, 'launch-cold-long': 7}   # commands the host fails first: slot 0, slot 102 and the cue in slot 100, per try
 
 # The pause before a launch retry (start.S retry_wait at 0x10, in wait loop
 # turns of 104 cycles) is shortened for the bench in a copy of the firmware;
@@ -294,7 +382,9 @@ RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
 
 # Cases given the Chip32 loader's size block, and the most reads their boot
 # mount may take (the size probes alone are 13-19 reads each).
-SIZE_ARGS = {'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
+SIZE_ARGS = {'json-trk-cold': ['+sizes', '+size0', '+no102'], 'json-cold': ['+sizes'], 'json-cold-long': ['+sizes'], 'json-cold-dead': ['+sizes', '+hold=12'], 'launch-cold-long': ['+sizes'], 'launch-none-sizes': ['+sizes'], 'launch-none-empty': ['+sizes', '+empty2'],
+             'json-cold-open': ['+sizes', '+coldopen=2'],
+             'json-slow': ['+sizes', '+apf_lat=20000'], 'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
              'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36'], 'json-data2': ['+sizes']}
 
 

@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from prepare_clean_memory_cdc import (CARD_SHA, VRAM_SHA, SYNC_ATTRIBUTE, legacy_lines,
                                       prepare_project, preserved, scope_text, top_contract)
-from prepare_pocket_card_cdc import TOP_NEW, TOP_OLD
+from prepare_clean_memory_cdc import TOP_NEW, TOP_OLD
 from prepare_resource_targets import digest
 from tool_paths import ROOT, find_tool
 

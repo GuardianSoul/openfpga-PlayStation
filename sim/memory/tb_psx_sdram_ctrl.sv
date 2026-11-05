@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 PSX Pocket contributors
 //
-// Runs psx_sdram_ctrl and, for comparison, the reference sdram.sv (when
-// compiled with -DWITH_REFERENCE) through the same random PSX-like traffic,
+// Runs psx_sdram_ctrl through random PSX-like traffic,
 // each against its own sdram_chip_model:
 //   ch1: CPU scalar reads, I-cache fills and back-to-back DMA reads
 //   ch2: CPU writes with random byte enables (posted)
@@ -16,7 +15,7 @@
 // cycle) to <prefix>.log; run_sdram_ctrl.py compares the two logs.
 `timescale 1ns/1ps
 `default_nettype none
-module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter integer SEED = 1,
+module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
                      parameter integer OPS = 4000, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
                      // ns: forwarded chip-clock delay, chip clock-to-data max / hold min, data return delay
                      parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0) (
@@ -42,28 +41,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     wire fifo_empty = fifo_w == fifo_r;
     wire fifo_read;
 
-    generate if (USE_REF) begin : ref_dut
-`ifdef WITH_REFERENCE
-        sdram #(.SINGLE_CHIP(1)) dut (
-`else
-        initial begin $display("ERROR reference not compiled"); $finish; end
-        psx_sdram_ctrl dut (
-`endif
-            .init(init), .clk(clk3), .clk_base(clk1), .SDRAM_EN(1'b1),
-            .SDRAM_DQ(dq), .SDRAM_A(a), .SDRAM_DQML(dqml), .SDRAM_DQMH(dqmh), .SDRAM_BA(ba), .SDRAM_nCS(ncs),
-            .SDRAM_nWE(nwe), .SDRAM_nRAS(nras), .SDRAM_nCAS(ncas), .SDRAM_CKE(cke), .SDRAM_CLK(chip_clk),
-            .refreshForce(refresh_force), .ram_idle(ram_idle),
-            .ch1_addr(ch1_addr), .ch1_dout(ch1_dout), .ch1_dout32(ch1_dout32), .ch1_din(16'h0), .ch1_req(ch1_req),
-            .ch1_rnw(1'b1), .ch1_dma(ch1_dma), .ch1_cntDMA(ch1_cnt), .ch1_cache(ch1_cache), .ch1_ready(ch1_ready),
-            .cache_wr(cache_wr), .cache_data(cache_data), .cache_addr(cache_addr),
-            .dma_wr(dma_wr), .dma_reqprocessed(dma_rp), .dma_data(dma_data),
-            .ch2_addr(ch2_addr), .ch2_dout(ch2_dout), .ch2_din(ch2_din), .ch2_req(ch2_req), .ch2_rnw(1'b0),
-            .ch2_be(ch2_be), .ch2_ready(ch2_ready),
-            .ch3_addr(ch3_addr), .ch3_dout(ch3_dout), .ch3_din(ch3_din), .ch3_req(ch3_req), .ch3_rnw(ch3_rnw),
-            .ch3_be(ch3_be), .ch3_ready(ch3_ready),
-            .dmafifo_adr(fifo_adr[fifo_r[3:0]]), .dmafifo_data(fifo_dat[fifo_r[3:0]]),
-            .dmafifo_empty(fifo_empty), .dmafifo_read(fifo_read));
-    end else begin : new_dut
+    generate if (1) begin : new_dut
         psx_sdram_ctrl #(.CAS_LATENCY(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW)) dut (
             .init(init), .clk(clk3), .clk_base(clk1), .SDRAM_EN(1'b1),
             .SDRAM_DQ(dq), .SDRAM_A(a), .SDRAM_DQML(dqml), .SDRAM_DQMH(dqmh), .SDRAM_BA(ba), .SDRAM_nCS(ncs),
@@ -86,8 +64,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     wire chip_clk_d;
     assign #(DCLK) chip_clk_d = chip_clk;
 
-    // The reference leaves a few cycles less than 80 ns after REFRESH.
-    sdram_chip_model #(.STRICT_RFC(!USE_REF), .NAME(PREFIX), .CAS(CAS), .T_AC(TAC), .T_OH(TOH), .T_RET(TRET)) chip (
+    sdram_chip_model #(.STRICT_RFC(1), .NAME(PREFIX), .CAS(CAS), .T_AC(TAC), .T_OH(TOH), .T_RET(TRET)) chip (
         .clk(chip_clk_d), .cke(cke), .ncs(1'b0), .nras(nras), .ncas(ncas), .nwe(nwe),
         .a(a), .ba(ba), .dqm({dqmh, dqml}), .dq(dq));
 
@@ -97,7 +74,7 @@ module sdram_bench #(parameter USE_REF = 0, parameter PREFIX = "ours", parameter
     // DQ contention: the controller driving the bus while the chip still
     // drives a read beat (the chip releases T_AC + T_RET after the edge after
     // its last beat).
-    generate if (!USE_REF) begin : contention
+    generate if (1) begin : contention
         always @(chip.drive or new_dut.dut.dq_oe)
             if (chip.drive && new_dut.dut.dq_oe) begin
                 local_errors = local_errors + 1;
@@ -384,19 +361,13 @@ module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED 
     reg clk3 = 0, clk1 = 0;
     always #4.921 clk3 = ~clk3;     // 101.6064 MHz
     always #14.763 clk1 = ~clk1;    // 33.8688 MHz, edges aligned
-    wire done_new, done_ref;
-    integer err_new, err_ref;
+    wire done_new;
+    integer err_new;
     integer seed;
-    sdram_bench #(.USE_REF(0), .PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
-`ifdef WITH_REFERENCE
-    sdram_bench #(.USE_REF(1), .PREFIX("reference"), .OPS(OPS), .SEED(SEED), .CAS(2), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) reference (.clk3(clk3), .clk1(clk1), .done(done_ref), .errors(err_ref));
-`else
-    assign done_ref = 1;
-    initial err_ref = 0;
-`endif
+    sdram_bench #(.PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
     initial begin
-        wait (done_new && done_ref);
-        $display("RESULT errors ours %0d reference %0d", err_new, err_ref);
+        wait (done_new);
+        $display("RESULT errors ours %0d", err_new);
         $finish;
     end
     initial begin

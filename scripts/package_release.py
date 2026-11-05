@@ -41,6 +41,7 @@ LICENSES = (                       # (source, name in the core's licenses folder
     (ROOT/'licenses/dual-clock-fifo-BSD.txt', 'dual-clock-fifo-BSD.txt'),
     (ROOT/'licenses/APF-NOTICE.txt', 'APF-NOTICE.txt'),   # APF template, Intel IP and agg23 MIT notices
     (ROOT/'references/PSX_MiSTer/LICENSE', 'PSX_MiSTer-LICENSE.txt'),
+    (ROOT/'licenses/SERV-ISC.txt', 'SERV-ISC.txt'),
     # Not MIRLO64's NOTICE or Apache-2.0 LICENSE, or the LiteX notice: their memory files
     # are workspace-only and must not be in a GPL-2.0 release bitstream.
 )
@@ -122,9 +123,7 @@ def main():
 
     notices = core/'licenses'; shutil.rmtree(notices, ignore_errors=True); notices.mkdir()
     for source, name in LICENSES: shutil.copyfile(source, notices/name)
-    # The opt-in pocket_sotn files are never in a release (from 0.5.3), so its row goes too.
-    (notices/'THIRD_PARTY_NOTICES.md').write_text(''.join(
-        l for l in (ROOT/'THIRD_PARTY_NOTICES.md').read_text().splitlines(keepends=True) if 'pocket_sotn' not in l))
+    shutil.copyfile(ROOT/'THIRD_PARTY_NOTICES.md', notices/'THIRD_PARTY_NOTICES.md')
 
     (sd/'Platforms').mkdir(parents=True)
     (sd/'Platforms/_images').mkdir()

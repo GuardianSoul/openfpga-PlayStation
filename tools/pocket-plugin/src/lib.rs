@@ -5,6 +5,7 @@
 
 use extism_pdk::*;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::Path;
 
 mod instances;
@@ -18,6 +19,12 @@ const SKIP: &str = "Skip them, generate the other game files";
 const BIOS: &str = "Check the BIOS";
 const EXIT: &str = "Exit";
 const OURS: &str = "GuardianSoul.PlayStation";
+/// The first progress line (game files); each next one at twice as many.
+const PROGRESS: usize = 100;
+/// The full log of the last run, next to the game files.
+const REPORT_FILE: &str = "Game files report.txt";
+/// Skip, warning and grouping lines shown in one run.
+const MAX_DETAILS: usize = 4;
 
 #[derive(Clone, Serialize, ToBytes)]
 #[encoding(Json)]
@@ -41,10 +48,37 @@ extern "ExtismHost" {
     fn print_msg(message: &str) -> ();
 }
 
-fn println(msg: &str) {
+/// Every line of this run, for the report file (the window shows fewer).
+static REPORT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// A line kept for the report file only.
+fn note(msg: &str) {
+    if let Ok(mut report) = REPORT.lock() {
+        report.push(msg.to_string());
+    }
+}
+
+/// A line for the window only (it makes no sense inside the report).
+fn say(msg: &str) {
     unsafe {
         let _ = print_msg(&format!("{msg}\n"));
     }
+}
+
+fn println(msg: &str) {
+    note(msg);
+    say(msg);
+}
+
+/// Where this run's report goes, once the card and core are known.
+static REPORT_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Writes every line so far to the report file. try_lock: the panic hook
+/// calls this too, possibly while a lock is held.
+fn write_report() -> Result<(), String> {
+    let path = REPORT_PATH.try_lock().ok().and_then(|p| p.clone()).ok_or("no report path")?;
+    let text = REPORT.try_lock().map(|r| r.join("\n") + "\n").map_err(|_| "report busy")?;
+    fs::write(&path, text).map_err(|e| e.to_string())
 }
 
 fn mb(bytes: u64) -> u64 { (bytes + (1 << 20) - 1) >> 20 }
@@ -116,7 +150,71 @@ fn run(core: &str, mode: Option<Mode>) -> PluginMessage {
         }
     }
     println(&format!("Looking for games in Assets/{platform}/common ..."));
-    match instances::make_instances(card, core, &platform, &mut |line| println(line)) {
+    // Pocket Sync's log stops following a burst of lines that overflows the
+    // window, and its "can be closed" line can drop below it, so a run looked
+    // hung. So the log stays short: no line per game file or shared card,
+    // progress at 100, 200, 400, ... game files, and at most MAX_DETAILS
+    // skip, warning and grouping lines (tests set the config key "verbose"
+    // for every line).
+    let verbose = config::get("verbose").ok().flatten().is_some();
+    let (mut made, mut mark, mut details) = (0, PROGRESS, 0);
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+    let mut last = std::time::Instant::now();
+    let mut seeded = 0;
+    let mut hidden: Vec<String> = Vec::new();
+    if !verbose {
+        if let Ok(mut path) = REPORT_PATH.lock() {
+            *path = Some(card.join("Assets").join(&platform).join(core).join(REPORT_FILE));
+        }
+    }
+    let mut log = |line: &str| {
+        if verbose {
+            return println(line);
+        }
+        if line.starts_with("wrote ") && line.contains(".json (") {
+            note(line);
+            made += 1;
+            // Also every 10 seconds: a slow SD card takes a while, and a
+            // window with no new line looks stuck.
+            if made == mark || last.elapsed() >= EVERY {
+                println(&format!("{made} game files so far ..."));
+                last = std::time::Instant::now();
+                while mark <= made {
+                    mark *= 2;
+                }
+            }
+        } else if line.starts_with("shared card ") {
+            // Starting each shared card from a disc's save takes a while too.
+            note(line);
+            seeded += 1;
+            if last.elapsed() >= EVERY {
+                println(&format!("{seeded} shared memory cards so far ..."));
+                last = std::time::Instant::now();
+            }
+        } else if line.starts_with(|c: char| c.is_ascii_digit()) && line.contains(" game files in ") {
+            // the summary
+            if !hidden.is_empty() {
+                say(&format!("... and {} more like these: the report file named below lists them all.", hidden.len()));
+            }
+            println(line);
+        } else if line.starts_with("skip ")
+            || line.starts_with("warning: ")
+            || line.starts_with("wrote ")
+            || line.contains(" discs in one folder, grouped")
+            || line.contains(": the discs' names differ")
+        {
+            details += 1;
+            if details <= MAX_DETAILS {
+                println(line)
+            } else {
+                note(line);
+                hidden.push(line.to_string())
+            }
+        } else {
+            println(line);
+        }
+    };
+    match instances::make_instances(card, core, &platform, &mut log) {
         Ok(summary) => {
             if summary.written > 0 {
                 println("Done. Start a game from its .json in the core's file list.");
@@ -128,12 +226,33 @@ fn run(core: &str, mode: Option<Mode>) -> PluginMessage {
         Err(error) => println(&format!("Stopped: {error}")),
     }
     check_bios(core, &platform);
+    if !verbose {
+        // Every line, with each game file and shared card, next to the game files.
+        match write_report() {
+            Ok(()) => say(&format!("Every line, with each game file: Assets/{platform}/{core}/{REPORT_FILE}")),
+            Err(error) => {
+                // No report: show the lines it would have kept.
+                say(&format!("Could not save the report file Assets/{platform}/{core}/{REPORT_FILE} ({error}). The lines left out above:"));
+                for line in &hidden {
+                    say(line);
+                }
+            }
+        }
+    }
+    println("Finished. You can close this window.");
     PluginMessage::Exit
 }
 
 #[plugin_fn]
 pub fn start() -> FnResult<PluginMessage> {
-    println("PlayStation game files");
+    // A panic stops the plugin without an Exit, so the host keeps waiting:
+    // at least say so in the log.
+    std::panic::set_hook(Box::new(|info| {
+        println(&format!("The plugin stopped with an error ({info}). You can close this window; please report this line."));
+        // Keep what it found so far.
+        let _ = write_report();
+    }));
+    println(&format!("PlayStation game files {}", env!("CARGO_PKG_VERSION")));
     let (cores, others): (Vec<_>, Vec<_>) = instances::find_cores(Path::new(CARD)).into_iter().partition(|c| c.supported);
     let others: Vec<String> = others.into_iter().map(|c| c.id).collect();
     if !others.is_empty() && !cores.is_empty() {

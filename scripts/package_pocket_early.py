@@ -53,6 +53,7 @@ def main():
     parser.add_argument('--multi-track', type=int, default=0, help='Discs as instance JSONs: cue slot 100, track bins 101..100+N (prepare --multi-track N)')
     parser.add_argument('--logo-skip-setting', action='store_true', help='Menu checkbox "Skip BIOS Logo" (prepare --logo-skip-setting)')
     parser.add_argument('--turbo-setting', action='store_true', help='Menu list "Turbo Mode": Off (default) / On (scripts/prepare_turbo_setting.py, bridge 0x50000080)')
+    parser.add_argument('--restart-game', action='store_true', help='Core Settings action "Restart Game" (scripts/prepare_restart_game.py, bridge 0x50000088): resets the console, keeping the disc')
     parser.add_argument('--fast-bios-setting', action='store_true', help='Menu checkbox "Fast BIOS Boot" (scripts/prepare_fast_bios.py, bridge 0x50000070)')
     parser.add_argument('--field-swap-setting', action='store_true', help='Menu checkbox to swap the 480i field order (prepare --field-swap-setting)')
     parser.add_argument('--shoulder-setting', action='store_true', help='Menu lists for what L and R press (prepare --shoulder-setting)')
@@ -488,11 +489,16 @@ def main():
         variables.append({'name': 'Swap Discs', 'id': 21, 'type': 'list', 'enabled': True, 'persist': True,
                           'writeonly': True, 'address': '0x50000044', 'defaultval': 0,
                           'options': [{'value': n, 'name': f'Disc {n+1}'} for n in range(args.disc_menu)]})
-    # Core Settings order (by id, so names can change): the game (Swap
-    # Discs, Skip BIOS Logo, Cheats), then the picture, then the controller
+    if args.restart_game:
+        # scripts/prepare_restart_game.py: an action (no value kept); the
+        # console resets and boots the disc in the drive (Swap Discs' disc).
+        variables.append({'name': 'Restart Game', 'id': 44, 'type': 'action', 'enabled': True,
+                          'address': '0x50000088', 'value': 1})
+    # Core Settings order (by id, so names can change): the game (Restart
+    # Game, Swap Discs, Skip BIOS Logo, Cheats), then the picture, then the controller
     # (its mode, then the button lists in their 2026-10-17 order). Ids and
     # values stay as they were, so saved settings and game files still work.
-    MENU_ORDER = (21, 2, 36, 42, 30, 27, 43, 35, 32, 34, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
+    MENU_ORDER = (44, 21, 2, 36, 42, 30, 27, 43, 35, 32, 34, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
     variables.sort(key=lambda v: MENU_ORDER.index(v['id']))
     write('interact.json', {'interact': {'magic': 'APF_VER_1', 'variables': variables, 'messages': []}})
     write('variants.json', {'variants': {'magic': 'APF_VER_1', 'variant_list': []}})

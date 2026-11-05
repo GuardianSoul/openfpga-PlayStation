@@ -1,4 +1,5 @@
 -- SPDX-License-Identifier: GPL-2.0-only
+-- Derived from PSX_MiSTer joypad_pad.vhd (Robert Peip) through joypad_pad_dualshock.vhd.
 -- Table-driven drop-in for rtl/pocket/joypad_pad_dualshock.vhd (same entity
 -- name, ports and generics; prepare --pad-table). The command decoding of
 -- the DualShock protocol moves from logic into one 512x20 M10K ROM: for each

@@ -355,8 +355,10 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
                        : use_512 ? 3'd7 : pal ? 3'd6 : 3'd0;
     // CROP_LINES window for this field, from the previous field's count
     wire [9:0] crop_h=pal && (HEIGHT_SLOTS!=0 || WEAVE576!=0 || i480==0) ? 10'd288 : 10'd240;
-    wire [9:0] crop_top=lines_last>crop_h ? (lines_last-crop_h)>>1 : 10'd0;
-    wire keep_line=CROP_LINES==0 || (lines>=crop_top && lines<crop_top+crop_h);
+    wire [10:0] crop_d={1'b0,lines_last}-{1'b0,crop_h};   // lines_last-crop_h, 0 when not above (equal gives 0 too)
+    wire [9:0] crop_top=crop_d[10] ? 10'd0 : crop_d[9:0]>>1;
+    wire [10:0] keep_d={1'b0,lines}-{1'b0,crop_top};   // crop_top+crop_h stays below 1024
+    wire keep_line=CROP_LINES==0 || !keep_d[10] && keep_d[9:0]<crop_h;
     // FILL_DETECT: the fixed window, lines fd_t to fd_e-1
     wire pal_h=crop_h[8];   // 288
     wire [9:0] fd_h=pal_h ? (PAL_SHAPE!=0 ? 10'd256 : 10'd268) : 10'd224;
@@ -369,7 +371,9 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire fd_lead_any=FILL_LEAD!=0 && FILL_DETECT!=0 && !fit && mode480i && fd_t!=10'd0;
     wire fd_lead=fd_lead_any && !bob2;
     wire fd_lead_next=fd_lead_any && !(bob_nx && mode480i && !(PAL_BOB!=0 && pal));   // at VS (bob2 there, before i480 settles)
-    wire fd_in=lines>=(fd_lead ? fd_t-10'd1 : fd_t) && lines<fd_e;
+    // lines-fd_t: at least -1 (the lead line) or 0, and below fd_h (fd_t is at most 32: fd_e stays below 1024)
+    wire signed [10:0] fd_d=$signed({1'b0,lines})-$signed({1'b0,fd_t});
+    wire fd_in=(fd_lead ? fd_d>=-11'sd1 : !fd_d[10]) && fd_d<$signed({1'b0,fd_h});
     wire fd_on=FILL_DETECT!=0 && !fit;
     reg os_on=0;   // hide_overscan, taken at VS
     wire os_line=OVERSCAN_BLANK!=0 && os_on && !fd_in;
@@ -408,7 +412,10 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire [11:0] bunit=bpm ? 12'd1600 : 12'd800;
     wire [11:0] bstep=bpm ? (wide_px ? bw3 : bw2) : {2'd0,bw};
     wire [11:0] bright=bacc+bstep;
-    wire [11:0] bpart=bright-bunit;
+    // bright-bunit with its borrow: bl_adv (bright >= bunit) and bright <= bunit from one subtraction
+    wire [12:0] bdiff={1'b0,bright}-{1'b0,bunit};
+    wire [11:0] bpart=bdiff[11:0];
+    wire b_le=bdiff[12] || bdiff[11:0]==12'd0;
     // weight in eighths, round(8*bpart/bw): 256 by a shift, 368 by its eight
     // rounding points (23, 69, ..., 345) instead of a multiply (video clock timing)
     // weight in eighths, round(8*bpart/bw) halves up: bpart >= (2k-1)*bw/16 for
@@ -422,7 +429,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     reg [3:0] bth_n=0;      // thresholds still to work out
     reg [15:0] bth_acc=0;   // (2k-1)*6w for the next one
     reg [12:0] bs6x2=0;     // 2*6w
-    wire [3:0] bt=bright<=bunit ? 4'd0 : {3'd0,bpn>=bth[0]}+{3'd0,bpn>=bth[1]}+{3'd0,bpn>=bth[2]}+{3'd0,bpn>=bth[3]}
+    wire [3:0] bt=b_le ? 4'd0 : {3'd0,bpn>=bth[0]}+{3'd0,bpn>=bth[1]}+{3'd0,bpn>=bth[2]}+{3'd0,bpn>=bth[3]}
                                         +{3'd0,bpn>=bth[4]}+{3'd0,bpn>=bth[5]}+{3'd0,bpn>=bth[6]}+{3'd0,bpn>=bth[7]};
     reg signed [10:0] bs0=0;   // the line's first buffer address, for its copy
     // the mix is a clock of its own: blended lines go out one clock later
@@ -432,7 +439,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     // One read of the line buffer a clock, at one address, so it stays a block RAM
     // (two read sites made Quartus build its 2048x24 bits in logic: probe7, 331%).
     wire bl_now=BLX && bl && rd_on;
-    wire bl_adv=bright>=bunit;
+    wire bl_adv=!bdiff[12];
     wire [9:0] raddr=BLX && (bl_pre!=0 || bl_now) ? bs[9:0] : s;
     wire rd_en=BLX && bl_pre!=0 || rd_on && (!bl_now || adv && bl_adv);
     function automatic [7:0] mix(input [7:0] a, input [7:0] b, input [3:0] w);
@@ -449,7 +456,9 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     reg dbl=0, ph=0;   // dbl: each source pixel twice (ph: the second copy)
     reg [10:0] pw=0;   // picture width in output pixels
     reg [9:0] oi=0, s=0, acc=0;
+    wire [9:0] oi_n=oi+1'b1;   // oi==out_w-1 is oi+1==out_w (mod 1024)
     wire [10:0] acc_next={1'b0,acc}+wlen;
+    wire [11:0] acc_sub={1'b0,acc_next}-{2'b0,out_w};   // acc_next-out_w; its borrow is acc_next < out_w
     wire in_pic=!native || ({1'b0,oi}>={1'b0,lead} && {1'b0,oi}<{1'b0,lead}+pw);
     reg [23:0] q_r=0;
     // BOB_SMOOTH: both halves at one x, the half the line reads and whether it averages them
@@ -472,10 +481,13 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
             mix31={r[9:2], g[9:2], c[9:2]};
         end
     endfunction
-    wire [23:0] q_cur=q_sel ? q2[47:24] : q2[23:0], q_oth=q_sel ? q2[23:0] : q2[47:24];
-    // one 3:1 mixer: the heavy and light inputs are chosen first
-    wire [23:0] q_h=q_hvo ? q_oth : q_cur, q_l=q_hvo ? q_cur : q_oth;
-    wire [23:0] q=BOB_SMOOTH==0 ? q_r : !q_avg ? q_cur : BOB_SMOOTH==2 ? mix31(q_h, q_l)
+    wire [23:0] q_cur=q_sel ? q2[47:24] : q2[23:0];
+    // steady: one 3:1 mixer and no bypass. A plain line mixes the read half with
+    // itself (3c+c)/4 = c; a mixed one has its heavy half (the other one when
+    // q_hvo) and its light half chosen by one select bit each.
+    wire h_hi=q_sel^(q_avg && q_hvo), l_hi=q_sel^(q_avg && !q_hvo);
+    wire [23:0] q_h=h_hi ? q2[47:24] : q2[23:0], q_l=l_hi ? q2[47:24] : q2[23:0];
+    wire [23:0] q=BOB_SMOOTH==0 ? q_r : BOB_SMOOTH==2 ? mix31(q_h, q_l) : !q_avg ? q_cur
                   : avg24(q2[47:24], q2[23:0]);
 
     // LOG state (per frame, latched at vs_edge)
@@ -494,25 +506,29 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire [9:0] nu0=fc_reset || pic_any && pic_y0<u0 ? (pic_any ? pic_y0 : 10'h3FF) : u0;
     wire [9:0] nu1=fc_reset || pic_any && pic_y1>u1 ? (pic_any ? pic_y1 : 10'd0) : u1;
     // top = round((nu0+nu1+1-fd_h)/2), within 0..frame-fd_h (16 or 20)
-    wire signed [11:0] fc_t2=$signed({2'b0,nu0})+$signed({2'b0,nu1})+12'sd1-$signed({2'b0,fd_h});
+    // nu0+nu1+1, shared by the Fill window and the PAL_SHAPE crop and shift
+    wire signed [11:0] nu_s=$signed({2'b0,nu0})+$signed({2'b0,nu1})+12'sd1;
+    wire signed [11:0] fc_t2=nu_s-$signed({2'b0,fd_h});
     wire [9:0] fc_max=pal_h ? (PAL_SHAPE!=0 ? 10'd32 : 10'd20) : 10'd16;
     wire [9:0] fc_def=pal_h ? (PAL_SHAPE!=0 ? 10'd16 : 10'd10) : 10'd8;
-    wire [9:0] u_span=nu1-nu0;   // merged picture lines less one
+    wire [10:0] u_d={1'b0,nu1}-{1'b0,nu0};   // its borrow is nu0 > nu1
+    wire [9:0] u_span=u_d[9:0];   // merged picture lines less one
     wire fc_small=PAL_SHAPE!=0 && u_span+10'd33<fd_h;   // spans less than the window less 32
     // FILL_DISP: this frame's display-range lines
     reg [9:0] dd0=0, dd1=0;
     reg dd_any=0;
     wire signed [11:0] fd_t2=$signed({2'b0,dd0})+$signed({2'b0,dd1})+12'sd1-$signed({2'b0,fd_h});
     wire [9:0] fd_want=fd_t2<0 ? 10'd0 : fd_t2[10:1]>fc_max ? fc_max : fd_t2[10:1];
-    wire [9:0] fc_want=nu0>nu1 || fc_small ? fc_def : fc_t2<0 ? 10'd0
+    wire [9:0] fc_want=u_d[10] || fc_small ? fc_def : fc_t2<0 ? 10'd0
                        : fc_t2[10:1]>fc_max ? fc_max : fc_t2[10:1];
     // PAL_SHAPE Fit: crop to 240 (f240) or centre the 288 lines (fsh: + up, - down)
-    wire u_big=nu0<=nu1 && u_span>=10'd191;
+    wire u_big=!u_d[10] && u_span>=10'd191;
     wire f240_want=PAL_SHAPE!=0 && pal && u_big && u_span<=10'd239;
-    wire signed [11:0] ft2=$signed({2'b0,nu0})+$signed({2'b0,nu1})+12'sd1-12'sd240;
+    wire signed [11:0] ft2=nu_s-12'sd240;
     wire [9:0] t240_want=ft2<0 ? 10'd0 : ft2[10:1]>10'd48 ? 10'd48 : ft2[10:1];
     reg [9:0] t240=10'd24;
-    wire signed [11:0] fs2=$signed({2'b0,nu0})+$signed({2'b0,nu1})+12'sd1-12'sd288;
+    wire signed [10:0] t240_dd=$signed({1'b0,t240_want})-$signed({1'b0,t240});   // both 0..48
+    wire signed [11:0] fs2=nu_s-12'sd288;
     wire signed [11:0] fs1=fs2>>>1;
     wire signed [5:0] fsh_lim=mode480i ? 6'sd3 : 6'sd4;
     wire signed [5:0] fsh_want=!u_big ? 6'sd0 : fs1>12'sd15 || fs1>$signed({{6{fsh_lim[5]}},fsh_lim}) ? fsh_lim
@@ -520,7 +536,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     reg signed [5:0] fsh=0;
     wire signed [6:0] fsh_d=$signed({fsh_want[5],fsh_want})-$signed({fsh[5],fsh});
     wire fit_pal=PAL_SHAPE!=0 && fit && pal;
-    wire ft_in=f240 ? lines>=t240 && lines<t240+10'd240
+    wire [10:0] l240={1'b0,lines}-{1'b0,t240};   // f240 window: t240 <= lines < t240+240 (t240 at most 48)
+    wire ft_in=f240 ? !l240[10] && l240[9:0]<10'd240
               : fsh[5] ? lines<10'd288-{4'd0,-fsh} : lines>={4'd0,fsh};
     reg [4:0] pre_n=0, post_n=0;   // black lines before / after the picture (fsh)
     // the values the coming frame uses (f240 and fsh change at VS)
@@ -529,7 +546,9 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     // FILL_DISP: 480i keeps the standard window (the BIOS's display range moved it up
     // over overscan lines on the Sony and PlayStation screens, rc1f)
     wire [9:0] fc_next=FILL_DISP==0 ? fc_want : mode480i ? fc_def : fd_want;
-    wire fc_move=(FILL_DISP==0 || dd_any || mode480i) && (fc_next>fc_top+10'd1 || fc_top>fc_next+10'd1);
+    // |fc_next - fc_top| > 1 from one subtraction (both at most fc_max / fc_def, far from a wrap)
+    wire signed [10:0] fc_dd=$signed({1'b0,fc_next})-$signed({1'b0,fc_top});
+    wire fc_move=(FILL_DISP==0 || dd_any || mode480i) && (fc_dd>11'sd1 || fc_dd<-11'sd1);
     wire pic_px=!blank && (|rgb_in[23:20] || |rgb_in[15:12] || |rgb_in[7:4]);
     // LOG: the lines actually sent this frame and the first/last source line
     // index among them. The index is taken where the line is WRITTEN (the same
@@ -700,17 +719,17 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
                     bacc<=bpart; pa<=pb; pb<=qv ? q : 24'h0;
                     qv<=bs_ok; bs<=bs+1'b1;
                 end else bacc<=bright;
-                oi<=oi+1'b1;
-                if (oi==out_w-1'b1) rd_on<=0;
+                oi<=oi_n;
+                if (oi_n==out_w) rd_on<=0;
             end
         end else if (rd_on) begin
             pix_d<=in_pic && !black && !tail;
             if (DOCK_TEST!=0 || PACE!=0) pc<=pc==2'd2 ? 2'd0 : pc+1'b1;
             if (adv && !tail) begin
                 if (native) begin if (in_pic) begin ph<=!ph; if (!dbl || ph) s<=s+1'b1; end end
-                else if (acc_next>={1'b0,out_w}) begin s<=s+1'b1; acc<=acc_next-out_w; end else acc<=acc_next[9:0];
-                oi<=oi+1'b1;
-                if (oi==out_w-1'b1) begin
+                else if (!acc_sub[11]) begin s<=s+1'b1; acc<=acc_sub[9:0]; end else acc<=acc_next[9:0];
+                oi<=oi_n;
+                if (oi_n==out_w) begin
                     rd_on<=0;
                 end
             end
@@ -776,11 +795,11 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
             if (FILL_CENTER!=0) begin
                 u0<=nu0; u1<=nu1; fc_key<={pal, mode480i};
                 fc_dark<=pic_any || fc_reset ? 4'd0 : fc_dark+1'b1;
-                if (fc_move) fc_top<=fc_next;
+                if (fc_move) fc_top<={4'd0,fc_next[5:0]};   // fc_next is at most fc_max (32): the top bits stay 0
                 if (FILL_DISP!=0) dd_any<=1'b0;
                 if (PAL_SHAPE!=0) begin
                     f240<=f240_want;
-                    if (t240_want>t240+10'd1 || t240>t240_want+10'd1) t240<=t240_want;
+                    if (t240_dd>11'sd1 || t240_dd<-11'sd1) t240<={4'd0,t240_want[5:0]};   // at most 48
                     if (fsh_mv) fsh<=fsh_want;
                 end
             end
