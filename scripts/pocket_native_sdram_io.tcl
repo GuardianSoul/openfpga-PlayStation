@@ -23,7 +23,7 @@ if {!$native_sdram_rate_ok && !$native_sdram_analysis_only} {
 if {$native_sdram_board_min<0 || $native_sdram_board_max<$native_sdram_board_min || $native_sdram_board_max>2} {
     error "Invalid Native SDRAM board-flight bounds"
 }
-set native_sdram_caps [get_registers {*|psx_native_memory:native_memory|psx_sdram_ctrl:controller|dq_in[*]}]
+set native_sdram_caps [get_registers {*|psx_core_memory:native_memory|psx_sdram_ctrl:controller|dq_in[*]}]
 set native_sdram_inputs [get_ports {dram_dq[*]}]
 set native_sdram_outputs [get_ports {dram_a[*] dram_ba[*] dram_dqm[*] dram_dq[*] dram_we_n dram_ras_n dram_cas_n dram_cke}]
 set native_sdram_pin [get_ports dram_clk]

@@ -11,6 +11,11 @@
 -- state. FAULT skips one part of the restore (1 voice records, 2 envelope
 -- counters, 3 voice registers, 4 reverb pointer); every fault must keep a
 -- mismatch to the end or leave a state difference.
+-- Held, A's 0x1F801DBC/E (the voices in ADSR release) must match the phases
+-- of its voice records. REKEY: B instead gets the save routine's re-key
+-- (rtl/pocket/save_fw/save_handler.S spu_load: voices with ADSR volume not
+-- releasing keyed on, the rest volume 0 and keyed off); a few samples after
+-- the release its keyed voices must be playing and the rest off and silent.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -18,7 +23,7 @@ use std.env.all;
 
 entity tb_spu_save_tap is
     generic (SEED : natural := 1; OPERATIONS : natural := 3000; SETTLE : natural := 400; SAMPLES : natural := 1500;
-             FAULT : natural := 0);
+             FAULT : natural := 0; REKEY : boolean := false);
 end entity;
 architecture test of tb_spu_save_tap is
     signal clk1x,clk2x : std_logic := '1';
@@ -216,6 +221,9 @@ begin
         variable waited : natural;
         variable state_diffs : natural := 0;
         variable pm : std_logic_vector(31 downto 0);
+        variable rel, keyon, kv : std_logic_vector(31 downto 0);
+        variable phase : std_logic_vector(2 downto 0);
+        variable rel_diffs, rekey_errors : natural := 0;
     begin
         for i in 1 to 20 loop tick; end loop;
         reset<='0';
@@ -223,6 +231,9 @@ begin
         -- A gets its traffic, then B gets different traffic (B keeps running meanwhile)
         traffic(ba, SEED);
         traffic(bb, SEED + 1000);
+        -- some of A's voices released just before the save (a release mask to check)
+        bus_write(ba, 16#18C#, x"0F0F"); bus_write(ba, 16#18E#, x"000F");
+        for i in 1 to 3 * 768 loop tick; end loop;
         -- quiet point on both
         ba.hold<='1'; bb.hold<='1';
         waited := 0;
@@ -233,6 +244,18 @@ begin
         -- save A
         for i in 0 to 16#FF# loop bus_read(ba, 2 * i, v16); g(i) := v16; end loop;
         for i in 0 to 511 loop if ss_saved(i) then ss_read(ba, ssa, i, v32); s(i) := v32; end if; end loop;
+        -- the release mask against the records (phase bits 28-26 of record word 2)
+        rel := g(16#DF#) & g(16#DE#);
+        for v in 0 to 23 loop
+            phase := s(384 + 4 * v + 2)(28 downto 26);
+            if (phase = "100") /= (rel(v) = '1') then
+                if rel_diffs < 4 then report "SPU save tap: voice " & natural'image(v) & " phase " & to_hstring(phase) & " release bit " & std_logic'image(rel(v)); end if;
+                rel_diffs := rel_diffs + 1;
+            end if;
+        end loop;
+        assert rel(31 downto 24) = x"00" report "SPU save tap: release mask high bits set" severity failure;
+        assert rel_diffs = 0 report "SPU save tap: release mask differs from the voice records" severity failure;
+        report "SPU save tap: release mask " & to_hstring(rel(23 downto 0)) & " matches the records";
         s(43) := g(16#DD#) & g(16#DC#);   -- current main volume: the port only writes it, the registers read it
         s(37) := g(16#CF#) & g(16#CE#);   -- ENDX and STAT (IRQ9): the port no longer reads them back
         s(40) := g(16#D7#) & x"0000";
@@ -248,6 +271,41 @@ begin
         end loop;
         for i in 0 to 511 loop if ss_saved(i) and not skipped(i) then ss_write(bb, i, s(i)); end if; end loop;
         assert qa = '1' and qb = '1' report "SPU left the quiet point" severity failure;
+        if REKEY then
+            keyon := (others => '0');
+            for v in 0 to 23 loop
+                if g(8 * v + 6) /= x"0000" and rel(v) = '0' then keyon(v) := '1'; else bus_write(bb, 16 * v + 16#C#, x"0000"); end if;
+            end loop;
+            kv := (g(16#C5#) & g(16#C4#)) or keyon;
+            bus_write(bb, 16#188#, kv(15 downto 0)); bus_write(bb, 16#18A#, kv(31 downto 16));
+            kv := (g(16#C7#) & g(16#C6#)) or not keyon;
+            bus_write(bb, 16#18C#, kv(15 downto 0)); bus_write(bb, 16#18E#, x"00" & kv(23 downto 16));
+            bb.hold<='0';
+            for i in 1 to 64 * 768 loop tick; end loop;
+            bb.hold<='1';
+            waited := 0;
+            while qb /= '1' loop tick; waited := waited + 1; assert waited < 20000 report "SPU B never quiet after the re-key" severity failure; end loop;
+            -- (a keyed voice may have ended its sample since: off with ENDX set;
+            -- a silenced one may still be releasing the step its old attack took)
+            bb.addr<=to_unsigned(16#19C#,10); bb.rd<='1'; tick; bb.rd<='0'; tick; kv(15 downto 0) := b.rd;
+            bb.addr<=to_unsigned(16#19E#,10); bb.rd<='1'; tick; bb.rd<='0'; tick; kv(31 downto 16) := b.rd;
+            for v in 0 to 23 loop
+                ss_read(bb, ssb, 384 + 4 * v + 2, v32); phase := v32(28 downto 26);
+                bb.addr<=to_unsigned(16 * v + 16#C#,10); bb.rd<='1'; tick; bb.rd<='0'; tick; v16 := b.rd;
+                if keyon(v) = '1' and (phase = "100" or (phase = "000" and kv(v) = '0')) then
+                    if rekey_errors < 4 then report "SPU save tap: keyed voice " & natural'image(v) & " phase " & to_hstring(phase); end if;
+                    rekey_errors := rekey_errors + 1;
+                elsif keyon(v) = '0' and g(16#C4# + v / 16)(v mod 16) = '0' and
+                      not (phase = "100" or (phase = "000" and v16 = x"0000")) then
+                    if rekey_errors < 4 then report "SPU save tap: silenced voice " & natural'image(v) & " phase " & to_hstring(phase) & " volume " & to_hstring(v16); end if;
+                    rekey_errors := rekey_errors + 1;
+                end if;
+            end loop;
+            report "SPU save tap: re-key keyed " & to_hstring(keyon(23 downto 0)) & " errors=" & natural'image(rekey_errors);
+            assert rekey_errors = 0 report "SPU save tap: re-key left voices in the wrong state" severity failure;
+            report "PASS SPU save tap re-key";
+            finish;
+        end if;
         -- release both on the same clock
         compare<=true;
         ba.hold<='0'; bb.hold<='0';

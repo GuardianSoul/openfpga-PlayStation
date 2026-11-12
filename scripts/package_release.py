@@ -58,6 +58,26 @@ Setup, controls and source: {repo}. The core is GPL-2.0; see the licenses folder
 """
 
 
+DECLARE_AI = ('Claude', 'Codex')
+
+
+def check_archive(path):
+    """Refuse a release zip whose core.json lacks sleep_supported (Pocket Sync's save-state /
+    Sleep badge reads it) or whose updaters.json lacks the plugin or the AI declaration."""
+    with zipfile.ZipFile(path) as z:
+        base = f'Cores/{AUTHOR}.PlayStation/'
+        core = json.loads(z.read(base + 'core.json'))['core']
+        updaters = json.loads(z.read(base + 'updaters.json'))
+    problems = []
+    if core['framework'].get('sleep_supported') is not True:
+        problems.append('core.json: framework.sleep_supported is not true (package with --save-states)')
+    if updaters.get('plugins') != [PLUGIN]: problems.append(f'updaters.json: plugins is not [{PLUGIN}]')
+    if updaters.get('declare_ai') != list(DECLARE_AI): problems.append(f'updaters.json: declare_ai is not {list(DECLARE_AI)}')
+    if problems:
+        path.unlink()
+        raise SystemExit('release zip refused: ' + '; '.join(problems))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('package', type=Path, help='package_pocket_early.py output folder')
@@ -111,7 +131,8 @@ def main():
     # Updaters read updaters.json from the core folder; "plugins" lets pupdate
     # and Pocket Sync suggest the game files plugin with the core (agreed on
     # issue #3; unknown keys pass through until they support it).
-    write('updaters.json', {'plugins': [PLUGIN]})
+    # declare_ai: the core was written with AI coding assistants (owner, 2026-11-12).
+    write('updaters.json', {'plugins': [PLUGIN], 'declare_ai': list(DECLARE_AI)})
     if (core/'instance-packager.json').is_file():
         packager = load('instance-packager.json')
         packager['output'] = f'Assets/{PLATFORM}/{AUTHOR}.PlayStation'
@@ -164,6 +185,7 @@ def main():
     with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(sd.rglob('*')):
             if path.is_file(): archive.write(path, path.relative_to(sd))
+    check_archive(archive_path)
     (out/'release-report.json').write_text(json.dumps(dict(version=args.version, source_package=str(package),
         rbf_r_sha256=report.get('rbf_r_sha256'), fit_summary=report.get('fit_summary'),
         timing_waived=timing['waived']), indent=2)+'\n')

@@ -17,7 +17,7 @@ module tb_native_sdram_spec #(parameter integer ACTIVE_CAS = 2);
     wire [12:0] a;
     wire [1:0] ba;
     wire ncs, nwe, nras, ncas, chip_clk;
-    psx_sdram_ctrl #(.SINGLE_CHIP(1), .POWERUP_CYCLES(32)
+    psx_sdram_ctrl #(.CS_TIED_LOW(1), .POWERUP_CYCLES(32)
 `ifdef NATIVE_SPEC_PARAMETERIZED_CAS
         , .CAS_LATENCY(ACTIVE_CAS)
 `endif

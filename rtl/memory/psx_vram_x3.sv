@@ -92,13 +92,14 @@ module psx_vram_x3 (
     input  wire        c_card_write
 );
 
-// ---- request FIFO: {burstcnt, addr[21:0], be, din} in block RAM; we and the
-// reset epoch in registers beside it, so the head's load enable never depends
-// on RAM data (that would make the RAM read asynchronous: 416 flip-flops)
-localparam int W = 8 + 22 + 8 + 64;
+// ---- request FIFO: {we, reset epoch, burstcnt, addr[21:0], be, din} in block
+// RAM. The head's load enable never depends on RAM data (that would make the
+// RAM read asynchronous: 416 flip-flops). we and the epoch used to be separate
+// 4x1 arrays, which Quartus put in an M10K of their own anyway (same write and
+// read timing as mem); as two more bits of mem they fit the 3 M10K mem
+// already takes (3 x 40 bits), which frees that block.
+localparam int W = 2 + 8 + 22 + 8 + 64;
 reg  [W-1:0] mem [0:3];
-(* ramstyle = "logic" *) reg [3:0] weq = 4'd0;   // Quartus still merges weq/epq into a small M10K (same read timing as mem)
-(* ramstyle = "logic" *) reg [3:0] epq = 4'd0;
 reg  [2:0]   wptr = 3'd0;          // clk2x
 reg  [2:0]   rptr = 3'd0;          // clk3x
 reg  [2:0]   rptr_2x = 3'd0;       // clk3x rptr sampled on clk2x
@@ -113,9 +114,6 @@ always @(posedge clk2x) begin
     rptr_2x <= rptr;
     rst_d <= reset;
     if (reset && !rst_d) ep <= !ep;
-    if (push) begin
-        weq[wptr[1:0]] <= ddr_we; epq[wptr[1:0]] <= ep;
-    end
     wptr <= wptr_n;                   // also in reset: ddr_busy is a register, so the first reset clock can push
     if (reset) begin
         rd_left <= 8'd0; ddr_busy <= 1'b1;
@@ -128,7 +126,7 @@ end
 // The RAM write. An M10K stores it in the second half of the clk2x cycle
 // (STA does not time a write against the other port's read), so the
 // benches model that with PSX_M10K_WRITE_HALF.
-wire [W-1:0] wword = {ddr_we ? 8'd1 : ddr_burstcnt, ddr_addr[21:0], ddr_be, ddr_din};
+wire [W-1:0] wword = {ddr_we, ep, ddr_we ? 8'd1 : ddr_burstcnt, ddr_addr[21:0], ddr_be, ddr_din};
 `ifdef PSX_M10K_WRITE_HALF
 reg [W-1:0] wd = {W{1'b0}};
 reg [1:0]   wa = 2'd0;
@@ -140,7 +138,7 @@ always @(posedge clk2x) if (push) mem[wptr[1:0]] <= wword;
 `endif
 
 // ---- head register on clk3x
-reg [W-1:0] head = {W{1'b0}};
+reg [W-3:0] head = {(W-2){1'b0}};
 reg         hv = 1'b0;
 // The write pointer is registered on clk3x before the compare, so an entry
 // is read at least one clk3x period after the clk3x edge that first sees
@@ -163,7 +161,7 @@ always @(posedge clk3x) begin
     if (!hv || take) begin
         hv <= have;
         if (have) begin
-            head <= mem[rptr[1:0]]; h_we <= weq[rptr[1:0]]; h_ep <= epq[rptr[1:0]];
+            {h_we, h_ep, head} <= mem[rptr[1:0]];
             rptr <= rptr + 3'd1;
         end
     end

@@ -65,7 +65,7 @@ module tb_memcard_slot_vram;
     psx_memcard_slot #(.SAVE_BASE(32'h3000_0000)) slot (
         .clk_74a(clk_74a), .bridge_addr(bridge_addr), .bridge_wr(bridge_wr),
         .bridge_wr_data(bridge_wr_data), .bridge_rd(bridge_rd), .bridge_rd_data(bridge_rd_data),
-        .overflow(overflow), .clk2x(clk2x), .reset_2x(reset), .busy(busy),
+        .overflow(overflow), .clk2x(clk2x), .reset_2x(reset), .overflow_clear(1'b0), .busy(busy),
         .aux_req(aux_req), .aux_we(aux_we), .aux_addr(aux_addr), .aux_din(aux_din),
         .aux_dout(aux_dout), .aux_done(aux_done), .card_write(card_write), .load_done(load_done));
 

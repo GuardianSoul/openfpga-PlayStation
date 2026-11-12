@@ -151,18 +151,18 @@ remembers your choices.
 | Setting | Choices | What it does |
 | --- | --- | --- |
 | Restart Game | (press it) | Restarts the console with the disc that is in the drive, like the PlayStation's reset button |
-| Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
+| Swap Discs | **Disc 1**, Disc 2, Disc 3, Disc 4, Disc 5 | The disc in the drive, for multi-disc games (see [Changing discs](GAMES.md#changing-discs)) |
 | Skip BIOS Logo | On, **Off** | Starts the game without the PlayStation intro |
 | Fast BIOS Boot | **On**, Off | Runs the BIOS's own start-up faster, so games reach the Sony screen about 2 seconds sooner; the Sony screen and every game keep the console's timing |
-| Turbo Mode | **Off**, On | On removes the console's memory, CPU and DMA wait states, so games run faster than on a PlayStation; Off keeps the console's timing |
+| Controller Mode | **Digital**, Analog | The DualShock's mode, switched at once (see [Controls](#controls)) |
+| Turbo Mode | Checkbox, **off** | On removes the console's memory, CPU and DMA wait states, so games run faster than on a PlayStation; Off keeps the console's timing |
 | Aspect Ratio | **Original**, Fill Screen | Original shows the console's 4:3 picture; Fill Screen fills the Pocket's whole screen |
 | Deinterlacing | **Bob**, Weave | How high-resolution (480i) screens show: Bob line-doubles each field like a CRT TV; Weave joins the two fields into one picture, sharper when still but with combing when things move |
 | Hide Overscan | **On**, Off | In Original, blacks out the lines at the top and bottom that a TV hides; Fill Screen always crops them |
-| Controller Mode | **Digital**, Analog | The DualShock's mode, switched at once (see [Controls](#controls)) |
-| L Button | **L1**, L2, L3 | What the Pocket's L sends |
-| R Button | **R1**, R2, R3 | What the Pocket's R sends |
-| D-Pad | **D-Pad**, Face Buttons, Left Analog Stick, Right Analog Stick | What the Pocket's D-Pad sends |
-| A/B/X/Y | **Face Buttons**, D-Pad, Left Analog Stick, Right Analog Stick | What the Pocket's A, B, X and Y send |
+| Mapping: L Button | **L1**, L2, L3 | What the Pocket's L sends |
+| Mapping: R Button | **R1**, R2, R3 | What the Pocket's R sends |
+| Mapping: D-Pad | **D-Pad**, Face Buttons, Left Analog Stick, Right Analog Stick | What the Pocket's D-Pad sends |
+| Mapping: A/B/X/Y | **Face Buttons**, D-Pad, Left Analog Stick, Right Analog Stick | What the Pocket's A, B, X and Y send |
 | SELECT + L/R | None, L1/R1, **L2/R2**, L3/R3 | What Select held with L or R sends |
 | SELECT + D-Pad | None, D-Pad, Face Buttons, **Left Analog Stick**, Right Analog Stick | What Select held with the D-Pad sends |
 | SELECT + A/B/X/Y | None, Face Buttons, D-Pad, L1/R1, L2/R2, L3/R3, Left Analog Stick, **Right Analog Stick** | What Select held with A, B, X or Y sends (the L and R pairs go on Y and A) |
@@ -231,10 +231,70 @@ is written to the SD card when you quit, so turning off mid-game loses the
 saves made since the game started. To use a card from another emulator,
 copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
+## Save states (Memories)
+
+The core supports the Pocket's Memories. To save the game exactly where it
+is, press the Analogue button and Up on the D-Pad together. To load a
+Memory, open **Memories** in the Pocket menu. Sleep works too: the Pocket
+makes a Memory before it sleeps and loads it when it wakes.
+
+What to expect:
+
+- **The screen freezes while saving. This is intentional.** After you
+  save, picture and sound stop and "State saved" stays on screen. The game
+  resumes by itself after up to about 30 seconds; you don't need to press
+  anything. Wait for the game to move again before you quit or sleep.
+- **Why the game is paused.** Writing a Memory to the SD card takes the
+  Pocket a while, and during that time it can't read the game's disc. If
+  the game kept running and needed to load something from the disc, it
+  would wait for data that never comes and hang. In Crash Bandicoot, for
+  example, that happens when you walk on into the next part of a level
+  while the save is still being written. Pausing the game until the
+  Memory is written prevents this.
+- **Why it takes that long.** A PlayStation Memory holds the console's
+  main memory, video memory and sound memory. The core compresses every
+  Memory to about half its size (about 2 MB), but that is still much
+  larger than for cartridge systems, and the Pocket writes Memories to the SD card at about 0.1 MB/s
+  for every core.
+- **The first save takes a bit longer.** The first time you save after
+  starting a game, "State saved" can appear late, and the controls don't
+  respond for a moment before it does. This is normal.
+- **Loading takes several seconds.** Waking from Sleep takes longer: the
+  game can take up to about 30 seconds to appear. Give it that time before
+  you press anything or turn the Pocket off.
+- **Memories are per core, not per game.** The Pocket lists the Memories of
+  every PlayStation game together. Loading a Memory from another game is
+  refused ("State failed") and the game you are playing carries on.
+- **Discs are swapped automatically.** Loading a Memory puts the disc it
+  was made on back in the drive, so in a multi-disc game you don't need
+  Swap Discs first. The Swap Discs setting keeps showing the disc from
+  before, because a core can't change it. To switch to the disc the
+  setting already shows, pick another disc first, then the one you want.
+- **A save at a busy moment can fail** with "State failed". The game is not
+  touched; save again.
+- **A damaged Memory is refused.** Each Memory carries a checksum; one that
+  was changed or cut short on its way to or from the SD card is refused
+  ("State failed") instead of loaded, and the game carries on.
+
+Memories and memory cards are separate:
+
+- A Memory doesn't contain the memory card, and loading one never changes
+  the card.
+- If you saved to the memory card after making a Memory and then load that
+  Memory, the game may still remember the card as it was. Let the game
+  look at the card again (for example by opening its save or load screen)
+  before you save to it.
+- Memories are not a replacement for memory card saves. A Memory made with
+  one version of the core may be refused by another, so keep your progress
+  on the memory card too.
+
 ## Known issues
 
 - Some games may run slower than on a real console. Turbo Mode helps.
-- Bloody Roar II: after a long time on the pause screen, the music can stutter for a couple of seconds and then play normally again.
+- In-game memory card saves reach the SD card only when you quit the core
+  normally. If the core crashes or the Pocket turns off mid-game, the memory
+  card saves made since the core started are lost (see
+  [Memory cards](#memory-cards)). A fix is planned for 0.5.10.
 
 ## Building from source
 
@@ -259,7 +319,9 @@ by hardware tests. Even so, review it with that origin in mind.
 - [PS-FPGA](https://github.com/PS-FPGA/ps-fpga) GTE by Romain Piquois
   (Laxer3a).
 - [pocket_sotn](https://github.com/akoaysigod/pocket_sotn) by akoaysigod: the
-  memory layout, SDRAM wiring, memory card slot setup and shared CPU multiplier.
+  memory card slot settings, and the idea of which Pocket memory chip holds
+  which part of the console's memory. This core first had the chips the other
+  way round; swapping them was faster.
 - [Mednafen](https://mednafen.github.io/) by the Mednafen team, through
   [Beetle PSX](https://github.com/libretro/beetle-psx-libretro): the video
   decoder's arithmetic, so FMVs match it exactly.

@@ -16,7 +16,7 @@
 // handshake passes to the Pocket.
 //
 // EXP1 map (ext bus address, 13 bits; byte accesses, 8-bit bus):
-//   0x0000-0x0FFF  routine ROM (read; ROM_HEX)
+//   0x0000-0x0FFF  routine ROM (read; bits 31:0 of ROM_HEX)
 //   0x1000-0x17FF  staging page (read/write)
 //   0x1800  read STATUS: [0] copy busy, [1] save requested, [2] load requested
 //           write COMMAND: [0] start a copy, [1] direction (0 page -> buffer,
@@ -37,11 +37,12 @@
 //           DMA bits ORed in, timer flags forced); the routine writes 1, then 0
 //   0x180C  write SPU_HOLD ([0]): stop the SPU at a quiet point (no new
 //           sample); read [0] the SPU is quiet (voice loop idle)
-//   0x180D, 0x180E  write SS_ADR (9 bits): SPU savestate port address,
-//           which is also the staging page word the port word goes through
-//   0x180F  write SS_CMD: [0] read the port word into page word SS_ADR,
-//           [1] write page word SS_ADR to the port; read [0] busy
-//           (the SPU's own savestate port, prepare_save_states.py spu tap)
+//   0x180D  write CD_PUT: set tap 7 with the byte; cd_top writes it into the
+//           CD data FIFO once per tap (the next other register write ends it)
+//   0x180E  write SAVE_MODE ([0]): the routine's stage 2 in SDRAM is reachable
+//   0x180F  write CD_FREEZE ([0]): the CD controller stands still
+//   (no other device; the SPU savestate port is not used, the
+//   save routine restores the SPU by guest register writes)
 //   COMMAND bit 2 (with [1] direction) copies the staging page to or from
 //           SPU RAM instead of the buffer: 1024 halfwords of the 2 KiB SPU
 //           RAM page PAGE_LO, through the SPU's savestate RAM port (only
@@ -53,11 +54,12 @@
 //           (cd_state, prepare_save_states.py cd tap): stat byte, mode,
 //           XA filter file, channel, the last sector read (LBA, 3 bytes) and
 //           [0] busy: a command or a second response or a drive interrupt is
-//           on its way (a command from the routine now would change that)
+//           on its way, or a sector is being copied into the data FIFO (a
+//           command from the routine now would change that)
 //   0x1818, 0x1819  write SIZE_LO, SIZE_HI ([3:0]): the state's size in 2 KiB
 //           pages, which the Pocket copies (savestate_size; 2048 after reset).
 //           Taken over by the APF side with FINISH.
-//   0x1C00-0x1FFF  second routine ROM (read; ROM2_HEX, 1 KiB)
+//   0x1C00-0x1FFF  second routine ROM (read; 1 KiB, bits 39:32 of ROM_HEX)
 // The set/flag taps are state no game can write (or read without clearing):
 // prepare_save_states.py wires them into irq.vhd, dma.vhd and timer.vhd.
 // Reads are combinational from the current address (no read side effects),
@@ -69,13 +71,20 @@
 // are sampled directly; strobes are edge-detected). The APF side is clk_74a
 // with two-flop synchronisers on toggles both ways.
 //
+// APF requests: one at a time; a request while one runs is acked with an
+// error at once (the Pocket waits for every ack). A load that arrives while
+// the Pocket holds the core in reset (core_held: a wake from Sleep, where the
+// Pocket can send the state and the load before it lets the core run, and
+// may wait for the answer first) is answered OK at once and runs when the
+// CPU takes the trap after the reset; until then other requests get errors.
+//
 // Aux port: the copy engine is a client in front of the card slot's aux
 // requests (up_*). A card access waits while a copy word is in flight and
 // vice versa; nothing else changes for the card.
 `default_nettype none
 module psx_save_exp1 #(
-    parameter ROM_HEX = "",
-    parameter ROM2_HEX = "",
+    parameter ROM_HEX = "",     // 1024 x 40 bits: {second ROM byte i, first ROM word i}
+
     parameter [31:0] SAVE_BASE = 32'h3000_0000,
     parameter [31:0] SAVE_SIZE = 32'h0040_0000
 ) (
@@ -87,11 +96,21 @@ module psx_save_exp1 #(
     input  wire [7:0]  bus_dataWrite,
     output reg  [7:0]  bus_dataRead = 8'd0,
     output reg         trap = 1'b0,
-    // hidden-state taps (clk1x side reads them as levels)
-    output reg         set_go = 1'b0,
-    output reg  [10:0] set_irq = 11'd0,
-    output reg  [6:0]  set_dma = 7'd0,
-    output reg  [11:0] set_timer = 12'd0,
+    // SAVE_MODE (0x180E): the CPU's main RAM address bits 22:21 reach the SDRAM
+    // above main RAM (prepare_save_states.py psx_top), where the routine's
+    // stage 2 runs; 0 after reset
+    output reg         save_mode = 1'b0,
+    // CD_FREEZE (0x180F): cd_top's clock enable off (prepare_save_states.py
+    // psx_top): no drive event, command or interrupt while the routine copies
+    // (the Pocket's sector fetch still completes); 0 after reset
+    output reg         cd_freeze = 1'b0,
+    // hidden-state taps (clk1x side reads them as levels): the last of the
+    // 0x1805-0x180A writes (set_sel 1-6: I_STAT 7:0, I_STAT 10:8, DICR
+    // flags, timer 0-2 flags) and its byte, held until the next register
+    // write. The target applies it while it is held (each target ORs or sets
+    // the same bits again on every clock, so how long does not matter).
+    output reg  [2:0]  set_sel = 3'd0,
+    output reg  [7:0]  set_data = 8'd0,
     input  wire [11:0] timer_flags,
     input  wire [62:0] gpu_ranges,
     // SPU tap (clk1x side: strobes are one clk1x cycle)
@@ -142,13 +161,13 @@ module psx_save_exp1 #(
     // the disc in the drive - 1 (multi-disc game files), kept in the state's
     // magic word so a state of another disc does not load
     input  wire [1:0]  disc,
+    // clk_74a: the Pocket holds the core in reset (bridge reset_n low)
+    input  wire        core_held,
     // CD controller state (clk1x levels, read as they are; see 0x1818)
     input  wire [63:0] cd_state
 );
     assign savestate_supported = 1'b1;
     assign savestate_addr = SAVE_BASE;
-    reg [11:0] size_74 = 12'd2048;      // pages, taken with FINISH
-    assign savestate_size = {9'd0, size_74, 11'd0};
     assign savestate_maxloadsize = SAVE_SIZE;
 
     // ------------------------------------------------------------------
@@ -159,23 +178,33 @@ module psx_save_exp1 #(
     (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
     reg [1:0] s74_fin = 2'b00;
     reg fin_seen_74 = 1'b0;
-    wire busy_74 = savestate_start_busy || savestate_load_busy;
+    reg held_load_74 = 1'b0;   // a load answered in reset, not run yet
+    wire busy_74 = savestate_start_busy || savestate_load_busy || held_load_74;
     always @(posedge clk_74a) begin
         start_d <= savestate_start; load_d <= savestate_load;
         savestate_start_ack <= 1'b0; savestate_load_ack <= 1'b0;
         s74_fin <= {s74_fin[0], fin_tgl_2x};
-        if (savestate_start && !start_d && !busy_74) begin
-            savestate_start_ack <= 1'b1; savestate_start_busy <= 1'b1;
-            savestate_start_ok <= 1'b0; savestate_start_err <= 1'b0;
-            req_load_74 <= 1'b0; req_tgl_74 <= !req_tgl_74;
-        end else if (savestate_load && !load_d && !busy_74) begin
-            savestate_load_ack <= 1'b1; savestate_load_busy <= 1'b1;
-            savestate_load_ok <= 1'b0; savestate_load_err <= 1'b0;
-            req_load_74 <= 1'b1; req_tgl_74 <= !req_tgl_74;
+        if (savestate_start && !start_d) begin
+            savestate_start_ack <= 1'b1;   // (a second save while one runs: only acked)
+            if (!busy_74) begin
+                savestate_start_busy <= 1'b1; savestate_start_ok <= 1'b0; savestate_start_err <= 1'b0;
+                req_load_74 <= 1'b0; req_tgl_74 <= !req_tgl_74;
+            end else if (!savestate_start_busy) begin
+                savestate_start_ok <= 1'b0; savestate_start_err <= 1'b1;
+            end
+        end else if (savestate_load && !load_d) begin
+            savestate_load_ack <= 1'b1;   // (a second load while one runs: only acked)
+            if (!busy_74) begin
+                savestate_load_busy <= !core_held; held_load_74 <= core_held;
+                savestate_load_ok <= core_held; savestate_load_err <= 1'b0;
+                req_load_74 <= 1'b1; req_tgl_74 <= !req_tgl_74;
+            end else if (!savestate_load_busy && !held_load_74) begin
+                savestate_load_ok <= 1'b0; savestate_load_err <= 1'b1;
+            end
         end
         if (s74_fin[1] != fin_seen_74) begin
             fin_seen_74 <= s74_fin[1];
-            size_74 <= size_pages;      // set by the routine before FINISH
+            held_load_74 <= 1'b0;
             if (savestate_start_busy) begin
                 savestate_start_busy <= 1'b0; savestate_start_ok <= fin_ok_2x; savestate_start_err <= !fin_ok_2x;
             end
@@ -196,20 +225,24 @@ module psx_save_exp1 #(
     reg [15:0] retry_wait = 16'd0;
     reg [7:0] page_lo = 8'd0; reg [2:0] page_hi = 3'd0;
     reg [11:0] size_pages = 12'd2048;
+    // pages, set by the routine before FINISH and held until the next
+    // request (read on clk_74a as it is; SDC max delay)
+    assign savestate_size = {9'd0, size_pages, 11'd0};
     wire wr_edge = bus_write && !wr_d;
     wire reg_area = bus_addr[12] && bus_addr[11] && bus_addr[10:6] == 5'd0;
     wire page_area = bus_addr[12] && !bus_addr[11];
 
-    // ROM (8-bit, read every clock) and staging page: 8-bit on the bus
-    // side, 32-bit on the copy engine's side (word k = bytes 4k..4k+3)
-    reg [7:0] rom [0:4095];
+    // Both ROMs in one 1024 x 40 ROM (4 M10K in 256 x 40 mode): entry i
+    // holds word i of the first ROM (0x0000-0x0FFF) in bits 31:0 and byte i
+    // of the second (0x1C00-0x1FFF) in bits 39:32, so the second ROM takes
+    // the bits a 32-bit ROM leaves unused. Read every clock; the byte is
+    // picked from the current address like the other sources.
+    reg [39:0] rom [0:1023];
     initial if (ROM_HEX != "") $readmemh(ROM_HEX, rom);
-    reg [7:0] rom_q = 8'd0;
-    always @(posedge clk2x) rom_q <= rom[bus_addr[11:0]];
-    reg [7:0] rom2 [0:1023];
-    initial if (ROM2_HEX != "") $readmemh(ROM2_HEX, rom2);
-    reg [7:0] rom2_q = 8'd0;
-    always @(posedge clk2x) rom2_q <= rom2[bus_addr[9:0]];
+    reg [39:0] rom_q = 40'd0;
+    always @(posedge clk2x) rom_q <= rom[bus_addr[12] ? bus_addr[9:0] : bus_addr[11:2]];
+    wire [7:0] rom2_q = rom_q[39:32];
+    wire [7:0] rom1_q = rom_q[8*bus_addr[1:0] +: 8];
     wire [7:0] page_q;
     // page word cp_word, valid from the second clk2x edge after it is set:
     // aux_req and spuram_req are registered, so a request started on the
@@ -226,42 +259,26 @@ module psx_save_exp1 #(
         .clock_b(clk2x), .clken_b(1'b1), .address_b(cp_word), .data_b(cp_wd), .wren_b(cp_we), .q_b(cp_q));
 
     reg cp_busy = 1'b0;
-    wire [63:0] gpu_bytes = {1'b0, gpu_ranges};
-    // SPU savestate port: a command toggles to clk1x, which pulses the strobe
-    // for one clk1x cycle and toggles back (clk1x and clk2x share the PLL);
-    // read data goes into the page word when the toggle is back
-    reg ss_tgl = 1'b0, ss_wr = 1'b0, ss_seen1 = 1'b0, ss_ack1 = 1'b0, ss_ack2 = 1'b0, ss_ack3 = 1'b0;
-    wire ss_busy = ss_tgl != ss_ack3;
-    wire ss_store = ss_ack2 != ss_ack3 && !ss_wr;
-    // The SPU's context RAMs sample this address on the falling clk1x edge:
-    // hand it over in a clk1x register (cp_word is set by SS_ADR writes
-    // several bus cycles before the SS_CMD write that pulses the strobe).
-    reg [8:0] ss_adr_1x = 9'd0;
-    always @(posedge clk1x) ss_adr_1x <= cp_word;
-    assign spu_ss_adr = ss_adr_1x;
-    assign spu_ss_wdata = cp_q;
-    always @(posedge clk1x) begin
-        spu_ss_rden <= 1'b0; spu_ss_wren <= 1'b0;
-        if (ss_tgl != ss_seen1) begin
-            ss_seen1 <= ss_tgl;
-            if (ss_wr) spu_ss_wren <= 1'b1; else spu_ss_rden <= 1'b1;
-        end
-        ss_ack1 <= ss_seen1;   // the strobe's clk1x edge has passed
-    end
+    // the SPU savestate port is unused (constant outputs)
+    assign spu_ss_adr = 9'd0;
+    assign spu_ss_wdata = 32'd0;
+    always @(posedge clk1x) begin spu_ss_rden <= 1'b0; spu_ss_wren <= 1'b0; end
+    // register reads: one 16-way byte select over {CD state, GPU ranges}
+    // (0x1810-0x181F) and the 0x1800-0x180F registers
+    wire [127:0] tap_bytes = {cd_state, 1'b0, gpu_ranges};
+    wire [7:0] tap_q = tap_bytes[8*bus_addr[3:0] +: 8];
     always @(*) begin
-        if (reg_area && bus_addr[4] && bus_addr[3]) bus_dataRead = cd_state[8*bus_addr[2:0] +: 8];
-        else if (reg_area && bus_addr[4]) bus_dataRead = gpu_bytes[8*bus_addr[2:0] +: 8];
+        if (reg_area && bus_addr[4]) bus_dataRead = tap_q;
         else if (reg_area) case (bus_addr[3:0])
             4'd8:    bus_dataRead = {4'd0, timer_flags[3:0]};
             4'd9:    bus_dataRead = {4'd0, timer_flags[7:4]};
             4'd10:   bus_dataRead = {4'd0, timer_flags[11:8]};
             4'd11:   bus_dataRead = {6'd0, disc};
             4'd12:   bus_dataRead = {7'd0, spu_quiet};
-            4'd15:   bus_dataRead = {7'd0, ss_busy};
             default: bus_dataRead = {5'd0, want_load, want_save, cp_busy};
         endcase
         else if (bus_addr[12] && bus_addr[11] && bus_addr[10]) bus_dataRead = rom2_q;
-        else bus_dataRead = bus_addr[12] ? page_q : rom_q;
+        else bus_dataRead = bus_addr[12] ? page_q : rom1_q;
     end
 
     // ------------------------------------------------------------------
@@ -298,24 +315,18 @@ module psx_save_exp1 #(
     assign up_dout  = aux_dout;
     assign up_done  = up_go && aux_done;
 
-    // page writes of the copy engine: a buffer word, two SPU RAM halfwords,
-    // an SPU port word
+    // page writes of the copy engine: a buffer word, two SPU RAM halfwords
     wire buf_store = own_req && aux_done && cp_dir;
     wire sp_store = sp_st == SP_WAIT && sp_done && spuram_rnw && sp_hi;
-    assign cp_we = buf_store || sp_store || ss_store;
-    always @(*) begin
-        if (cp_st == CP_AUX) cp_wd = aux_dout;
-        else if (sp_st != CP_IDLE) cp_wd = {sp_q1, sp_lo};
-        else cp_wd = spu_ss_rdata;
-    end
+    assign cp_we = buf_store || sp_store;
+    always @(*) cp_wd = cp_st == CP_AUX ? aux_dout : {sp_q1, sp_lo};
 
     always @(posedge clk2x) begin
         s2x_req <= {s2x_req[0], req_tgl_74};
-        ss_ack2 <= ss_ack1; ss_ack3 <= ss_ack2;
         sp_done2 <= sp_done1; sp_done3 <= sp_done2;
         wr_d <= bus_write;
         if (reset_2x) begin
-            trap <= 1'b0; want_save <= 1'b0; want_load <= 1'b0; set_go <= 1'b0; retry_wait <= 16'd0;
+            trap <= 1'b0; want_save <= 1'b0; want_load <= 1'b0; set_sel <= 3'd0; retry_wait <= 16'd0; save_mode <= 1'b0; cd_freeze <= 1'b0;
             cp_busy <= 1'b0; cp_st <= CP_IDLE; own_req <= 1'b0; up_go <= 1'b0;
             spu_hold <= 1'b0; sp_st <= CP_IDLE;
         end else begin
@@ -328,9 +339,16 @@ module psx_save_exp1 #(
                 retry_wait <= retry_wait - 1'b1;
                 if (retry_wait == 16'd1) trap <= 1'b1;
             end
+            if (wr_edge && reg_area && !bus_addr[4] && bus_addr[3:0] == 4'd14) save_mode <= bus_dataWrite[0];
+            if (wr_edge && reg_area && !bus_addr[4] && bus_addr[3:0] == 4'd15) cd_freeze <= bus_dataWrite[0];
             if (wr_edge && reg_area && bus_addr[4] && bus_addr[3:1] == 3'd4) begin
                 if (bus_addr[0]) size_pages[11:8] <= bus_dataWrite[3:0];
                 else size_pages[7:0] <= bus_dataWrite;
+            end
+            if (wr_edge && reg_area && !bus_addr[4]) begin
+                set_sel <= bus_addr[3:0] >= 4'd5 && bus_addr[3:0] <= 4'd10 ? bus_addr[2:0] - 3'd4 :
+                           bus_addr[3:0] == 4'd13 ? 3'd7 : 3'd0;
+                set_data <= bus_dataWrite;
             end
             if (wr_edge && reg_area && !bus_addr[4]) case (bus_addr[3:0])
                 4'd0: if (bus_dataWrite[0] && !cp_busy) begin
@@ -348,17 +366,7 @@ module psx_save_exp1 #(
                           fin_tgl_2x <= !fin_tgl_2x; want_save <= 1'b0; want_load <= 1'b0; trap <= 1'b0;
                       end
                 4'd4: trap <= 1'b0;
-                4'd5: set_irq[7:0] <= bus_dataWrite;
-                4'd6: set_irq[10:8] <= bus_dataWrite[2:0];
-                4'd7: set_dma <= bus_dataWrite[6:0];
-                4'd8: set_timer[3:0] <= bus_dataWrite[3:0];
-                4'd9: set_timer[7:4] <= bus_dataWrite[3:0];
-                4'd10: set_timer[11:8] <= bus_dataWrite[3:0];
-                4'd11: set_go <= bus_dataWrite[0];
                 4'd12: spu_hold <= bus_dataWrite[0];
-                4'd13: cp_word[7:0] <= bus_dataWrite;
-                4'd14: cp_word[8] <= bus_dataWrite[0];
-                4'd15: if (!ss_busy && bus_dataWrite[1:0] != 2'd0) begin ss_wr <= bus_dataWrite[1]; ss_tgl <= !ss_tgl; end
                 default: ;
             endcase
 

@@ -41,7 +41,7 @@ def main():
     parser.add_argument('--save-states', action='store_true', help='The bitstream has save states (prepare --save-states): core.json sleep_supported, so Sleep and Memories use them')
     parser.add_argument('--bios-check', action='store_true', help='Chip32 loader: a message naming the BIOS file and folder when it is missing, not 512 KB or not a USA BIOS (support/chip32/psx_bios_check.asm)')
     parser.add_argument('--bios-names', action='store_true', help='With --bios-check: also accept other BIOS file names, one slot each from 0x20 (prepare --bios-names)')
-    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='prepare --disc-menu: declare discs 2..DISCS (slots n01, n02, ...; tracks per extra disc as the 32-slot table allows) and the "Swap Discs" menu list')
+    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='prepare --disc-menu: declare discs 2..DISCS (slots n01, n02, ...; tracks per extra disc as the 32-slot table allows; 5 with --cue-mount: disc 5 has no slots) and the "Swap Discs" menu list')
     parser.add_argument('--libcrypt', action='store_true', help='Declare data slot 99 for a disc\'s LibCrypt .sbi (prepare --libcrypt; make_pocket_instances.py fills it)')
     parser.add_argument('--stick-settings', action='store_true', help='Menu lists "D-Pad" and "SELECT + D-Pad" and the stick options of "SELECT + A/B/X/Y" (prepare --stick-settings; needs --dualshock --shoulder-setting)')
     parser.add_argument('--dualshock', action='store_true', help='Menu checkbox "Enable DualShock" (prepare --dualshock, bridge 0x50000040, on by default) and the analog notes in info.txt')
@@ -52,7 +52,8 @@ def main():
     parser.add_argument('--one-file-disc', action='store_true', help='prepare --one-file-disc: disc n is one .bin in slot 100*n+1 and its track table (.trk) in 100*n+2 (make_pocket_instances.py merges track files)')
     parser.add_argument('--multi-track', type=int, default=0, help='Discs as instance JSONs: cue slot 100, track bins 101..100+N (prepare --multi-track N)')
     parser.add_argument('--logo-skip-setting', action='store_true', help='Menu checkbox "Skip BIOS Logo" (prepare --logo-skip-setting)')
-    parser.add_argument('--turbo-setting', action='store_true', help='Menu list "Turbo Mode": Off (default) / On (scripts/prepare_turbo_setting.py, bridge 0x50000080)')
+    parser.add_argument('--turbo-setting', action='store_true', help='Menu checkbox "Turbo Mode": off (default) / on (scripts/prepare_turbo_setting.py, bridge 0x50000080)')
+    parser.add_argument('--disc-readback', action='store_true', help='With --disc-menu: the bitstream has the Swap Discs read path (scripts/prepare_save_disc_readback.py), so the setting is not writeonly and the menu follows a Memory load\'s disc switch. Never without that RTL')
     parser.add_argument('--restart-game', action='store_true', help='Core Settings action "Restart Game" (scripts/prepare_restart_game.py, bridge 0x50000088): resets the console, keeping the disc')
     parser.add_argument('--fast-bios-setting', action='store_true', help='Menu checkbox "Fast BIOS Boot" (scripts/prepare_fast_bios.py, bridge 0x50000070)')
     parser.add_argument('--field-swap-setting', action='store_true', help='Menu checkbox to swap the 480i field order (prepare --field-swap-setting)')
@@ -211,9 +212,14 @@ def main():
             # (make_pocket_instances.py groups "(Disc n)" cues); track k of
             # disc n in slot 100*n+k. APF tables hold 32 slots, so later
             # discs get the tracks that remain (most multi-disc games have one).
+            # Disc 5 (--cue-mount only) has no slots: the cue reader finds it
+            # by its "(Disc 5)" name or a .m3u, and the stream reads it
+            # through disc 1's slots, so no BIOS name loses its slot.
+            if args.disc_menu > 5 or (args.disc_menu == 5 and not args.cue_mount): parser.error('--disc-menu: 2-4 discs, or 5 with --cue-mount')
+            slot_discs = min(args.disc_menu, 4)
             free = 32 - len(slots) - 1 - (1 if args.memcard_slot else 0) - (1 if args.boot_log else 0) - (1 if lc_slot else 0) - (1 if args.cheats else 0)
-            per_disc = max(1, free // (args.disc_menu - 1))
-            for n in range(2, args.disc_menu + 1):
+            per_disc = max(1, free // (slot_discs - 1))
+            for n in range(2, slot_discs + 1):
                 if args.one_file_disc: slots += disc_slots(n, f'Disc {n} '); continue
                 slots += [{'name': f'Disc {n} track {k}', 'id': 100*n+k, 'required': False, 'parameters': '0x08', 'deferload': True,
                            'extensions': ['bin'], 'size_maximum': '0x40000000'} for k in range(1, per_disc+1)]
@@ -244,17 +250,17 @@ def main():
             'nonvolatile': True, 'filename': f'boot-log{args.variant.lower()}.bin', 'extensions': ['bin'],
             'size_maximum': 28672, 'address': '0x40000000'})
     if args.memcard_slot:
-        # Memory card 1 (prepare --memcard-slot): 128 KiB raw card image,
-        # loaded into the core at start and saved back when it quits, as
-        # pocket_sotn's PSXPort does (parameters 0xA4: nonvolatile, created on
-        # first start, core restarted after a reload). Second in the list:
-        # the core writes its size into data-table entry 3, the boot log's
-        # into entry 5.
-        slots.insert(1, {'name': 'Memory Card 1', 'id': 0x10, 'required': False, 'parameters': '0xA4',
-            'nonvolatile': True, 'extensions': ['sav'], 'size_maximum': '0x20000', 'address': '0x20000000'})
-        # The card is named after the launch pick: Saves/<platform>/<core>/
-        # <json>.sav for a game JSON, Saves/<platform>/common/<folder>/<file>.sav
-        # for a .cue or .bin (probe PSXLaunchB).
+        # Memory card 1 (prepare --memcard-slot, psx_memcard_slot at
+        # MEMCARD_BASE): one PS1 card, 128 KiB, kept by the Pocket as a .sav.
+        # Id 16 is what game files (make_pocket_instances.py, the plugin)
+        # name for the card. Second in the list: the core reads the card size
+        # from data-table entry 3 (id, size pairs in data.json order).
+        # parameters 0xA4: the save takes the launched file's name (bit 2),
+        # a missing save starts as a blank 0xFF-filled card (bit 5; the slot
+        # then formats it) and the core restarts around a reload (bit 7).
+        from prepare_pocket_early import MEMCARD_BASE
+        slots.insert(1, {'name': 'Memory Card 1', 'id': 16, 'required': False, 'parameters': '0xA4',
+            'nonvolatile': True, 'extensions': ['sav'], 'size_maximum': 0x20000, 'address': f'0x{MEMCARD_BASE:08X}'})
     if args.cue_mount:
         # A game JSON (0.5.2's layout) may put a track's .bin in 101-104 or
         # n01-n02; 105-119 are not declared (2026-10-17: the slots go
@@ -357,9 +363,8 @@ def main():
         if 'turbo_en' not in qsf_text and not (project/'turbo-setting').is_dir() and \
                 not any(c.is_file() and 'turbo_en' in c.read_text() for c in cores):
             parser.error('--turbo-setting: this project was not prepared with --turbo-setting')
-        variables.append({'name': 'Turbo Mode', 'id': 42, 'type': 'list', 'enabled': True, 'persist': True,
-                          'writeonly': True, 'address': '0x50000080', 'defaultval': 0,
-                          'options': [{'value': 0, 'name': 'Off'}, {'value': 1, 'name': 'On'}]})
+        variables.append({'name': 'Turbo Mode', 'id': 42, 'type': 'check', 'enabled': True, 'persist': True,
+                          'writeonly': True, 'address': '0x50000080', 'defaultval': 0, 'value': 1, 'value_off': 0})
     if args.analog_setting:
         if not args.dualshock: parser.error('--analog-setting needs --dualshock')
         # prepare --analog-setting: always a DualShock; Digital or Analog mode,
@@ -486,8 +491,11 @@ def main():
         # prepare --disc-menu: remembered, so a game resumed on disc 2 starts
         # there (swapped before anything reads the disc); a game without that
         # disc falls back to disc 1.
+        # Persisted per core (owner, 2026-11-12): a pick carries over to the next game; per-game memory is after 0.5.9.
         variables.append({'name': 'Swap Discs', 'id': 21, 'type': 'list', 'enabled': True, 'persist': True,
-                          'writeonly': True, 'address': '0x50000044', 'defaultval': 0,
+                          # writeonly only without the core's read path (prepare_save_disc_readback.py): the
+                          # Pocket reads a readable setting back, and a core answering 0 snaps the menu to Disc 1
+                          'writeonly': not args.disc_readback, 'address': '0x50000044', 'defaultval': 0,
                           'options': [{'value': n, 'name': f'Disc {n+1}'} for n in range(args.disc_menu)]})
     if args.restart_game:
         # scripts/prepare_restart_game.py: an action (no value kept); the
@@ -498,7 +506,13 @@ def main():
     # Game, Swap Discs, Skip BIOS Logo, Cheats), then the picture, then the controller
     # (its mode, then the button lists in their 2026-10-17 order). Ids and
     # values stay as they were, so saved settings and game files still work.
-    MENU_ORDER = (44, 21, 2, 36, 42, 30, 27, 43, 35, 32, 34, 29, 31, 1, 3, 28, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
+    # Owner, 2026-11-11: Controller Mode directly under Fast BIOS Boot; the four plain
+    # button lists carry "Mapping" in their names (ids, addresses, values unchanged).
+    # Owner, 2026-11-12 (test40): Skip BIOS Logo, Fast BIOS Boot, Controller Mode, Turbo Mode.
+    MENU_ORDER = (44, 21, 2, 36, 28, 42, 30, 27, 43, 35, 32, 34, 29, 31, 1, 3, 20, 4, 5, 22, 24, 6, 25, 26, 8, 33)
+    MAPPING_NAMES = {4: 'Mapping: L Button', 5: 'Mapping: R Button', 22: 'Mapping: D-Pad', 24: 'Mapping: A/B/X/Y'}
+    for v in variables:
+        if v['id'] in MAPPING_NAMES and v['type'] == 'list': v['name'] = MAPPING_NAMES[v['id']]
     variables.sort(key=lambda v: MENU_ORDER.index(v['id']))
     write('interact.json', {'interact': {'magic': 'APF_VER_1', 'variables': variables, 'messages': []}})
     write('variants.json', {'variants': {'magic': 'APF_VER_1', 'variant_list': []}})

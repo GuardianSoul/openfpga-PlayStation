@@ -24,9 +24,9 @@ def top():
     assign memcard_load_done=(bios_go);
     core_bridge_cmd commands (.clk(clk_74a),.reset_n(reset_n));
     wire mc_aux_req,mc_aux_we,mc_aux_addr,mc_aux_din,mc_aux_dout,mc_aux_done,mc_card_write;
-    psx_memcard_slot memcard_slot (.clk_74a(clk_74a),.clk2x(clk2x),.reset_2x(mc_reset2x[1]),
+    psx_memcard_slot memcard_slot (.clk_74a(clk_74a),.clk2x(clk2x),.reset_2x(mc_reset2x[1]),.overflow_clear(1'b0),
         .busy(mc_busy),.load_done(memcard_load_done),.bridge_addr(bridge_addr),.bridge_wr(bridge_wr),
-        .bridge_wr_data(bridge_wr_data),.bridge_rd(bridge_rd),.bridge_rd_data(memcard_rd_data),.overflow(),
+        .bridge_wr_data(bridge_wr_data),.bridge_rd(bridge_rd),.bridge_rd_data(memcard_rd_data),.overflow(memcard_overflow),
         ''' + shared + ''');
     psx_vram_psram vram (.clk(clk2x),.reset(!cpu_locked),.park(vram_park),''' + shared + ''');
 endmodule
@@ -35,7 +35,7 @@ endmodule
 
 class CleanMemoryCDC(unittest.TestCase):
     def test_preserve_only_existing_sync_attributes(self):
-        for path, sha, card, count in (('rtl/pocket/psx_memcard_slot.sv', CARD_SHA, True, 5),
+        for path, sha, card, count in (('rtl/pocket/psx_memcard_slot.sv', CARD_SHA, True, 6),
                                        ('rtl/memory/psx_vram_psram.sv', VRAM_SHA, False, 1)):
             raw = (ROOT / path).read_text()
             out = preserved(raw, sha, card=card)

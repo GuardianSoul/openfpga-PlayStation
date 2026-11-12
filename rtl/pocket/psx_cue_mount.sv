@@ -54,7 +54,7 @@ module psx_cue_mount #(
     input wire clk, reset,
     input wire in_menu,                          // core_bridge_cmd osnotify_inmenu
     input wire allcomplete,                      // APF: every slot loaded
-    input wire [1:0] disc_setting,               // the core menu's Disc (number - 1; 0 without --disc-menu)
+    input wire [2:0] disc_setting,               // the core menu's Disc (number - 1; 0 without --disc-menu)
     output reg s_allcomplete=0,                  // the stream's: after a launch pick is mounted
     // APF bridge
     input wire bridge_wr, bridge_rd,
@@ -178,7 +178,7 @@ module psx_cue_mount #(
     // (DISC_STEP 100) every disc slot n01 (table n02) shows the firmware's
     // disc; a new menu Disc holds the stream's table lookups until the
     // firmware has loaded that disc, so the stream mounts the one it asked for.
-    reg [1:0] fw_disc=0;
+    reg [2:0] fw_disc=0;
     wire menu_hold=view_disc && disc_setting!=fw_disc;
     assign table_grant=!menu_hold;
     reg cmd_busy=0, cmd_low=0; reg [2:0] cmd_err=0;
@@ -186,12 +186,14 @@ module psx_cue_mount #(
     reg menu_seen=0;   // the menu was open since the firmware last cleared this
     // I/O reads: SERV holds the address until ack, so the value can be
     // combinational in the ack clock.
-    // Slots are below 512 and the stream's reads at most 2,352 bytes.
+    // Slots are below 512 and the stream's reads at most 2,352 bytes. Slot
+    // offsets are below 1 GiB, so the offset word's bit 31 carries the menu
+    // Disc's bit 2 (Disc 5), with no extra read mux.
     (* async_reg="true" *) reg [1:0] ch_ack_s=0, vbl_s=0;
     always @(posedge clk) begin ch_ack_s<={ch_ack_s[0],ch_ack}; vbl_s<={vbl_s[0],vbl_tgl}; end
     wire [31:0] cheat_q={ch_tgl!=ch_ack_s[1],vbl_s[1],cheats_on,13'd0,ch_q};
     assign ch_rnw=fw_len[12], ch_byte=fw_off[16], ch_addr={fw_len[11:0],fw_id}, ch_data=fw_off[15:0];
-    wire [31:0] io_q=CHEATS!=0 && adr[3] ? cheat_q : adr[2] ? u_offset : {LIBCRYPT!=0,u_length[11:0],u_id[8:0],disc_setting,menu_hold,boot_pending,upd_pending,u_busy,cmd_busy,cmd_err};
+    wire [31:0] io_q=CHEATS!=0 && adr[3] ? cheat_q : adr[2] ? {disc_setting[2],u_offset[30:0]} : {LIBCRYPT!=0,u_length[11:0],u_id[8:0],disc_setting[1:0],menu_hold,boot_pending,upd_pending,u_busy,cmd_busy,cmd_err};
     assign db_rdt=io ? io_q : a_q;
     assign d_id={7'd0,fw_id};
     assign d_offset=fw_off;
@@ -260,7 +262,7 @@ module psx_cue_mount #(
                 3'd5: begin
                     s_allcomplete<=db_dat[0];cue_mounted<=db_dat[1];mount_failed<=db_dat[2];
                     view_disc<=db_dat[3];view_table<=db_dat[4];fw_idle<=db_dat[5];accept_any<=db_dat[6];
-                    fw_disc<=db_dat[9:8];
+                    fw_disc<=db_dat[10:8];
                 end
                 3'd6: disc_bytes<=db_dat;
                 default: begin

@@ -10,7 +10,7 @@ The source-bound cache profile can also share those additions. No defaults.
 import hashlib
 from pathlib import Path
 CPU_SHA256='a4bd035801471eb0dff3dd9580821fbeae439e959ab4c97d413390cfff227af0'
-CACHE_CPU_SHA256='3ddea0f071ceebae45e5405c542b6dbcce631dd837e0ad171a563cad4c31ef04'
+CACHE_CPU_SHA256='5a120b69e4d9df3e1b047faf6a2480bede66030e1537ab8b5ab14a57810657ed'
 FUNCTIONS='''
    -- Combinational execute sharing; consumer edge and pipeline are unchanged.
    function pocket_addsub(a, b : unsigned(31 downto 0); subtract : std_logic)

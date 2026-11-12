@@ -503,13 +503,17 @@ class SdCardPage(unittest.TestCase):
     def test_folder_discs_match_the_script(self):
         # Discs grouped by their folder, the folders that stay apart and the
         # disc warnings, as the script does them, for both core kinds.
-        for reader in (False, True):
+        for reader in (False, True, 5):
             with self.subTest(reader=reader), TemporaryDirectory() as tmp:
                 script, page = Path(tmp)/'script', Path(tmp)/'page'
                 if reader:
                     cue_reader_card(script)
                     declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
                     (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+                    if reader == 5:   # 0.5.9: a five-disc Swap Discs list (disc 5 has no slots)
+                        (script/'Cores'/CORE/'interact.json').write_text(json.dumps({'interact': {'variables': [
+                            {'name': 'Swap Discs', 'id': 21, 'type': 'list', 'address': '0x50000044',
+                             'options': [{'value': n, 'name': f'Disc {n+1}'} for n in range(5)]}]}}))
                 else:
                     make_card(script)
                 folder_discs(script/'Assets/playstation/common')
@@ -526,7 +530,11 @@ class SdCardPage(unittest.TestCase):
                 self.assertIn('warning: Spread: its discs are in different folders', js.stdout)
                 out = page/'Assets/playstation'/CORE
                 self.assertTrue((out/'Lost.json').exists())
-                self.assertEqual((out/'Riven.json').exists(), reader)   # the older core takes 2 files of disc 2
+                self.assertEqual((out/'Riven.json').exists(), bool(reader))   # the older core takes 2 files of disc 2
+                # Five discs in one folder: one game on a five-disc core, a file each otherwise.
+                self.assertEqual((out/'Five.json').exists(), reader == 5)
+                self.assertEqual((out/'cd5.json').exists(), reader != 5)
+                if reader == 5: self.assertIn('Five: 5 discs in one folder, grouped as one game', js.stdout)
                 self.assertFalse((out/'disc1.json').exists())
                 self.assertTrue((out/'Gran Turismo 2 (USA).json').exists())
                 for region in ('USA', 'Europe'):

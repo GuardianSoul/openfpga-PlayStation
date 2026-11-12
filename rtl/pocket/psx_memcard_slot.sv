@@ -24,13 +24,27 @@
 //   and is freed by the take toggle that clk2x returns on aux_done. A strobe
 //   that arrives while it is still busy is dropped and sets the sticky
 //   `overflow` (data lost: a write, or a read answer that came too late).
+//   overflow clears with reset_2x, or when a one-clk2x overflow_clear pulse
+//   arrives (toggled on clk2x, synchronised into clk_74a; a drop on the same
+//   clk_74a edge as the clear still sets it). One known way to get there: an aux
+//   access that waits for the VRAM controller to park or unpark (about
+//   0.7 / 1.3 us, longer than one 88-clock bridge transaction). The APF host
+//   sends reset commands and data slot transactions one after the other, so
+//   the real Pocket should not overlap them.
 // * Reads (APF save readback): the bridge buffers reads by one word: each
 //   read transaction samples bridge_rd_data (the answer to the PREVIOUS read)
 //   four clocks after the address is complete and then pulses bridge_rd for
 //   the new address. When the take toggle of a read returns, aux_dout (held
-//   by the VRAM controller until its next aux read, which only this block
-//   starts) is loaded into bridge_rd_data, a plain clk_74a register driving
-//   the top's mux. Analogue states the fastest bridge transaction rate as one
+//   by the VRAM controller until its next aux read completes) is loaded into
+//   bridge_rd_data, a plain clk_74a register driving the top's mux. With
+//   save states the save device shares the aux port and its copy engine can
+//   start that next read, so the hold does not rest on this block: the
+//   capture comes at most 1 clk2x + 3 clk_74a (about 56 ns) after aux_dout
+//   is loaded; the next aux read starts no earlier than the clock after
+//   aux_done and needs at least 4 more clk2x (this bench's shortest aux
+//   access), so aux_dout holds about 18 ns past the capture at worst, more
+//   than the 13 ns bound below. Measured in the chained save-device bench:
+//   stable at least 71 ns before and 112 ns after the capture. Analogue states the fastest bridge transaction rate as one
 //   per 88 clk_74a cycles (io_bridge_peripheral.v header). Strobe to
 //   bridge_rd_data takes about ten clk_74a cycles plus the aux latency; the
 //   bench shows every aux access up to 70 clk2x is safe at that rate (the
@@ -103,9 +117,11 @@
 // clk2x -> clk_74a, two-flop synchronisers:
 //   rst_req_2x   -> s74_rst[0], s74_rst[1]     reset request
 //   take_tgl_2x  -> s74_take[0], s74_take[1]   access finished
+//   clr_tgl_2x   -> s74_clr[0], s74_clr[1]     overflow clear
 // clk2x -> clk_74a, bundled data (the VRAM controller's aux_dout register,
 // loaded on the edge that raises aux_done, one clock before take_tgl_2x
-// toggles, unchanged until the next aux read, which needs a new request):
+// toggles, unchanged until the next aux read completes, at least 5 clk2x
+// after aux_done whichever block starts it; see Reads above):
 //   psx_vram_psram aux_dout[31:0] -> bridge_rd_data[31:0]
 // Every other register stays in one domain. `overflow` is a clk_74a register.
 `default_nettype none
@@ -126,6 +142,7 @@ module psx_memcard_slot #(
 
     input  wire        clk2x,
     input  wire        reset_2x,
+    input  wire        overflow_clear,   // clk2x one-clock pulse: clear overflow
     output reg         busy = 1'b1,
     output reg         aux_req = 1'b0,
     output wire        aux_we,
@@ -166,6 +183,10 @@ module psx_memcard_slot #(
     reg [1:0] s74_rst = 2'b11;
     (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
     reg [1:0] s74_take = 2'b00;
+    (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
+    reg [1:0] s74_clr = 2'b00;
+    reg        clr_seen_74 = 1'b0;
+    reg        clr_tgl_2x = 1'b0;    // clk2x: toggles on overflow_clear
     reg        req_tgl_74 = 1'b0, ready_tgl_74 = 1'b0, ready_74 = 1'b0, take_seen_74 = 1'b0;
     reg        req_we_74 = 1'b0;
     reg [20:0] req_addr_74 = 21'd0;   // [20] save window, else card word in [14:0]
@@ -185,10 +206,13 @@ module psx_memcard_slot #(
         s74_take <= {s74_take[0], take_tgl_2x};
         s74_rst  <= {s74_rst[0],  rst_req_2x};
         take_seen_74 <= s74_take[1];
+        s74_clr <= {s74_clr[0], clr_tgl_2x};
+        clr_seen_74 <= s74_clr[1];
         if (rdv_edge) bridge_rd_data <= (BRIDGE_LITTLE != 0) ? aux_dout : swap32(aux_dout);
         if (rst_74) begin
             req_tgl_74 <= 1'b0; ready_tgl_74 <= 1'b0; ready_74 <= 1'b0; overflow <= 1'b0;
         end else begin
+            if (s74_clr[1] != clr_seen_74) overflow <= 1'b0;
             if ((wr_strobe || rd_strobe) && pending) overflow <= 1'b1;
             if (req_accept) begin
                 req_we_74 <= wr_strobe;
@@ -231,6 +255,7 @@ module psx_memcard_slot #(
     assign aux_din  = own ? blank_word(fmt_idx) : req_data_74;
 
     always @(posedge clk2x) begin
+        if (overflow_clear) clr_tgl_2x <= !clr_tgl_2x;
         s2x_req   <= {s2x_req[0],   req_tgl_74};
         s2x_ready <= {s2x_ready[0], ready_74};
         s2x_rack  <= {s2x_rack[0],  rst_74};

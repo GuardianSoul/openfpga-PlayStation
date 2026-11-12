@@ -173,7 +173,7 @@ class ResetRelease(unittest.TestCase):
                 released.replace(menu, menu.replace('disc_menu (', 'other (')),
                 released.replace(".FIRST_SLOT(16'd101)", '.FIRST_SLOT(first_slot)'),
                 released.replace(".STEP(16'd100)", ".STEP(16'd1)"),
-                released.replace('.DISCS(4)', '.DISCS(5)'),
+                released.replace('.DISCS(4)', '.DISCS(3)'),
                 released + '\nassign unknown_reset=cd_stream_reset;\n',
                 changed):
             with self.subTest(top=bad):

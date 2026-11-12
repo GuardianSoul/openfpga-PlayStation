@@ -116,7 +116,7 @@ disc, quit the game and launch it again.
 
 Discs whose names don't say "(Disc N)", such as a cheat disc you want to use
 with several games, can be one game through a playlist. Make a `.m3u` in
-`Assets/playstation/common/` with one `.cue` per line (up to four, paths
+`Assets/playstation/common/` with one `.cue` per line (up to five, paths
 relative to the `.m3u`), for example the cheat disc first and the game second,
 then generate game files: the playlist gets a game file of its own name, and
 Swap Discs picks its discs in that order.

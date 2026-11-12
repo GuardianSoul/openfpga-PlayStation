@@ -202,13 +202,17 @@ class PocketPlugin(unittest.TestCase):
 
     def test_folder_discs_match_the_script(self):
         # Discs grouped by folder, folders that stay apart and the disc warnings.
-        for reader in (False, True):
+        for reader in (False, True, 5):
             with self.subTest(reader=reader), TemporaryDirectory() as tmp:
                 script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
                 if reader:
                     cue_reader_card(script)
                     declared = [dict(s, extensions=['cue', 'm3u']) if s['id'] == 100 else s for s in CUE_READER]
                     (script/'Cores'/CORE/'data.json').write_text(json.dumps({'data': {'magic': 'APF_VER_1', 'data_slots': declared}}))
+                    if reader == 5:   # 0.5.9: a five-disc Swap Discs list (disc 5 has no slots)
+                        (script/'Cores'/CORE/'interact.json').write_text(json.dumps({'interact': {'variables': [
+                            {'name': 'Swap Discs', 'id': 21, 'type': 'list', 'address': '0x50000044',
+                             'options': [{'value': n, 'name': f'Disc {n+1}'} for n in range(5)]}]}}))
                 else:
                     make_card(script)
                 folder_discs(script/'Assets/playstation/common')
@@ -218,6 +222,7 @@ class PocketPlugin(unittest.TestCase):
                 out_dir = plugin/'Assets/playstation'/CORE
                 self.assertTrue((out_dir/'Parasite Eve II (USA).json').exists())
                 self.assertTrue((out_dir/'Parasite Eve II (Europe).json').exists())
+                self.assertEqual((out_dir/'Five.json').exists(), reader == 5)   # five discs in one folder
 
     def test_cue_reader_core_matches_the_script(self):
         # --cue-mount core: merged and multi-file discs need no converting.

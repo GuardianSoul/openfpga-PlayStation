@@ -14,7 +14,9 @@ def find_tool(name):
         'iverilog': 'build/tools/iverilog/bin/iverilog',
         'vvp': 'build/tools/iverilog/bin/vvp',
         'ghdl': 'build/tools/ghdl/ghdl-mcode-6.0.0-ubuntu24.04-x86_64/bin/ghdl',
-        'quartus_sh': 'build/tools/quartus-lite/25.1/quartus/bin/quartus_sh',
+        # Quartus Standard 25.1 in its default per-user place (ROOT / an absolute path is that path).
+        'quartus_sh': str(Path.home() / 'altera/25.1std/quartus/bin/quartus_sh'),
+        'tclsh': str(Path.home() / 'altera/25.1std/quartus/bin/tclsh'),
         'verilator': 'build/tools/oss-cad-suite/bin/verilator',
     }
     if name in locations:

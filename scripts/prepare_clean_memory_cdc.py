@@ -17,13 +17,15 @@ from prepare_pocket_config_cdc import assignments
 from prepare_resource_targets import digest
 from tool_paths import ROOT
 
-CARD_SHA = '9eda6aa00f8223ac1285e20e84a48137e13276b55d7fb4e57315be064cf92712'
-VRAM_SHA = 'f71e8e6a85ae3e979b067fc795cb9d66ccb176daf0f85756c77d32abe53dae84'
+CARD_SHA = 'b14bfacb4b9684f08962b5b491d8d58e4bad09a9d7195a361ffe7787656e081e'
+# psx_vram_psram.sv with the parked aux access taking die and address from aux_adr
+# (1838edfc, Sleep wake); the synchronisers this step preserves are unchanged from f71e8e6a...
+VRAM_SHA = '781147a59dc893836428397423646a15217f636ea08ebcb3bef5684e6f8cec06'
 COMMAND_SHA = '4f558ed91203ce733187bc9c3d72cf6450102e08f25da83a927a7a59e001fcc5'
 TOP_OLD = '    (* async_reg="true" *) reg [1:0] mc_idle74=0;'
 TOP_NEW = TOP_OLD.replace('async_reg="true"', 'async_reg="true", preserve, dont_merge')
 SYNC_ATTRIBUTE = '(* preserve, dont_merge, async_reg="true" *) '
-CARD_SYNC = ('s74_rst', 's74_take', 's2x_req', 's2x_ready', 's2x_rack')
+CARD_SYNC = ('s74_rst', 's74_take', 's74_clr', 's2x_req', 's2x_ready', 's2x_rack')
 
 
 def ready_source(text):
@@ -73,10 +75,10 @@ def top_contract(text):
     shared = dict(aux_req='mc_aux_req', aux_we='mc_aux_we', aux_addr='mc_aux_addr',
                   aux_din='mc_aux_din', aux_dout='mc_aux_dout', aux_done='mc_aux_done',
                   card_write='mc_card_write')
-    expected = dict(clk_74a='clk_74a', clk2x='clk2x', reset_2x='mc_reset2x[1]', busy='mc_busy',
+    expected = dict(clk_74a='clk_74a', clk2x='clk2x', reset_2x='mc_reset2x[1]', overflow_clear="1'b0", busy='mc_busy',
                     load_done='memcard_load_done', bridge_addr='bridge_addr', bridge_wr='bridge_wr',
                     bridge_wr_data='bridge_wr_data', bridge_rd='bridge_rd',
-                    bridge_rd_data='memcard_rd_data', overflow='')
+                    bridge_rd_data='memcard_rd_data', overflow='memcard_overflow')
     if card != expected | shared or any(vram.get(k) != v for k, v in shared.items()):
         raise ValueError('Clean card/AUX ownership differs')
     if (vram.get('clk'), vram.get('reset'), vram.get('park')) != ('clk2x', '!cpu_locked', 'vram_park'):
@@ -104,7 +106,7 @@ def legacy_lines():
     return [
         'set_false_path -to [get_registers {*|psx_vram_psram:vram|park_m}]\n',
         'set_false_path -to [get_registers {' + ' '.join(card + r for r in
-            ('s2x_req[0]', 's2x_ready[0]', 's2x_rack[0]', 's74_rst[0]', 's74_take[0]')) + ' *|mc_idle74[0]}]\n',
+            ('s2x_req[0]', 's2x_ready[0]', 's2x_rack[0]', 's74_rst[0]', 's74_take[0]', 's74_clr[0]')) + ' *|mc_idle74[0]}]\n',
         f'set_max_delay 13 -from [get_registers {{{bundle}}}] -to [get_registers {{{dest}}}]\n',
         f'set_min_delay -13 -from [get_registers {{{bundle}}}] -to [get_registers {{{dest}}}]\n',
         f'set_max_delay 13 -from [get_registers {{{vram}}}] -to [get_registers {{{card}bridge_rd_data[*]}}]\n',

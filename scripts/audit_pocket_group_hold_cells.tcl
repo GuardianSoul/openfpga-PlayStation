@@ -25,7 +25,7 @@ proc group53_reg {label bit direction name} {
  set core {core_top:ic|psx_mister_psx_top_resource:psx|psx_top:component_core|}
  switch $label {
   dma {set owner ${core}dma:idma|;set stem [expr {$direction eq "source" ? {nextAddr} : {dmaSettings\.D_MADR}}]}
-  sdr {set owner {core_top:ic|psx_native_memory:native_memory|psx_sdram_ctrl:controller|};set stem [expr {$direction eq "source" ? {wdata} : {dq_out}}];if {$direction eq "target"} {set bit [expr {$bit%16}]}}
+  sdr {set owner {core_top:ic|psx_core_memory:native_memory|psx_sdram_ctrl:controller|};set stem [expr {$direction eq "source" ? {wdata} : {dq_out}}];if {$direction eq "target"} {set bit [expr {$bit%16}]}}
   cd {set owner ${core}cd_top:icd_top|;set stem [expr {$direction eq "source" ? {currentLBA} : {readLBA}}]}
   gpu {
    if {$direction eq "target"} {

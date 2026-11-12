@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPU RAM read cache on psx_sdram_ctrl ch3 (Native layout), all in clk1x
-// (prepare --spu-cache, with --sotn-memory --sdram-ctrl clean).
+// (prepare --spu-cache, with --core-memory --sdram-ctrl clean).
 // AudioProbe tied the FFVII FMV crackle to SPU deadline misses: spu.vhd
 // (useSDRAM='1') gives each voice a fixed slot of about 24 clk1x (RAM_WAIT,
 // voiceCounter >= 23) for its header read, sample read and one transfer

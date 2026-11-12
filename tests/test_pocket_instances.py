@@ -247,6 +247,43 @@ class TrackSizes(unittest.TestCase):
             self.assertEqual((game/f'{stem}.tsz').read_bytes()[8:12], (6).to_bytes(4, 'little'))
 
 
+class FiveDiscs(unittest.TestCase):
+    """A cue reader core whose Swap Discs list has five discs (0.5.9) takes
+    five-disc games: disc 5 has no data slots, so the list says how many."""
+    def card(self, tmp, discs):
+        card = Path(tmp); common = card/'Assets/playstation/common'
+        for n in range(1, 6):   # names that differ by more than the number: a playlist
+            game = common/'Five'; game.mkdir(parents=True, exist_ok=True)
+            name = f'Five (Disc {n})' + (' (Rev 1)' if n == 5 else '')
+            (game/f'{name}.bin').write_bytes(sectors(n, 4))
+            (game/f'{name}.cue').write_text(f'FILE "{name}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+        mine = common/'Mine'; mine.mkdir()
+        (mine/'Mine.m3u').write_text(''.join(f'../Five/Five (Disc {n}).cue\n' for n in range(1, 5)) + '../Five/Five (Disc 5) (Rev 1).cue\n')
+        core = card/'Cores/GuardianSoul.PSXEarlyFV'; core.mkdir(parents=True)
+        slots = ([{'id': 0, 'extensions': ['json', 'cue', 'm3u']}, {'id': 16}, {'id': 100, 'extensions': ['cue', 'm3u']}]
+                 + [{'id': n} for n in range(101, 105)] + [{'id': 100*n + k} for n in (2, 3, 4) for k in (1, 2)])
+        (core/'data.json').write_text(json.dumps({'data': {'data_slots': slots}}))
+        (core/'interact.json').write_text(json.dumps({'interact': {'variables': [
+            {'name': 'Swap Discs', 'id': 21, 'type': 'list', 'address': '0x50000044',
+             'options': [{'value': n, 'name': f'Disc {n+1}'} for n in range(discs)]}]}}))
+        run = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyFV'],
+                             check=True, capture_output=True, text=True).stdout
+        return card/'Assets/playstation/GuardianSoul.PSXEarlyFV', run
+
+    def test_five_discs_on_a_five_disc_core(self):
+        with TemporaryDirectory() as tmp:
+            out, run = self.card(tmp, 5)
+            self.assertIn('wrote Five.json (5 discs, playlist Five/Five.m3u)', run)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ['Five.json', 'Mine.json'])
+            self.assertEqual((Path(tmp)/'Assets/playstation/common/Five/Five.m3u').read_text().splitlines()[-1], 'Five (Disc 5) (Rev 1).cue')
+
+    def test_five_discs_on_a_four_disc_core(self):
+        with TemporaryDirectory() as tmp:
+            out, run = self.card(tmp, 4)
+            self.assertIn('skip Five: 5 discs, but this core takes 4: update the core to the latest version', run)
+            self.assertIn('skip Mine/Mine.m3u: 5 discs (the core takes 4)', run)
+
+
 class MultiDiscGroup(unittest.TestCase):
     def test_discs_of_a_game_share_one_instance(self):
         with TemporaryDirectory() as tmp:

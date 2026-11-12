@@ -347,6 +347,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     // the width the 800 pixels span: Fill a whole line (321-360 centre-cropped to
     // 320, as before), Fit 256 / 368 with short lines centred
     wire [9:0] bl_w=bl_fill ? (over_320 ? 10'd320 : wlen) : use_368 ? 10'd368 : 10'd256;
+    // the line's first buffer address, -(nominal-wlen)/2. Only Fill blends (BLEND 0): 0, or the centre crop wlen[5:1] (as rep_s)
+    wire signed [10:0] bs_st=BLEND==0 ? $signed(over_320 ? {6'd0,wlen[5:1]} : 11'd0) : $signed({1'b0,wlen}-{1'b0,bl_w})>>>1;
     wire [2:0] slot_w576=!fit ? (pal ? 3'd7 : 3'd1)
                          : i480 ? (pal && !f240 ? 3'd5 : 3'd3) : pal ? (f240 ? 3'd0 : 3'd4) : use_256 || bl_next ? 3'd2 : use_368 ? 3'd6 : 3'd0;
     wire [2:0] slot_aspect=WEAVE576!=0 ? slot_w576 : !fit ? (i480 ? (DBL320!=0 ? 3'd1 : SLOT368!=0 ? 3'd3 : 3'd6) : pal ? 3'd7 : 3'd5)
@@ -355,10 +357,12 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
                        : use_512 ? 3'd7 : pal ? 3'd6 : 3'd0;
     // CROP_LINES window for this field, from the previous field's count
     wire [9:0] crop_h=pal && (HEIGHT_SLOTS!=0 || WEAVE576!=0 || i480==0) ? 10'd288 : 10'd240;
-    wire [10:0] crop_d={1'b0,lines_last}-{1'b0,crop_h};   // lines_last-crop_h, 0 when not above (equal gives 0 too)
-    wire [9:0] crop_top=crop_d[10] ? 10'd0 : crop_d[9:0]>>1;
-    wire [10:0] keep_d={1'b0,lines}-{1'b0,crop_top};   // crop_top+crop_h stays below 1024
-    wire keep_line=CROP_LINES==0 || !keep_d[10] && keep_d[9:0]<crop_h;
+    // the window is read only for a Fit line that is not PAL (Fill: fd_in, PAL Fit: ft_in), always 240 high then
+    wire [9:0] keep_h=PAL_SHAPE!=0 && FILL_DETECT!=0 ? 10'd240 : crop_h;
+    wire [10:0] keep_t={1'b0,lines_last}-{1'b0,keep_h};   // lines_last-keep_h, 0 when not above (equal gives 0 too)
+    wire [9:0] keep_top=keep_t[10] ? 10'd0 : keep_t[9:0]>>1;
+    wire [10:0] keep_e={1'b0,lines}-{1'b0,keep_top};   // keep_top+keep_h stays below 1024
+    wire keep_win=CROP_LINES==0 || !keep_e[10] && keep_e[9:0]<keep_h;
     // FILL_DETECT: the fixed window, lines fd_t to fd_e-1
     wire pal_h=crop_h[8];   // 288
     wire [9:0] fd_h=pal_h ? (PAL_SHAPE!=0 ? 10'd256 : 10'd268) : 10'd224;
@@ -377,6 +381,10 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire fd_on=FILL_DETECT!=0 && !fit;
     reg os_on=0;   // hide_overscan, taken at VS
     wire os_line=OVERSCAN_BLANK!=0 && os_on && !fd_in;
+    // lead is read only on native lines. With 320 doubled and 256 the only other native widths (0-16 or 0-20
+    // short of the slot, a multiple of 32 away from wlen), its low five bits of -wlen are enough
+    localparam LEAD_SHORT=DBL320!=0 && ASPECT!=0 && BLEND==0;
+    wire [4:0] lead_n5=-wlen[4:0];
     wire [9:0] w_next=bl_next ? (bl_fill && FILL_BLEND==2 ? 10'd640 : 10'd800) : use_368 ? 10'd368 : use_320 ? 10'd320 : use_256 ? 10'd256 : use_512 ? 10'd512 : OUT_W;
     wire dbl_next=HYBRID!=0 && ASPECT!=0 && i480==0 && !use_320 && !use_368 && !(HEIGHT_SLOTS!=0 && c368) && (native_ok(wlen,10'd320) || over_320);
     wire native_next=use_368 || use_320 || use_256 || use_512 || dbl_next;
@@ -427,10 +435,18 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire [11:0] bpn=!bpm ? {bp[9:0],2'b0}+{bp[10:0],1'b0} : wide_px ? {bp[10:0],1'b0} : bp+{bp[10:0],1'b0};
     reg [11:0] bth [0:7];
     reg [3:0] bth_n=0;      // thresholds still to work out
-    reg [15:0] bth_acc=0;   // (2k-1)*6w for the next one
-    reg [12:0] bs6x2=0;     // 2*6w
-    wire [3:0] bt=b_le ? 4'd0 : {3'd0,bpn>=bth[0]}+{3'd0,bpn>=bth[1]}+{3'd0,bpn>=bth[2]}+{3'd0,bpn>=bth[3]}
-                                        +{3'd0,bpn>=bth[4]}+{3'd0,bpn>=bth[5]}+{3'd0,bpn>=bth[6]}+{3'd0,bpn>=bth[7]};
+    reg [15:0] bth_acc=16'd15;   // (2k-1)*6w for the next one, rounded up to sixteenths (+15)
+    wire [11:0] bw6={bw,2'b0}+{1'b0,bw,1'b0};   // 6w; bw is loaded with the first threshold
+    wire [12:0] bs6x2={bw6,1'b0};   // 2*6w
+    wire [7:0] bge={bpn>=bth[7], bpn>=bth[6], bpn>=bth[5], bpn>=bth[4], bpn>=bth[3], bpn>=bth[2], bpn>=bth[1], bpn>=bth[0]};
+    // how many of the eight, by full adders: threes, then the sum bits, then the carries
+    wire ge_s0=^bge[2:0], ge_c0=bge[0]&&bge[1] || bge[2]&&(bge[0]||bge[1]);
+    wire ge_s1=^bge[5:3], ge_c1=bge[3]&&bge[4] || bge[5]&&(bge[3]||bge[4]);
+    wire ge_s2=ge_s0^ge_s1^bge[6], ge_c2=ge_s0&&ge_s1 || bge[6]&&(ge_s0||ge_s1);
+    wire ge_c3=ge_s2&&bge[7];
+    wire [3:0] bt=b_le ? 4'd0 : {ge_c0&&ge_c1&&ge_c2&&ge_c3,
+                                 (ge_c0&&ge_c1 || ge_c2&&ge_c3 || (ge_c0||ge_c1)&&(ge_c2||ge_c3)) && !(ge_c0&&ge_c1&&ge_c2&&ge_c3),
+                                 ge_c0^ge_c1^ge_c2^ge_c3, ge_s2^bge[7]};
     reg signed [10:0] bs0=0;   // the line's first buffer address, for its copy
     // the mix is a clock of its own: blended lines go out one clock later
     reg [23:0] pa_r=0, pb_r=0;
@@ -459,7 +475,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire [9:0] oi_n=oi+1'b1;   // oi==out_w-1 is oi+1==out_w (mod 1024)
     wire [10:0] acc_next={1'b0,acc}+wlen;
     wire [11:0] acc_sub={1'b0,acc_next}-{2'b0,out_w};   // acc_next-out_w; its borrow is acc_next < out_w
-    wire in_pic=!native || ({1'b0,oi}>={1'b0,lead} && {1'b0,oi}<{1'b0,lead}+pw);
+    wire [10:0] pic_d={1'b0,oi}-{1'b0,lead};   // oi-lead in 0..pw-1 (pw is below 1024)
+    wire in_pic=!native || !pic_d[10] && pic_d[9:0]<pw[9:0];
     reg [23:0] q_r=0;
     // BOB_SMOOTH: both halves at one x, the half the line reads and whether it averages them
     reg [47:0] q2=0;
@@ -527,18 +544,18 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     wire signed [11:0] ft2=nu_s-12'sd240;
     wire [9:0] t240_want=ft2<0 ? 10'd0 : ft2[10:1]>10'd48 ? 10'd48 : ft2[10:1];
     reg [9:0] t240=10'd24;
-    wire signed [10:0] t240_dd=$signed({1'b0,t240_want})-$signed({1'b0,t240});   // both 0..48
+    wire signed [6:0] t240_dd=$signed({1'b0,t240_want[5:0]})-$signed({1'b0,t240[5:0]});   // both 0..48
     wire signed [11:0] fs2=nu_s-12'sd288;
     wire signed [11:0] fs1=fs2>>>1;
     wire signed [5:0] fsh_lim=mode480i ? 6'sd3 : 6'sd4;
-    wire signed [5:0] fsh_want=!u_big ? 6'sd0 : fs1>12'sd15 || fs1>$signed({{6{fsh_lim[5]}},fsh_lim}) ? fsh_lim
+    wire signed [5:0] fsh_want=!u_big ? 6'sd0 : fs1>$signed({{6{fsh_lim[5]}},fsh_lim}) ? fsh_lim
                                : fs1<-12'sd16 ? -6'sd16 : fs1[5:0];
     reg signed [5:0] fsh=0;
     wire signed [6:0] fsh_d=$signed({fsh_want[5],fsh_want})-$signed({fsh[5],fsh});
     wire fit_pal=PAL_SHAPE!=0 && fit && pal;
     wire [10:0] l240={1'b0,lines}-{1'b0,t240};   // f240 window: t240 <= lines < t240+240 (t240 at most 48)
     wire ft_in=f240 ? !l240[10] && l240[9:0]<10'd240
-              : fsh[5] ? lines<10'd288-{4'd0,-fsh} : lines>={4'd0,fsh};
+              : fsh[5] ? lines<{5'b01000,fsh[4:0]} : lines>={4'd0,fsh};   // 288+fsh, fsh below 0
     reg [4:0] pre_n=0, post_n=0;   // black lines before / after the picture (fsh)
     // the values the coming frame uses (f240 and fsh change at VS)
     wire fsh_mv=fsh_d>7'sd1 || fsh_d<-7'sd1 || !u_big;
@@ -547,8 +564,8 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
     // over overscan lines on the Sony and PlayStation screens, rc1f)
     wire [9:0] fc_next=FILL_DISP==0 ? fc_want : mode480i ? fc_def : fd_want;
     // |fc_next - fc_top| > 1 from one subtraction (both at most fc_max / fc_def, far from a wrap)
-    wire signed [10:0] fc_dd=$signed({1'b0,fc_next})-$signed({1'b0,fc_top});
-    wire fc_move=(FILL_DISP==0 || dd_any || mode480i) && (fc_dd>11'sd1 || fc_dd<-11'sd1);
+    wire signed [6:0] fc_dd=$signed({1'b0,fc_next[5:0]})-$signed({1'b0,fc_top[5:0]});
+    wire fc_move=(FILL_DISP==0 || dd_any || mode480i) && (fc_dd>7'sd1 || fc_dd<-7'sd1);
     wire pic_px=!blank && (|rgb_in[23:20] || |rgb_in[15:12] || |rgb_in[7:4]);
     // LOG: the lines actually sent this frame and the first/last source line
     // index among them. The index is taken where the line is WRITTEN (the same
@@ -605,7 +622,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
         end
         if (!active && active_d) begin
             ce_line<=ce_p;
-            wlen<=wx; wx<=0; rb<=wb; wb<=~wb; pend<=keep_line;
+            wlen<=wx; wx<=0; rb<=wb; wb<=~wb; pend<=keep_win;
             if (BOB_SMOOTH!=0) bk_os[wb]<=os_line;
             if (lines!=10'h3FF) lines<=lines+1'b1;
             if (fd_on) pend<=fd_in;
@@ -649,11 +666,11 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
                 rep_pend<=0; rep_blk<=0; rd_on<=1; oi<=0; acc<=0; black<=rep_blk; ph<=0; s<=rep_s;
                 if (bob2) rb_l<=rb;   // BOB480: the second line of the period is the new source line
                 // BOB_SMOOTH even field: (k + k+1)/2 while line k+1 (being written now) is a kept line
-                if (BOB_SMOOTH==1) sm_line<=bob2 && !bob_odd && act_seen && (fd_on ? fd_in : fit_pal ? ft_in : keep_line)
+                if (BOB_SMOOTH==1) sm_line<=bob2 && !bob_odd && act_seen && (fd_on ? fd_in : fit_pal ? ft_in : keep_win)
                                              && !bk_os[rb] && !os_line;
                 // steady, slot B: this line and the next (being written), 3:1 towards the next in the even field
                 if (BOB_SMOOTH==2) begin
-                    sm_line<=bob2 && act_seen && (fd_on ? fd_in : fit_pal ? ft_in : keep_line) && !bk_os[rb] && !os_line;
+                    sm_line<=bob2 && act_seen && (fd_on ? fd_in : fit_pal ? ft_in : keep_win) && !bk_os[rb] && !os_line;
                     sm_hvo<=!bob_odd;
                 end
                 // a blended line's copy is blended again from its start
@@ -678,25 +695,25 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
                 log_last<=log_src;
             end
             slot<=slot_next; out_w<=w_next; native<=native_next;
-            lead<=use_368 ? (over_368 ? 10'd0 : (10'd368-wlen)>>1) : over_320 ? 10'd0 : dbl_next ? 10'd320-wlen : (w_next-wlen)>>1;
+            lead<=LEAD_SHORT ? (use_368 ? (over_368 ? 10'd0 : (10'd368-wlen)>>1) : over_320 ? 10'd0 : dbl_next ? {5'd0,lead_n5} : {6'd0,lead_n5[4:1]})
+                  : use_368 ? (over_368 ? 10'd0 : (10'd368-wlen)>>1) : over_320 ? 10'd0 : dbl_next ? 10'd320-wlen : (w_next-wlen)>>1;
             s<=use_368 ? (over_368 ? (wlen-10'd368)>>1 : 10'd0) : (use_320 || dbl_next) && over_320 ? {5'd0,wlen[5:1]} : 10'd0;
             rep_s<=(use_320 || dbl_next) && over_320 ? {5'd0,wlen[5:1]} : 10'd0;
-            dbl<=dbl_next; ph<=0; pw<=dbl_next ? {wlen,1'b0} : {1'b0,wlen};   // centre crop: 320 = 5*64, so (wlen-320)/2 = wlen[5:1]
+            dbl<=dbl_next; ph<=0; pw<={1'b0,dbl_next ? {wlen[8:0],1'b0} : wlen};   // doubled lines are at most 360 wide   // centre crop: 320 = 5*64, so (wlen-320)/2 = wlen[5:1]
             bl<=bl_next;
             if (bl_next) begin
                 rd_on<=0; bl_pre<=2'd0; bth_n<=4'd8; bacc<=0; bw<=bl_w;   // thresholds, then the prefetch
-                bth_acc<={4'd0,bl_w,2'b0}+{5'd0,bl_w,1'b0};                // 6w
-                bs6x2<={1'b0,bl_w,2'b0}+{2'd0,bl_w,1'b0}+{1'b0,bl_w,2'b0}+{2'd0,bl_w,1'b0};   // 12w
+                bth_acc<={4'd0,bl_w,2'b0}+{5'd0,bl_w,1'b0}+16'd15;         // 6w
                 // nominal pixel 0 at buffer address -(nominal - wlen)/2
-                bs<=$signed({1'b0,wlen}-{1'b0,bl_w})>>>1;
-                bs0<=$signed({1'b0,wlen}-{1'b0,bl_w})>>>1;
+                bs<=bs_st;
+                bs0<=bs_st;
                 bpm<=bl_fill && FILL_BLEND==2; fph<=fill_phase;
                 bw2<={1'b0,bl_w,1'b0}; bw3<={2'd0,bl_w}+{1'b0,bl_w,1'b0};
 
             end
         end
         if (BLX && bth_n!=0) begin
-            bth[4'd8-bth_n]<=(bth_acc+16'd15)>>4;
+            bth[4'd8-bth_n]<=bth_acc>>4;
             bth_acc<=bth_acc+{3'd0,bs6x2};
             bth_n<=bth_n-1'b1;
             if (bth_n==4'd1) bl_pre<=2'd3;
@@ -741,7 +758,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
         st_d1<=rd_on && !adv; st_d2<=st_d1; st_d3<=st_d2;
         rd_d<=rd_on;
         if (BLX) begin
-            qb<=bt_r==0 ? pa_r : {mix(pa_r[23:16],pb_r[23:16],bt_r), mix(pa_r[15:8],pb_r[15:8],bt_r), mix(pa_r[7:0],pb_r[7:0],bt_r)};
+            qb<={mix(pa_r[23:16],pb_r[23:16],bt_r), mix(pa_r[15:8],pb_r[15:8],bt_r), mix(pa_r[7:0],pb_r[7:0],bt_r)};
             rd_dd<=rd_d; pix_dd<=pix_d;
         end
         out_d<=BLX && bl ? rd_dd : rd_d;
@@ -799,7 +816,7 @@ module psx_apf_video_wide #(parameter integer INTERLACE_FEATURE=0, parameter int
                 if (FILL_DISP!=0) dd_any<=1'b0;
                 if (PAL_SHAPE!=0) begin
                     f240<=f240_want;
-                    if (t240_dd>11'sd1 || t240_dd<-11'sd1) t240<={4'd0,t240_want[5:0]};   // at most 48
+                    if (t240_dd>7'sd1 || t240_dd<-7'sd1) t240<={4'd0,t240_want[5:0]};   // at most 48
                     if (fsh_mv) fsh<=fsh_want;
                 end
             end

@@ -15,8 +15,8 @@ the SD card, the same way the core's `make_pocket_instances.py` script does:
   When a game's disc names differ by more than their number (Final Fantasy
   IX's "(Disc 3) (v1.1)" and "(USA) (Disc 4) (Rev 1)"), it writes a `.m3u`
   playlist of the discs next to them and the game file names that;
-- a game file for each `.m3u` playlist you write yourself (up to four discs,
-  one `.cue` per line, relative to the playlist), so discs with any names can
+- a game file for each `.m3u` playlist you write yourself (up to five discs,
+  four on cores before 0.5.9; one `.cue` per line, relative to the playlist), so discs with any names can
   be one game: a cheat disc first, then the game, picked in Swap Discs;
 - for one-file test cores, each disc's track table (`.trk`), joining
   per-track files into `<name> (one file).bin`;
