@@ -746,23 +746,26 @@ static void playlist(u32 slot, int mode) {
 static void menu_load(u32 k) {
     if (m3u_n) {
         // An entry that does not open (a disc the folder lacks) leaves the
-        // current disc as it is: the current entry is opened again, which
-        // puts back what open_entry() changed (pick, cue_size, the path, the
-        // cue in CUE2_SLOT; audit-059 #14). fail() would drop the disc view.
+        // current disc: the current entry is mounted again, which puts back
+        // what open_entry() changed (pick and cue_size name the playlist, the
+        // path, the cue in CUE2_SLOT; audit-059 #14), as after a failed mount.
         if (k > m3u_n || k == cur) return;
-        if (open_entry(k)) { open_entry(cur); return; }
+        if (open_entry(k)) { entry(cur, M_MENU); return; }
         mount_entry(M_MENU);
         if (flags & F_FAILED) { k = cur; entry(k, M_MENU); }
         cur = k;
         return;
     }
     if (!cur || k == cur || !(flags & F_MOUNTED)) return;
-    // A sibling cue that does not open: the current one again (the path's
-    // disc marks, fb and CUE2_SLOT name the current disc; audit-059 #14).
-    if (open_disc(k)) { open_disc(cur); return; }
-    cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
-    if (!(flags & F_MOUNTED)) k = cur;
-    if (!(flags & F_MOUNTED) && !open_disc(k)) cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
+    // A sibling cue that does not open or does not mount: the current one
+    // again (the path's disc marks, fb, pick and CUE2_SLOT name the current
+    // disc once more; audit-059 #14).
+    u32 e = open_disc(k);
+    if (!e) cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
+    if (e || !(flags & F_MOUNTED)) {
+        k = cur;
+        if (!open_disc(k)) cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
+    }
     cur = k;
     for (u32 m = 0; m < nmarks; m++) base[marks[m]] = '0' + k;
 }

@@ -319,8 +319,9 @@ by hardware tests. Even so, review it with that origin in mind.
 - [PS-FPGA](https://github.com/PS-FPGA/ps-fpga) GTE by Romain Piquois
   (Laxer3a).
 - [pocket_sotn](https://github.com/akoaysigod/pocket_sotn) by akoaysigod: the
-  idea of which Pocket memory chip holds which part of the console's memory.
-  This core first had them the other way round; swapping them was faster.
+  memory card slot settings, and the idea of which Pocket memory chip holds
+  which part of the console's memory. This core first had the chips the other
+  way round; swapping them was faster.
 - [Mednafen](https://mednafen.github.io/) by the Mednafen team, through
   [Beetle PSX](https://github.com/libretro/beetle-psx-libretro): the video
   decoder's arithmetic, so FMVs match it exactly.
