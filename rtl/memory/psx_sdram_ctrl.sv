@@ -15,7 +15,7 @@
 // event and last exactly one clk1x cycle.
 //
 // Byte address map: [9:1] column A8..A0, [25] column A9, [22:10] row,
-// [24:23] bank, [26] chip (only with SINGLE_CHIP=0).
+// [24:23] bank, [26] chip (only with CS_TIED_LOW=0).
 //
 // Every access opens one row and closes it with auto-precharge on its last
 // READ/WRITE, so nothing ever touches a precharging bank. After an access the
@@ -23,7 +23,7 @@
 // read, 4 after the last WRITE, 9 after a REFRESH (tRFC 80 ns).
 `default_nettype none
 module psx_sdram_ctrl #(
-    parameter SINGLE_CHIP = 1,
+    parameter CS_TIED_LOW = 1,   // one chip: nCS held low, address bit 26 unused
     parameter integer POWERUP_CYCLES = 20480,   // >= 200 us at 101.6 MHz
     parameter integer REFRESH_CYCLES = 780,     // 8192 per 64 ms
     parameter integer CHAIN_LIMIT = 32,         // dmafifo words per row opening
@@ -119,7 +119,7 @@ module psx_sdram_ctrl #(
     assign SDRAM_A = SDRAM_EN ? a : 13'bz;
     assign SDRAM_BA = SDRAM_EN ? ba : 2'bz;
     assign {SDRAM_DQMH, SDRAM_DQML} = SDRAM_EN ? dqm : 2'bzz;
-    assign SDRAM_nCS = SDRAM_EN ? (SINGLE_CHIP ? 1'b0 : ncs) : 1'bz;
+    assign SDRAM_nCS = SDRAM_EN ? (CS_TIED_LOW ? 1'b0 : ncs) : 1'bz;
     assign SDRAM_DQ = (SDRAM_EN && dq_oe) ? dq_out : 16'bz;
     assign SDRAM_CKE = 1'b1;
 
@@ -291,11 +291,15 @@ module psx_sdram_ctrl #(
     reg [1:0]  q_index = 0, q_first = 0, q_cnt = 0;
     reg [7:0]  q_line = 0;
     reg [4:0]  rd_v = 0;
-    reg [2:0]  rd_kind [0:4];
-    reg [1:0]  rd_index [0:4];
-    reg [1:0]  rd_first [0:4];
-    reg [7:0]  rd_line [0:4];
-    reg [1:0]  rd_cnt [0:4];
+    // The tags become one 5 x 17 shift-tap RAM. Left AUTO, the fitter put it
+    // in an MLAB (a whole LAB for 85 bits) once the save-state build filled
+    // the M10K (#883/#885), and kept it there with a block free; it was an
+    // M10K in the release fits.
+    (* ramstyle = "M10K" *) reg [2:0]  rd_kind [0:4];
+    (* ramstyle = "M10K" *) reg [1:0]  rd_index [0:4];
+    (* ramstyle = "M10K" *) reg [1:0]  rd_first [0:4];
+    (* ramstyle = "M10K" *) reg [7:0]  rd_line [0:4];
+    (* ramstyle = "M10K" *) reg [1:0]  rd_cnt [0:4];
     reg [15:0] low_half = 0;
     initial for (i = 0; i < 5; i = i + 1) begin
         rd_kind[i] = 0; rd_index[i] = 0; rd_first[i] = 0; rd_line[i] = 0; rd_cnt[i] = 0;

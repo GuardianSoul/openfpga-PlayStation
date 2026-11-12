@@ -33,9 +33,12 @@ COP_OPS = {0x11: (29, 'COP1'), 0x13: (31, 'COP3'), 0x30: (28, 'LWC0'), 0x31: (29
            0x33: (31, 'LWC3'), 0x38: (28, 'SWC0'), 0x39: (29, 'SWC1'), 0x3B: (31, 'SWC3')}
 
 BAD_FETCH = 'FetchAddr(31 downto 30) /= "11" and FetchAddr(28 downto 23) /= "000000" and FetchAddr(28 downto 19) /= "1111111000"'
+# The save-state memorymux serves EXP1 code. KSEG2 has no fetch implementation
+# in the pinned CPU; replace its exemption instead of adding another comparator.
+SAVE_BAD_FETCH = 'FetchAddr(28 downto 23) /= "111110" and FetchAddr(28 downto 23) /= "000000" and FetchAddr(28 downto 19) /= "1111111000"'
 FETCH_OLD = re.compile(r'            case \(to_integer\(FetchAddr\(31 downto 29\)\)\) is\n *\n               when 0 \| 4 => -- cache\n')
-FETCH_GUARD = f'''            -- {TAG}: a fetch outside main RAM and the BIOS completes at once
-            -- as a NOP flagged as a bus error (the memory mux serves code nowhere else)
+FETCH_GUARD = f'''            -- {TAG}: an unsupported fetch completes at once
+            -- as a NOP flagged as a bus error (save states also serve EXP1 code)
             if ({BAD_FETCH}) then
                fetchErrNow       <= '1';
                PCnext            <= FetchAddr + 4;
@@ -94,7 +97,8 @@ def transform(text):
         if len(found) != 1:
             raise ValueError(f'{name} no-op arm: expected exactly one match, found {len(found)}')
         text = pattern.sub(lambda m: cop_arm(op, bit, name), text)
-    text = one(text, FETCH_OLD, lambda old: FETCH_GUARD + old, 'fetch case')
+    guard = FETCH_GUARD.replace(BAD_FETCH, SAVE_BAD_FETCH) if 'trapRequest' in text else FETCH_GUARD
+    text = one(text, FETCH_OLD, lambda old: guard + old, 'fetch case')
     text = one(text, FETCH_END_OLD, lambda old: old + '            end if;\n', 'fetch case end')
     for what, old, new in EDITS:
         text = one(text, old, lambda _, new=new: new, what)

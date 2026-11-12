@@ -24,7 +24,7 @@ from tool_paths import ROOT
 
 CPU_SHA='e238aa73e7ae5617e5686bf636b68eb7f453336d63f844eafdde34c12d38efba'
 SPU_SHA='6399255d10dcabc98068bac155c0124e1f49bbcd67843f46b2d52ac7cf51bd22'
-CPU_PRODUCT_SHA='3ddea0f071ceebae45e5405c542b6dbcce631dd837e0ad171a563cad4c31ef04'
+CPU_PRODUCT_SHA='5a120b69e4d9df3e1b047faf6a2480bede66030e1537ab8b5ab14a57810657ed'
 SPU_QUEUE_SHA='169813eeab5a521bc897cc7a5c64923571a4fd52f2454ab49758ce27d11361be'
 # rtl/pocket/joypad_pad_table.vhd (prepare --pad-table, make test-joypad-pad-table)
 PAD_TABLE_SHA='2f845f92c56c82fde1d933c4889a89968628246009e384fb969c5b87c61951e6'
@@ -34,28 +34,14 @@ PAD_TABLE_SHAS=(PAD_TABLE_SHA,'b6788a427cdd0d165966995a41ab8fba70a957a5726650b27
                # 04403537: the same with DIGITAL_HOLD (Parasite Eve USA, prepare --digital-hold)
                '04403537ac8315538353c87caf327b044417be33b1a779de5252080a81661f0d')
 
-def once(t,a,b):
+# MULT/MULTU on one multiplier: scripts/cpu_shared_product.py (MiSTer cpu.vhd
+# patch) on the reviewed CPU_SHA input; CPU_PRODUCT_SHA and later steps pin its output.
+from cpu_shared_product import shared_product_text
 
- if t.count(a)!=1:raise ValueError('CPU product anchor changed: '+a[:90])
- return t.replace(a,b,1)
+
 def product_text(t):
- if hashlib.sha256(t.encode()).hexdigest()!=CPU_SHA:raise ValueError('Unreviewed DualShock-fit CPU')
- t=once(t,'   signal mulResultS                   : signed(63 downto 0);\n   signal mulResultU                   : unsigned(63 downto 0);',
- '''   -- One product for MULT/MULTU; launch-latched signedness, original wait.
-   -- Shared 33x33 multiplier after pocket_sotn by akoaysigod (GPL-2.0).
-   signal mulSigned                    : std_logic := '0';
-   signal mulResult                    : signed(65 downto 0);''')
- t=once(t,'            mulResultS <= signed(mul1) * signed(mul2);\n            mulResultU <= mul1 * mul2;',
- '            mulResult <= signed((mulSigned and mul1(31)) & mul1) * signed((mulSigned and mul2(31)) & mul2);')
- t=once(t,'when HILOCALC_MULT  => hi <=   unsigned(mulResultS(63 downto 32));  lo <=    unsigned(mulResultS(31 downto 0));',
- 'when HILOCALC_MULT  => hi <= unsigned(mulResult(63 downto 32)); lo <= unsigned(mulResult(31 downto 0));')
- t=once(t,'when HILOCALC_MULTU => hi <=            mulResultU(63 downto 32);   lo <=             mulResultU(31 downto 0);',
- 'when HILOCALC_MULTU => hi <= unsigned(mulResult(63 downto 32)); lo <= unsigned(mulResult(31 downto 0));')
- for op,flag in [('MULT','1'),('MULTU','0')]:
-  anchor=f"                  if (EXEcalc{op} = '1') then\n                     hilocalc <= HILOCALC_{op};"
-  t=once(t,anchor,anchor+f"\n                     mulSigned <= '{flag}';")
- if 'mulResultS' in t or 'mulResultU' in t:raise ValueError('Unconverted CPU product consumer')
- return t
+    if hashlib.sha256(t.encode()).hexdigest()!=CPU_SHA:raise ValueError('Unreviewed DualShock-fit CPU')
+    return shared_product_text(t)
 
 
 def queue_text(source):
@@ -102,9 +88,13 @@ def prepare(project, *, sort_reread=False, gpu_recip=False, gpu_poly_stepadd=Fal
     cache_paths={p for _,p in selected if p.name=='psx_spu_ch3_cache.sv'}
     # b81de5f1: the same cache with the CHEAT port (off unless prepare --cheats);
     # 9bb0744e: plus VOICE_SETS (533c49b, default 0 = the address hash, so unchanged until prepare_spu_voice_sets.py)
+    # a067d9d0: plus VOICE_SETS=2 (the owner table, inside a generate; 0 and 1 unchanged)
+    # 24bf0dab: plus POST_WRITE (default 0: unchanged)
     if len(cache_paths)!=1 or digest(next(iter(cache_paths))) not in ('1e65c93531ea81962f7eaf33d3ee5e0531629c754bfea41cb28999dd396e1911',
                                                                       'b81de5f149563ddd9f4ac1c7364e90bfe7be390214af1b8d7683718eeba965c2',
-                                                                      '9bb0744e473b86b416319765ae6fc61d256994100c2603b6acc3ec55fac0c9ea'):
+                                                                      '9bb0744e473b86b416319765ae6fc61d256994100c2603b6acc3ec55fac0c9ea',
+                                                                      'a067d9d0de4cd53ed10b987dc24e870bfa30c6f477360211f61193ac36be4134',
+                                                                      '24bf0dab3555a538c302faad80d5a8f2e5c29315d292a2de9572cf8266ef99d0'):
         raise ValueError('Released rc8 slim SPU cache and free-slot profile required')
     def one(name):
         paths={p for _,p in selected if p.name==name}

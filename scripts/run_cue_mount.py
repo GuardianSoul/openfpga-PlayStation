@@ -7,6 +7,7 @@ own one_file_plan() and track_table(), then runs sim/pocket/tb_cue_mount.sv
 with Icarus Verilog.
 """
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -169,6 +170,27 @@ CASES = [
     ('json-cold-open', *REDUMP, 'ok', 'json-cue'),
     ('launch-cold-long', *REDUMP, 'ok', 'launch'),
     ('json-slow', *REDUMP, 'ok', 'json-cue'),
+    # The stream's sector reads while APF is busy with the card (a Memory being written): five
+    # reads answered with an error; three opens of a track file answered with an error (the
+    # sectors are asked out of order: reopens) and two reads; a read not answered for 1.5 million
+    # clocks. The firmware asks again after a pause; the stream sees no error and the right data.
+    ('stream-err', *REDUMP, 'ok', 'json-cue'),
+    ('stream-err-open', *REDUMP, 'ok'),
+    ('stream-stall', *REDUMP, 'ok', 'json-cue'),
+    # A file that never reads again: asked again until a pick from the menu, which is taken.
+    ('stream-dead-pick', *REDUMP, 'ok', 'json-cue'),
+    # A Memory written to the card leaves the open track file stale: every read errs until it is
+    # opened again (drive-state.md). The firmware must reopen it; asking the old handle hangs.
+    ('stream-stale', *REDUMP, 'ok', 'json-cue'),
+    # A menu Disc for a disc the game lacks while the stream's reads fail: no filler, the data once
+    # APF reads again, the absent disc reported (drive-state.md).
+    ('stream-menu-err', *REDUMP, 'ok', 'json-cue'),
+    # A sector read the Pocket never answers (dropped during a Memory read-out): given up after the
+    # firmware's limit, asked again, the data (needs CUE_MOUNT_SV with save-cmd-abort; drive-state.md).
+    ('stream-drop', *REDUMP, 'ok', 'json-cue'),
+    # A save holds the drive: no APF command while it does, the read after it (needs CUE_MOUNT_SV with
+    # save-readout-end; drive-state.md section 9).
+    ('stream-hold', *REDUMP, 'ok', 'json-cue'),
     ('launch-none-sizes', 'x', 'none', None, {}, 'json', 'launch'),
     ('launch-none-empty', 'x', 'none', None, {}, 'json', 'launch'),
     # A 0.5.2 game JSON for a three-file game: cue in 100, the .bin files in
@@ -183,6 +205,11 @@ CASES = [
     # 1-3 bytes short of a word, so a word-rounded read of it would pass the
     # end of the file (APF fails those reads).
     ('launch-m3u-eof', 'Two', 'Two.m3u', '#EXTM3U\nTwo (Disc 1)/Two (Disc 1).cue\nTwo (Disc 2)/Two (Disc 2).cue',
+     {D1 + '.bin': 40, D2 + ' (Track 1).bin': 30, D2 + ' (Track 2).bin': 170}, 'ok', 'launch', (DISC1, DISC2)),
+    # A five-disc playlist (0.5.9): the menu's Disc 5 loads its fifth entry
+    # into slot 101 (psx_disc_menu remounts disc 1's slot); Disc 4 names a
+    # missing cue, so the fifth disc comes back.
+    ('launch-m3u-five', 'Two', 'Five.m3u', 'Two (Disc 1)/Two (Disc 1).cue\nGone/Gone 2.cue\nGone/Gone 3.cue\nGone/Gone 4.cue\nTwo (Disc 2)/Two (Disc 2).cue\n',
      {D1 + '.bin': 40, D2 + ' (Track 1).bin': 30, D2 + ' (Track 2).bin': 170}, 'ok', 'launch', (DISC1, DISC2)),
     ('json-libcrypt', 'Lc', 'Lc.cue', 'FILE "Lc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', {'Lc.bin': 8}, 'ok', 'json-cue-lc',
      (('Lc.sbi', sbi_bytes()),)),
@@ -385,7 +412,11 @@ RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
 SIZE_ARGS = {'json-trk-cold': ['+sizes', '+size0', '+no102'], 'json-cold': ['+sizes'], 'json-cold-long': ['+sizes'], 'json-cold-dead': ['+sizes', '+hold=12'], 'launch-cold-long': ['+sizes'], 'launch-none-sizes': ['+sizes'], 'launch-none-empty': ['+sizes', '+empty2'],
              'json-cold-open': ['+sizes', '+coldopen=2'],
              'json-slow': ['+sizes', '+apf_lat=20000'], 'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
-             'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36'], 'json-data2': ['+sizes']}
+             'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36'], 'json-data2': ['+sizes'],
+             'launch-m3u-five': ['+menu2=4', '+slot2=101'],
+             'stream-err': ['+serr=5', f'+spause={BENCH_WAIT//4*MIN_TURN}'], 'stream-err-open': ['+sopen=3', '+serr=2', f'+spause={BENCH_WAIT//4*MIN_TURN}'],
+             'stream-stall': ['+sstall=1500000'], 'stream-dead-pick': ['+sdead'],
+             'stream-stale': ['+sstale=3'], 'stream-menu-err': ['+smenu'], 'stream-drop': ['+sdrop=3'], 'stream-hold': ['+shold']}
 
 
 # Openfile commands the boot mount of a track-sizes case takes: with the
@@ -395,8 +426,12 @@ MOUNT_OPENS = {'json-tsz72': 1, 'json-tsz': 1, 'json-tsz-stale': 9, 'json-tsz-cu
 
 
 def bench_firmware(work):
-    """A copy of rtl/pocket/psx_cue_fw0-3.hex with retry_wait set to BENCH_WAIT; its prefix."""
-    lanes = [(ROOT/f'rtl/pocket/psx_cue_fw{k}.hex').read_text().split() for k in range(4)]
+    """A copy of rtl/pocket/psx_cue_fw0-3.hex with retry_wait set to BENCH_WAIT; its prefix.
+    CUE_FW_DIR (planted fault: another firmware, e.g. the one before the stream retry) names
+    a folder with the four hex files instead."""
+    import os
+    source = Path(os.environ.get('CUE_FW_DIR', ROOT/'rtl/pocket'))
+    lanes = [(source/f'psx_cue_fw{k}.hex').read_text().split() for k in range(4)]
     want = int(re.search(r'^retry_wait:\s*\.word\s+(\w+)', (ROOT/'rtl/pocket/cue_fw/start.S').read_text(), re.M)[1], 0)
     word = RETRY_WAIT_AT//4
     got = sum(int(lanes[k][word], 16) << 8*k for k in range(4))
@@ -484,9 +519,15 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     opens = re.search(r'mount_cost: .*? opens=(\d+)', text)
     if name in MOUNT_OPENS and (not opens or int(opens[1]) != MOUNT_OPENS[name]):
         ok = False; print(f'{name}: boot mount took {opens[1] if opens else "?"} openfiles, not {MOUNT_OPENS[name]}')
-    print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("launch", "mount", "menu", "probe", "cheats", "stack"))), flush=True)
+    print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("launch", "mount", "menu", "probe", "cheats", "stack", "stream"))), flush=True)
     if not ok: print(text[-3000:])
     return ok
+
+
+# CUE_MOUNT_SV: another psx_cue_mount.sv (e.g. with prepare_save_cmd_abort.py); it is compiled with CMD_ABORT
+# when it has the d_abort port (case stream-drop needs it).
+_cm = os.environ.get('CUE_MOUNT_SV')
+CUE_MOUNT = [f'-DCMD_ABORT'] * bool(_cm and 'd_abort' in Path(_cm).read_text()) + ['-DSAVE_HOLD'] * bool(_cm and 'save_hold' in Path(_cm).read_text()) + ['-DDISC_REPORT'] * bool(_cm and 'cur_disc_o' in Path(_cm).read_text()) + [str(Path(_cm).resolve()) if _cm else str(ROOT/'rtl/pocket/psx_cue_mount.sv')]
 
 
 def main():
@@ -499,10 +540,13 @@ def main():
     fw = bench_firmware(work)
     for vvp_name, lc, ch in (('tb.vvp', 0, 0), ('tb_lc.vvp', 1, 0), ('tb_ch.vvp', 1, 1)):
         subprocess.run([iverilog, '-g2012', '-o', str(work/vvp_name), f'-Ptb_cue_mount.FW="{fw}"',
-                        f'-Ptb_cue_mount.LC={lc}', f'-Ptb_cue_mount.CH={ch}', *[str(p) for p in SERV_FILES(serv)], str(ROOT/'rtl/pocket/psx_cue_mount.sv'),
+                        f'-Ptb_cue_mount.LC={lc}', f'-Ptb_cue_mount.CH={ch}', *[str(p) for p in SERV_FILES(serv)], *CUE_MOUNT,
                         str(ROOT/'sim/pocket/tb_cue_mount.sv')], check=True)
     only = sys.argv[1:]   # case names, or all
-    results = [run_case(work, iverilog, vvp, *case) for case in CASES if not only or case[0] in only]
+    # cases that need a psx_cue_mount step (CUE_MOUNT_SV): left out of a full run without it
+    needs = {'stream-drop': '-DCMD_ABORT', 'stream-hold': '-DSAVE_HOLD'}
+    cases = [c for c in CASES if (c[0] in only) if only] or [c for c in CASES if needs.get(c[0], CUE_MOUNT[0]) in CUE_MOUNT]
+    results = [run_case(work, iverilog, vvp, *case) for case in cases]
     print(f'{sum(results)}/{len(results)} cases pass')
     if not all(results): raise SystemExit(1)
 

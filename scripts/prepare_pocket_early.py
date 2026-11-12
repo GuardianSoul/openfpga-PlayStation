@@ -34,29 +34,23 @@ NEW = '''    // APF scaler protocol: one-clock HS/VS pulses, RGB zero outside DE
 '''
 
 
-SPU_CH3_DIRECT = """    wire [26:0] ch3_addr=cpu_reset ? l_addr : 27'h1000000+{8'b0,spuram_adr};
-    wire [31:0] ch3_din=cpu_reset ? l_data : spuram_dataWrite;
-    wire [3:0] ch3_be=cpu_reset ? l_be : spuram_be;
-    wire ch3_req=cpu_reset ? l_req : spuram_ena;
-    wire ch3_rnw=cpu_reset ? 1'b0 : spuram_rnw;
-    assign spuram_done=ch3_ready && !cpu_reset;
-    assign spuram_dataRead=ch3_dout;
-"""
+# psx_core_memory.sv: the controller instance line (--core-memory puts
+# psx_sdram_ctrl there) and the direct SPU RAM block (--spu-cache puts the
+# cache there; its ch3 outputs carry the SPU RAM base already).
+CORE_MEMORY_CONTROLLER = '    sdram #(.CS_TIED_LOW(1)) controller ('
+SPU_DIRECT_BEGIN = '    // SPU RAM direct on channel 3 (prepare --spu-cache replaces this block)\n'
+SPU_DIRECT_END = '    // end of the SPU RAM block\n'
 
 SPU_CH3_CACHE = """    // --spu-cache: SPU RAM reads through psx_spu_ch3_cache.
-    wire c_req, c_rnw, c_done; wire [26:0] c_addr; wire [31:0] c_din, c_q; wire [3:0] c_be;
+    wire spu_cache_done; wire [31:0] spu_cache_q;
+    wire [26:0] spu_ch3_addr; wire [31:0] spu_ch3_din; wire [3:0] spu_ch3_be; wire spu_ch3_req, spu_ch3_rnw;
     psx_spu_ch3_cache spu_cache (.clk1x(clk1x), .reset(init), .discard(cpu_reset),
         .spu_req(spuram_ena && !cpu_reset), .spu_rnw(spuram_rnw), .spu_addr(spuram_adr),
-        .spu_data(spuram_dataWrite), .spu_be(spuram_be), .spu_done(c_done), .spu_q(c_q),
-        .ch3_req(c_req), .ch3_rnw(c_rnw), .ch3_addr(c_addr), .ch3_din(c_din), .ch3_be(c_be),
+        .spu_data(spuram_dataWrite), .spu_be(spuram_be), .spu_done(spu_cache_done), .spu_q(spu_cache_q),
+        .ch3_req(spu_ch3_req), .ch3_rnw(spu_ch3_rnw), .ch3_addr(spu_ch3_addr), .ch3_din(spu_ch3_din), .ch3_be(spu_ch3_be),
         .ch3_ready(ch3_ready && !cpu_reset), .ch3_dout(ch3_dout));
-    wire [26:0] ch3_addr=cpu_reset ? l_addr : c_addr;
-    wire [31:0] ch3_din=cpu_reset ? l_data : c_din;
-    wire [3:0] ch3_be=cpu_reset ? l_be : c_be;
-    wire ch3_req=cpu_reset ? l_req : c_req;
-    wire ch3_rnw=cpu_reset ? 1'b0 : c_rnw;
-    assign spuram_done=c_done && !cpu_reset;
-    assign spuram_dataRead=c_q;
+    assign spuram_done     = spu_cache_done && !cpu_reset;
+    assign spuram_dataRead = spu_cache_q;
 """
 
 OVERLAY = """    // Bring-up readout (psx_debug_overlay): rows top to bottom are
@@ -141,9 +135,23 @@ def stub_instance(vhdl, label, entity_file, note):
     return vhdl[:match.start()] + '\n'.join(lines) + '\n' + vhdl[match.end():]
 
 
-SOTN_GLUE = '''    // Main RAM, BIOS and SPU RAM on SDRAM at clk3x; VRAM on both PSRAMs
-    // (clk2x).
-    psx_native_memory native_memory (.clk1x(clk1x),.clk3x(clk3x),.init(!cpu_locked),.cpu_reset(reset),
+# --core-memory: main RAM, BIOS and SPU RAM on the SDRAM
+# through rtl/pocket/psx_core_memory.sv (controller at clk3x), VRAM and the
+# memory card on both PSRAMs through rtl/memory/psx_vram_psram.sv (clk2x).
+# Replaces the MIRLO64 memory fabric block of core_top (main adapter to the
+# SDRAM pins); the status nets of that fabric get fixed idle values.
+CORE_MEMORY = '''    // --core-memory: SDRAM through psx_core_memory, VRAM on the PSRAMs
+    assign c_error=1'b0, c_read=128'd0;
+    assign main_fault=1'b0, spu_fault=1'b0, shared_fault=1'b0, memory_client_reset=1'b0;
+    assign main_source_idle=1'b1, main_service_idle=1'b1, spu_source_idle=1'b1, shared_idle=1'b1;
+    wire vram_fault=1'b0;
+    // The SDRAM is ready 2^18 clk3x (2.6 ms) after the CPU PLL locks.
+    reg [18:0] native_init_count=19'd0;
+    always @(posedge clk3x)
+        if (!cpu_locked) native_init_count<=19'd0;
+        else if (!native_init_count[18]) native_init_count<=native_init_count+1'b1;
+    assign shared_initialized=native_init_count[18];
+    psx_core_memory native_memory (.clk1x(clk1x),.clk3x(clk3x),.init(!cpu_locked),.cpu_reset(reset),
         .ram_refresh(ram_refresh),.ram_ena(ram_ena),.ram_rnw(ram_rnw),.ram_dma(ram_dma),.ram_cache(ram_cache),
         .ram_adr(ram_Adr),.ram_cntDMA(ram_cntDMA),.ram_dataWrite(ram_dataWrite),.ram_be(ram_be),
         .ram_done(ram_done),.ram_dataRead32(ram_dataRead32),.dma_wr(dma_wr),.dma_data(dma_data),
@@ -156,25 +164,19 @@ SOTN_GLUE = '''    // Main RAM, BIOS and SPU RAM on SDRAM at clk3x; VRAM on both
         .load_ready(c_ready),.load_rsp(c_rsp),.load_rsp_ready(c_rsp_ready),
         .dram_dq(dram_dq),.dram_a(dram_a),.dram_dqm(dram_dqm),.dram_ba(dram_ba),.dram_we_n(dram_we_n),
         .dram_ras_n(dram_ras_n),.dram_cas_n(dram_cas_n),.dram_cke(dram_cke),.dram_clk(dram_clk));
-    assign c_error=1'b0, c_read=128'b0;
-    assign main_fault=1'b0, main_source_idle=1'b1, main_service_idle=1'b1, spu_fault=1'b0, spu_source_idle=1'b1;
-    assign shared_fault=1'b0, shared_idle=1'b1, memory_client_reset=1'b0;
-    // sdram.sv queues requests during its startup; the loader still waits ~2.6 ms.
-    reg [18:0] native_init_count=0;
-    always @(posedge clk3x) if (!cpu_locked) native_init_count<=0; else if (!native_init_count[18]) native_init_count<=native_init_count+1'b1;
-    assign shared_initialized=native_init_count[18];
-    wire vram_fault=1'b0;
-    wire [15:0] cram0_dq_out, cram1_dq_out; wire cram0_dq_oe, cram1_dq_oe;
-    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),
+    wire vram_park=!reset_n;   // synchronised inside psx_vram_psram
+    wire [15:0] cram0_dq_out, cram1_dq_out;
+    wire cram0_dq_oe, cram1_dq_oe;
+    psx_vram_psram vram (.clk(clk2x),.reset(!cpu_locked),.park(vram_park),
         .ddr_busy(ddr3_BUSY),.ddr_burstcnt(ddr3_BURSTCNT),.ddr_addr(ddr3_ADDR[27:3]),.ddr_dout(ddr3_DOUT),
         .ddr_dout_ready(ddr3_DOUT_READY),.ddr_rd(ddr3_RD),.ddr_din(ddr3_DIN),.ddr_be(ddr3_BE),.ddr_we(ddr3_WE),
         .aux_req(1'b0),.aux_we(1'b0),.aux_addr(21'b0),.aux_din(32'b0),.aux_dout(),.aux_done(),.card_write(),
-        .cram0_a(cram0_a),.cram0_dq_out(cram0_dq_out),.cram0_dq_oe(cram0_dq_oe),.cram0_dq_in(cram0_dq),.cram0_clk(cram0_clk),
-        .cram0_adv_n(cram0_adv_n),.cram0_cre(cram0_cre),.cram0_ce0_n(cram0_ce0_n),.cram0_ce1_n(cram0_ce1_n),
-        .cram0_oe_n(cram0_oe_n),.cram0_we_n(cram0_we_n),.cram0_ub_n(cram0_ub_n),.cram0_lb_n(cram0_lb_n),
-        .cram1_a(cram1_a),.cram1_dq_out(cram1_dq_out),.cram1_dq_oe(cram1_dq_oe),.cram1_dq_in(cram1_dq),.cram1_clk(cram1_clk),
-        .cram1_adv_n(cram1_adv_n),.cram1_cre(cram1_cre),.cram1_ce0_n(cram1_ce0_n),.cram1_ce1_n(cram1_ce1_n),
-        .cram1_oe_n(cram1_oe_n),.cram1_we_n(cram1_we_n),.cram1_ub_n(cram1_ub_n),.cram1_lb_n(cram1_lb_n));
+        .cram0_a(cram0_a),.cram0_dq_out(cram0_dq_out),.cram0_dq_oe(cram0_dq_oe),.cram0_dq_in(cram0_dq),
+        .cram0_clk(cram0_clk),.cram0_adv_n(cram0_adv_n),.cram0_cre(cram0_cre),.cram0_ce0_n(cram0_ce0_n),
+        .cram0_ce1_n(cram0_ce1_n),.cram0_oe_n(cram0_oe_n),.cram0_we_n(cram0_we_n),.cram0_ub_n(cram0_ub_n),.cram0_lb_n(cram0_lb_n),
+        .cram1_a(cram1_a),.cram1_dq_out(cram1_dq_out),.cram1_dq_oe(cram1_dq_oe),.cram1_dq_in(cram1_dq),
+        .cram1_clk(cram1_clk),.cram1_adv_n(cram1_adv_n),.cram1_cre(cram1_cre),.cram1_ce0_n(cram1_ce0_n),
+        .cram1_ce1_n(cram1_ce1_n),.cram1_oe_n(cram1_oe_n),.cram1_we_n(cram1_we_n),.cram1_ub_n(cram1_ub_n),.cram1_lb_n(cram1_lb_n));
     assign cram0_dq=cram0_dq_oe ? cram0_dq_out : 16'bz;
     assign cram1_dq=cram1_dq_oe ? cram1_dq_out : 16'bz;
 '''
@@ -227,20 +229,26 @@ def vram_x3_top(text, parser):
                                f"    end endgenerate\n")
     return text
 
-VRAM_HEAD = '    vram_psram vram (.clk(clk2x),.reset(!cpu_locked),\n'
 VRAM_HEAD_CLEAN = '    psx_vram_psram vram (.clk(clk2x),.reset(!cpu_locked),.park(vram_park),\n'
 
 
-MEMCARD_SLOT = '''    // Memory card 1 save slot (--memcard-slot): APF data slot at 0x20000000.
+# --memcard-slot: memory card 1 lives in the PSRAM card window, filled from
+# and saved to an APF nonvolatile data slot by psx_memcard_slot (clk_74a
+# bridge side, clk2x VRAM aux side). MEMCARD_BASE is the slot's bridge
+# address: psx_memcard_slot's default BASE; package --memcard-slot declares it.
+MEMCARD_BASE = 0x20000000
+MEMCARD_SLOT = f'''    // --memcard-slot: memory card 1 data slot at bridge 0x{MEMCARD_BASE:08X} (psx_memcard_slot)
     wire mc_busy, mc_aux_req, mc_aux_we, mc_aux_done, mc_card_write;
+    wire memcard_load_done;
+    wire memcard_overflow;   // clk_74a, sticky: a card/save bridge word was dropped
     wire [20:0] mc_aux_addr; wire [31:0] mc_aux_din, mc_aux_dout, memcard_rd_data;
     (* async_reg="true" *) reg [1:0] mc_reset2x=2'b11;
-    always @(posedge clk2x) mc_reset2x<={mc_reset2x[0],!cpu_locked};
-    pocket_memcard memcard_slot (.clk_74a(clk_74a),.bridge_addr(bridge_addr),.bridge_wr(bridge_wr),
-        .bridge_wr_data(bridge_wr_data),.bridge_rd(bridge_rd),.bridge_rd_data(memcard_rd_data),.overflow(),
-        .clk2x(clk2x),.reset_2x(mc_reset2x[1]),.busy(mc_busy),
+    always @(posedge clk2x) mc_reset2x<={{mc_reset2x[0],!cpu_locked}};
+    psx_memcard_slot memcard_slot (.clk_74a(clk_74a),.bridge_addr(bridge_addr),.bridge_wr(bridge_wr),
+        .bridge_wr_data(bridge_wr_data),.bridge_rd(bridge_rd),.bridge_rd_data(memcard_rd_data),.overflow(memcard_overflow),
+        .clk2x(clk2x),.reset_2x(mc_reset2x[1]),.overflow_clear(1'b0),.busy(mc_busy),
         .aux_req(mc_aux_req),.aux_we(mc_aux_we),.aux_addr(mc_aux_addr),.aux_din(mc_aux_din),.aux_dout(mc_aux_dout),
-        .aux_done(mc_aux_done),.card_write(mc_card_write));
+        .aux_done(mc_aux_done),.card_write(mc_card_write),.load_done(memcard_load_done));
 '''
 
 
@@ -329,14 +337,14 @@ def main():
     parser.add_argument('--field-invert', action='store_true', help='Flip the APF odd/even field bit (psx_apf_video FIELD_INVERT)')
     parser.add_argument('--slots480', action='store_true', help='480i lines use 480-tall scaler slots 5-7 (package with --slots480)')
     parser.add_argument('--perf-log', action='store_true', help='Per-frame memory-wait counters saved to SD at bridge 0x40000000 (rtl/pocket/psx_perf_log.sv; package with --boot-log, needs --cd-stream)')
-    parser.add_argument('--sotn-memory', action='store_true', help='The memory layout after pocket_sotn by akoaysigod: main RAM, BIOS and SPU RAM on rtl/memory/psx_sdram_ctrl.sv at clk3x (rtl/pocket/psx_native_memory.sv); VRAM on both PSRAMs (rtl/memory/psx_vram_psram.sv)')
+    parser.add_argument('--core-memory', action='store_true', help='Main RAM, BIOS and SPU RAM on the SDRAM at clk3x (rtl/pocket/psx_core_memory.sv with rtl/memory/psx_sdram_ctrl.sv); VRAM on both PSRAMs (rtl/memory/psx_vram_psram.sv)')
     parser.add_argument('--spu-free-slot', action='store_true', help="No fixed ~24-clk1x SDRAM voice slot in spu.vhd (RAM_WAIT as with useSDRAM='0'): each voice waits only for its own SPU RAM reads, so with --spu-cache hits shorten it")
     parser.add_argument('--spu-cache-slim', action='store_true', help='With --spu-cache: the slim word-granular cache (rtl/pocket/psx_spu_ch3_cache_slim.sv, a fraction of the area; make test-spu-ch3-cache)')
-    parser.add_argument('--spu-cache', action='store_true', help='With --sotn-memory: SPU RAM reads through a 64-line clk1x read cache (rtl/pocket/psx_spu_ch3_cache.sv), so most SPU accesses skip SDRAM and its latency spikes (FFVII FMV crackle: AudioProbe SPU deadline misses)')
-    parser.add_argument('--sdram-spu-first', action='store_true', help='With --sotn-memory: serve SPU RAM (ch3) right after refresh, ahead of DMA and CPU, so the SPU keeps its sample deadline (audio underflow on WipEout CD music)')
+    parser.add_argument('--spu-cache', action='store_true', help='With --core-memory: SPU RAM reads through a 64-line clk1x read cache (rtl/pocket/psx_spu_ch3_cache.sv), so most SPU accesses skip SDRAM and its latency spikes (FFVII FMV crackle: AudioProbe SPU deadline misses)')
+    parser.add_argument('--sdram-spu-first', action='store_true', help='With --core-memory: serve SPU RAM (ch3) right after refresh, ahead of DMA and CPU, so the SPU keeps its sample deadline (audio underflow on WipEout CD music)')
     parser.add_argument('--sdram-open-row', action='store_true', help='With --sdram-cas 3: keep SDRAM rows open (main RAM bit 10 in bank 3), so a CPU read to an open row issues its READ at once and returns one clk1x sooner, like CL2 (Bloody Roar II frame skipping: CPU main-RAM latency)')
-    parser.add_argument('--sdram-ctrl', choices=('clean',), default='clean', help='With --sotn-memory: the MIT clean-room rtl/memory/psx_sdram_ctrl.sv')
-    parser.add_argument('--sdram-cas', type=int, choices=(2, 3), default=2, help='With --sotn-memory: CAS latency (the Pocket SDRAM datasheet needs CL3 at 101.6 MHz; same capture window one clk later)')
+    parser.add_argument('--sdram-ctrl', choices=('clean',), default='clean', help='With --core-memory: the SDRAM controller, rtl/memory/psx_sdram_ctrl.sv (the only choice; kept for old recipes)')
+    parser.add_argument('--sdram-cas', type=int, choices=(2, 3), default=2, help='With --core-memory: CAS latency (the Pocket SDRAM datasheet needs CL3 at 101.6 MHz; same capture window one clk later)')
     parser.add_argument('--psram-main', action='store_true', help='Main RAM, BIOS and SPU RAM on both PSRAM chips (rtl/pocket/psx_psram_clients.sv, PocketQuake recipe at 104.17 MHz); VRAM alone on SDRAM')
     parser.add_argument('--psram-clients', default='012', help='With --psram-main: which clients use PSRAM (0 main RAM+BIOS, 1 SPU RAM, 2 BIOS loader); the rest stay on SDRAM (bisection)')
     parser.add_argument('--psram-mhz', choices=('104', '78'), default='104', help='PSRAM controller/chip clock from the 625 MHz memory VCO: 104.17 (/6) or 78.125 (/8); the chip clock keeps the probe-proven 0.6-period phase')
@@ -369,9 +377,11 @@ def main():
     parser.add_argument('--spu-static-readback', action='store_true', help='SPU static control registers read back from block RAM (scripts/prepare_spu_static_readback.py; needs spu-guest-m10k)')
     parser.add_argument('--main-lean', action='store_true', help='SDRAM-layout main adapter reads its read_data directly instead of two 128-bit copies (scripts/prepare_main_lean.py; b01d26d for the async adapter)')
     parser.add_argument('--memorymux-fifo-ram', choices=('BYPASS', 'CLK2X'), help='Clean-room memorymux write FIFO in M10K, cycle-identical to MiSTer, no CPU change (scripts/prepare_memorymux_fifo_ram.py)')
-    parser.add_argument('--vram-full-rate', action='store_true', help='With --sotn-memory: PSRAM VRAM chip clock at 67.7 MHz instead of 33.9 MHz (psx_vram_psram FULL_RATE, latency code 5): a fourth CPU PLL output at --vram-phase drives the chip clocks through a DDIO output; about twice the VRAM bandwidth (docs/pocket-vram-full-rate.md)')
+    parser.add_argument('--vram-ctrl', choices=('clean',), default='clean', help='With --core-memory: the VRAM controller, rtl/memory/psx_vram_psram.sv (the only choice; parks the PSRAMs in their power-on mode while the core is held in reset)')
+    parser.add_argument('--vram-full-rate', action='store_true', help='With --core-memory: PSRAM VRAM chip clock at 67.7 MHz instead of 33.9 MHz (psx_vram_psram FULL_RATE, latency code 5): a fourth CPU PLL output at --vram-phase drives the chip clocks through a DDIO output; about twice the VRAM bandwidth (docs/pocket-vram-full-rate.md)')
     parser.add_argument('--vram-x3', action='store_true', help='With --vram-full-rate: PSRAM VRAM controller on clk3x and chip clock at 101.6 MHz (latency code 6, rated to 108 MHz), behind rtl/memory/psx_vram_x3.sv (2:3 related-clock bridge to the GPU and card slot): about 1.5x the VRAM bandwidth (docs/pocket-vram-x3.md). --vram-phase is then the chip clock phase after clk3x (default 4716 = 23 steps)')
     parser.add_argument('--vram-phase', type=int, default=None, help='With --vram-full-rate: chip clock phase after clk2x in ps; keep it a multiple of the CPU PLL phase step (VCO 74.25 MHz x 1051/128, step 205.03 ps; 10047 = 49 steps), or Quartus re-solves the PLL and every CPU clock moves (+130 ppm at 10000); default 10047 (49 steps), 4716 (23 steps) with --vram-x3')
+    parser.add_argument('--memcard-ctrl', choices=('clean',), default='clean', help='With --memcard-slot: the card slot, rtl/pocket/psx_memcard_slot.sv (the only choice; needs --memcard-format)')
     parser.add_argument('--host-config-cdc', action='store_true', help='Coherent region/BIOS-region bridge; replace inherited known family hold cuts with scoped constraints')
     parser.add_argument('--video-config-cdc', action='store_true', help='Ordered video settings/control bridge (adds delivery latency); replace inherited known family hold cuts with scoped constraints')
     parser.add_argument('--apf-blank-cdc', action='store_true', help='Synchronize CPU reset blanking into the free-running APF video clock (adds bounded blanking latency); use scoped constraints')
@@ -384,12 +394,12 @@ def main():
     parser.add_argument('--pack-high', action='store_true', help='Fitter: ALM_REGISTER_PACKING_EFFORT HIGH (denser register packing; lets --disc-swap fit at 1,847 LABs)')
     parser.add_argument('--fit-effort-max', action='store_true', help='Fitter: STANDARD FIT effort and maximum router timing optimization (release builds: closes the small fast-corner hold misses that Auto Fit leaves)')
     parser.add_argument('--static-host-cuts', action='store_true', help='Native release timing: false paths for quasi-static host settings (pause, isPal) and the diagnostic service readbacks of cd_top/pausing; video-out synchronizers kept out of RAM shift registers')
-    parser.add_argument('--memcard-slot', action='store_true', help='With --sotn-memory: memory card 1 always present, its image in vram_psram region 1, loaded from and saved to an APF nonvolatile slot (rtl/pocket/psx_memcard_slot.sv; package --memcard-slot)')
-    parser.add_argument('--memcard-format', action='store_true', help='With --memcard-slot: a new or all-zero card file is formatted before the CPU starts, so games without a format option can save (rtl/pocket/psx_memcard_slot.sv)')
+    parser.add_argument('--memcard-slot', action='store_true', help='With --core-memory --memcard-format: memory card 1 always present, its image in the PSRAM card window, loaded from and saved to an APF nonvolatile slot (rtl/pocket/psx_memcard_slot.sv; package --memcard-slot)')
+    parser.add_argument('--memcard-format', action='store_true', help='With --memcard-slot: a new or all-zero card file is formatted before the CPU starts, so games without a format option can save (psx_memcard_slot)')
     parser.add_argument('--memcard-lean', action='store_true', help='Memory card buffer without its two 64-bit copy registers (scripts/prepare_memcard_lean.py)')
     parser.add_argument('--pad-combos', action='store_true', help='Select-held combos for L2/R2/L3/R3 on the handheld (rtl/pocket/psx_pocket_pad_combo.sv replaces psx_pocket_pad.sv)')
     parser.add_argument('--libcrypt', action='store_true', help='With --cd-stream --multi-track: psx_cd_stream reads the disc\'s .sbi from data slot 99 and passes its LibCrypt mask to cd_top (package --libcrypt)')
-    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='With --disc-swap --multi-track: one game file lists every disc (disc n in slots n01, n02, ...); a core menu "Swap Discs" list (bridge 0x50000044) switches between DISCS discs (2-4), so all discs share one memory card (package --disc-menu)')
+    parser.add_argument('--disc-menu', type=int, metavar='DISCS', help='With --disc-swap --multi-track: one game file lists every disc (disc n in slots n01, n02, ...); a core menu "Swap Discs" list (bridge 0x50000044) switches between DISCS discs (2-4, or 5 with --cue-mount: disc 5 has no slots, the cue reader loads it), so all discs share one memory card (package --disc-menu)')
     parser.add_argument('--boot-waits-disc', action='store_true', help='With --cd-stream: hold the CPU in reset until the first disc mount reaches cd_top (or 14.5 s after Reset Exit), so a slow first launch cannot boot the BIOS menu')
     parser.add_argument('--disc-swap', action='store_true', help='With --cd-stream: wire psx_disc_swap/psx_disc_select so loading another disc at run time opens the lid, remounts and closes it (without it a reloaded disc slot serves 0xAA fill forever)')
     parser.add_argument('--cd-slow-pause', action='store_true', help='MiSTer\'s default "Pause when CD slow": cd_top pauses the guest while a sector fetch from the SD card runs late (pauseOnCDSlow=1 in the PSX wrapper)')
@@ -422,8 +432,8 @@ def main():
     parser.add_argument('--cache-trace', action='store_true', help='With --boot-trace: the ROM-log words record the first 512 CPU cache fills below RAM 0x10000 instead')
     parser.add_argument('--boot-trace', action='store_true', help='Expose a main-RAM request trace at bridge 0x40000000 (needs --debug-overlay)')
     args = parser.parse_args()
-    if args.spu_cache and not args.sotn_memory: parser.error('--spu-cache needs --sotn-memory')
-    if args.sdram_open_row and not args.sotn_memory: parser.error('--sdram-open-row needs --sotn-memory')
+    if args.spu_cache and not args.core_memory: parser.error('--spu-cache needs --core-memory')
+    if args.sdram_open_row and not args.core_memory: parser.error('--sdram-open-row needs --core-memory')
     if args.spu_cache_slim and not args.spu_cache: parser.error('--spu-cache-slim needs --spu-cache')
     if args.async_hold_cut and (args.host_config_cdc or args.video_config_cdc or args.apf_blank_cdc or args.video_return_ff or args.video_request_cdc):
         parser.error('Configuration CDC requires scoped timing/skew checks; cannot request --async-hold-cut')
@@ -452,7 +462,7 @@ def main():
         # Copied bases can predate the exact binary-MSB replica resolver.
         # Refresh only its recognized body; keep every crossing limit/cut.
         sdc_path.write_text(refresh_audio_scope(s))
-    if args.sotn_memory:
+    if args.core_memory:
         # MIRLO64's SDRAM and PSRAM controllers (Apache-2.0, workspace only)
         # are not instantiated in the Native layout: keep them out of the
         # compile inputs (release source bundle).
@@ -1052,64 +1062,61 @@ def main():
     if args.no_field_hold:
         if text.count('psx_apf_video #(.STEADY_INTERLACE(1))') != 1: parser.error('--no-field-hold: no STEADY_INTERLACE(1) instance')
         text = text.replace('psx_apf_video #(.STEADY_INTERLACE(1))', 'psx_apf_video #(.STEADY_INTERLACE(0))')
-    if args.sotn_memory:
+    if args.core_memory:
         if args.psram_main or args.vram_async or args.sdram_clock_ps is not None or args.vram_credit_timing:
-            parser.error('--sotn-memory replaces the memory fabric: no --psram-main/--vram-async/--sdram-clock-ps/--vram-credit-timing')
+            parser.error('--core-memory replaces the memory fabric: no --psram-main/--vram-async/--sdram-clock-ps/--vram-credit-timing')
         root = Path(__file__).resolve().parents[1]
         start = text.index('    psx_mister_main_adapter main_commands (')
         end_anchor = '        .dram_dq(dram_dq),.dram_clk(dram_clk));\n'
         end = text.index(end_anchor, start) + len(end_anchor)
         if text.count('    psx_sdram_shared memory (') != 1 or not (start < text.index('    psx_sdram_shared memory (') < end):
-            parser.error('--sotn-memory: memory fabric block not found')
-        glue_block = SOTN_GLUE
-        # Park the PSRAMs (clock stopped, power-on BCR) while APF holds the
-        # core in reset, so the next core finds them asynchronous; the
-        # card slot's aux accesses still work while parked.
-        glue_block = glue_block.replace(VRAM_HEAD, "    wire vram_park=!reset_n;   // synchronised inside psx_vram_psram\n" + VRAM_HEAD_CLEAN)
-        text = text[:start] + glue_block + text[end:]
+            parser.error('--core-memory: memory fabric block not found')
+        text = text[:start] + CORE_MEMORY + text[end:]
         cram_idle = [f"    assign cram{i}_a=0,cram{i}_dq=16'bz,cram{i}_clk=0,\n        cram{i}_adv_n=1,cram{i}_cre=0,cram{i}_ce0_n=1,cram{i}_ce1_n=1,\n"
                      f"        cram{i}_oe_n=1,cram{i}_we_n=1,cram{i}_ub_n=1,cram{i}_lb_n=1;\n" for i in (0, 1)]
         cdc = '.src_clk(clk_74a), .dst_clk(mem_clk), .reset_async(!power_reset_n || mem_reset),'
         for o in cram_idle + [cdc]:
-            if text.count(o) != 1: parser.error('--sotn-memory anchor not found: ' + o[:60])
+            if text.count(o) != 1: parser.error('--core-memory anchor not found: ' + o[:60])
             text = text.replace(o, '' if o in cram_idle else
                                 '.src_clk(clk_74a), .dst_clk(clk1x), .reset_async(!power_reset_n || !cpu_locked),')
         qsf = out/'apf_top.qsf'; q = qsf.read_text()
         old_sdram = [l for l in q.splitlines() if l.endswith('/sdram.sv" -library work')]
-        if len(old_sdram) != 1: parser.error('--sotn-memory: expected one sdram.sv in the project')
+        if len(old_sdram) != 1: parser.error('--core-memory: expected one sdram.sv in the project')
         if args.sdram_open_row and args.sdram_cas != 3: parser.error('--sdram-open-row needs --sdram-cas 3')
-        # MIT clean-room controller (rtl/memory/psx_sdram_ctrl.sv), same
-        # ports as sdram.sv: a project copy of the glue instantiates it.
+        # The MIT controller rtl/memory/psx_sdram_ctrl.sv (MiSTer sdram.sv's
+        # ports) goes into a project copy of psx_core_memory.sv.
         controller = f'{root}/rtl/memory/psx_sdram_ctrl.sv'
-        glue_text = (root/'rtl/pocket/psx_native_memory.sv').read_text()
-        if glue_text.count('    sdram #(.SINGLE_CHIP(1)) controller (') != 1: parser.error('--sotn-memory: glue instance not found')
-        glue = out/'psx_native_memory.sv'
-        glue_text = glue_text.replace('    sdram #(.SINGLE_CHIP(1)) controller (',
-            f'    psx_sdram_ctrl #(.SINGLE_CHIP(1), .CAS_LATENCY({args.sdram_cas}){", .SPU_FIRST(1)" if args.sdram_spu_first else ""}{", .OPEN_ROW(1)" if args.sdram_open_row else ""}) controller (')
+        glue_text = (root/'rtl/pocket/psx_core_memory.sv').read_text()
+        if glue_text.count(CORE_MEMORY_CONTROLLER) != 1: parser.error('--core-memory: controller instance not found in psx_core_memory.sv')
+        glue = out/'psx_core_memory.sv'
+        glue_text = glue_text.replace(CORE_MEMORY_CONTROLLER,
+            f'    psx_sdram_ctrl #(.CS_TIED_LOW(1), .CAS_LATENCY({args.sdram_cas}){", .SPU_FIRST(1)" if args.sdram_spu_first else ""}{", .OPEN_ROW(1)" if args.sdram_open_row else ""}) controller (')
         if args.spu_cache:
-            if glue_text.count(SPU_CH3_DIRECT) != 1: parser.error('--spu-cache: SPU ch3 wiring not found')
-            glue_text = glue_text.replace(SPU_CH3_DIRECT, SPU_CH3_CACHE)
+            a, b = glue_text.find(SPU_DIRECT_BEGIN), glue_text.find(SPU_DIRECT_END)
+            if glue_text.count(SPU_DIRECT_BEGIN) != 1 or glue_text.count(SPU_DIRECT_END) != 1 or b < a:
+                parser.error('--spu-cache: SPU RAM block not found in psx_core_memory.sv')
+            glue_text = glue_text[:a] + SPU_CH3_CACHE + glue_text[b + len(SPU_DIRECT_END):]
             if args.cheats:
                 # The cheat firmware's main RAM accesses (psx_cue_mount
                 # CHEATS, clk_74a): a request toggle, fields held until
                 # the answer toggle, a read's halfword held in cheat_q.
-                for o, n in (('    output wire dram_we_n, dram_ras_n, dram_cas_n, dram_cke, dram_clk\n);',
-                              '    output wire dram_we_n, dram_ras_n, dram_cas_n, dram_cke, dram_clk,\n'
+                for o, n in (('    output wire        dram_clk\n);',
+                              '    output wire        dram_clk,\n'
                               '    // --cheats: the cue reader\'s main RAM port (clk_74a fields, held)\n'
-                              '    input wire cheat_req_tgl, cheat_rnw, cheat_byte, input wire [20:0] cheat_addr, input wire [15:0] cheat_data,\n'
-                              '    output reg cheat_ack_tgl=0, output wire [15:0] cheat_q\n);'),
+                              '    input  wire cheat_req_tgl, cheat_rnw, cheat_byte, input wire [20:0] cheat_addr, input wire [15:0] cheat_data,\n'
+                              '    output reg  cheat_ack_tgl = 1\'b0, output wire [15:0] cheat_q\n);'),
                              ('    psx_spu_ch3_cache spu_cache (', '''    (* async_reg="true" *) reg [2:0] cheat_req_s=0;
-wire cheat_done;
-always @(posedge clk1x) begin
-    cheat_req_s<={cheat_req_s[1:0],cheat_req_tgl};
-    if (cheat_done) cheat_ack_tgl<=cheat_req_s[2];
-end
-psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
+    wire cheat_done;
+    always @(posedge clk1x) begin
+        cheat_req_s<={cheat_req_s[1:0],cheat_req_tgl};
+        if (cheat_done) cheat_ack_tgl<=cheat_req_s[2];
+    end
+    psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
                              ('.ch3_ready(ch3_ready && !cpu_reset), .ch3_dout(ch3_dout));',
                               '.ch3_ready(ch3_ready && !cpu_reset), .ch3_dout(ch3_dout),\n'
                               '        .ch_req(cheat_req_s[2]^cheat_req_s[1]), .ch_rnw(cheat_rnw), .ch_byte(cheat_byte), .ch_addr(cheat_addr),\n'
                               '        .ch_data(cheat_data), .ch_done(cheat_done), .ch_q(cheat_q));')):
-                    if glue_text.count(o) != 1: parser.error('--cheats: native memory wiring not found: ' + o.strip()[:60])
+                    if glue_text.count(o) != 1: parser.error('--cheats: psx_core_memory wiring not found: ' + o.strip()[:60])
                     glue_text = glue_text.replace(o, n)
             cache_source = root/'rtl/pocket/psx_spu_ch3_cache.sv'
             if args.spu_cache_slim:
@@ -1122,8 +1129,8 @@ psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
         vram_source = f'set_global_assignment -name SYSTEMVERILOG_FILE "{root}/rtl/memory/psx_vram_psram.sv" -library work\n'
         q += f'set_global_assignment -name SYSTEMVERILOG_FILE "{glue}" -library work\n' + vram_source
         qsf.write_text(q)
-        # The MIRLO SDRAM pin constraints name the memory PLL; sdram.sv drives
-        # the pins from clk3x (pocket_sotn has no pin constraints either).
+        # The MIRLO SDRAM pin constraints name the memory PLL; the controller
+        # drives the pins from clk3x.
         sdc = out/'pocket.sdc'
         sdc.write_text(''.join(l for l in sdc.read_text().splitlines(True) if 'pocket_sdram' not in l)
             # shared_initialized reaches clk_74a only through the mem_ready74
@@ -1133,13 +1140,13 @@ psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
             # park_m -> park_s synchroniser.
             + 'set_false_path -to [get_registers {*|psx_vram_psram:vram|park_m}]\n')
     if args.memcard_slot:
-        # Memory card 1 as pocket_sotn keeps it: the image lives in the VRAM
-        # controller's region 1 (the card's DDR3 window), APF writes the save
-        # file there through psx_memcard_slot while the core is held in reset and reads it
-        # back through the same block when the core quits. MiSTer's HPS
-        # mount/load/save registers stay idle and the card is always present.
-        if not args.sotn_memory: parser.error('--memcard-slot needs --sotn-memory (vram_psram aux port)')
+        # Memory card 1 is always present: its image lives in the VRAM
+        # controller's card window, APF loads the save file into it while the
+        # core is held in reset and reads it back when the core quits.
+        # MiSTer's HPS mount/load/save registers stay idle.
+        if not args.core_memory: parser.error('--memcard-slot needs --core-memory (psx_vram_psram aux port)')
         if args.stub_memcards: parser.error('--memcard-slot needs the memory card devices')
+        if not args.memcard_format: parser.error('--memcard-slot always formats cards without the MC magic: add --memcard-format')
         def once_card(o, n):
             nonlocal text
             if text.count(o) != 1: parser.error('--memcard-slot anchor not found: ' + o.strip()[:70])
@@ -1147,17 +1154,11 @@ psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
         once_card('        .aux_req(1\'b0),.aux_we(1\'b0),.aux_addr(21\'b0),.aux_din(32\'b0),.aux_dout(),.aux_done(),.card_write(),\n',
                   '        .aux_req(mc_aux_req),.aux_we(mc_aux_we),.aux_addr(mc_aux_addr),.aux_din(mc_aux_din),.aux_dout(mc_aux_dout),\n'
                   '        .aux_done(mc_aux_done),.card_write(mc_card_write),\n')
-        slot = MEMCARD_SLOT
-        if not args.memcard_format:
-            parser.error('--memcard-slot formats cards without the magic: add --memcard-format')
-        slot = (slot.replace('    pocket_memcard memcard_slot (', '    wire memcard_load_done;\n    psx_memcard_slot memcard_slot (')
-                .replace('.card_write(mc_card_write));', '.card_write(mc_card_write),.load_done(memcard_load_done));'))
-        head = VRAM_HEAD_CLEAN
-        once_card(head, slot + head)
+        once_card(VRAM_HEAD_CLEAN, MEMCARD_SLOT + VRAM_HEAD_CLEAN)
         once_card('    reg memcard1_available=0;\n', "    wire memcard1_available=1'b1;   // --memcard-slot: card 1 always present\n")
         once_card("        if(bridge_wr && bridge_addr==32'h11000108) memcard1_available<=bridge_wr_data[0:0];\n", '')
         mux = "        if (bridge_addr[31:24]==8'hf8) bridge_rd_data=cmd_bridge_rd_data;"
-        once_card(mux, mux + "\n        if (bridge_addr[31:17]==15'h1000) bridge_rd_data=memcard_rd_data;   // card slot 0x20000000")
+        once_card(mux, mux + f"\n        if (bridge_addr[31:17]==15'h{MEMCARD_BASE >> 17:04x}) bridge_rd_data=memcard_rd_data;   // card slot 0x{MEMCARD_BASE:08X}")
         root = Path(__file__).resolve().parents[1]
         entity, source, kind = 'psx_memcard_slot', root/'rtl/pocket/psx_memcard_slot.sv', 'SYSTEMVERILOG_FILE'
         q = (out/'apf_top.qsf').read_text()
@@ -1187,7 +1188,7 @@ psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
         bundle_74 = ' '.join(card + r for r in ('req_we_74', 'req_addr_74[*]', 'req_data_74[*]', 'ready_tgl_74*'))
         sdc.write_text(sdc.read_text() + '\n# psx_memcard_slot: synchroniser first stages and held request/response words.\n'
             'set_false_path -to [get_registers {' + ' '.join(card + r for r in
-                ('s2x_req[0]', 's2x_ready[0]', 's2x_rack[0]', 's74_rst[0]', 's74_take[0]')) + ' *|mc_idle74[0]}]\n'
+                ('s2x_req[0]', 's2x_ready[0]', 's2x_rack[0]', 's74_rst[0]', 's74_take[0]', 's74_clr[0]')) + ' *|mc_idle74[0]}]\n'
             'set_false_path -from [get_registers {*|boot_ready_card}] -to [get_registers {*boot_gate*|reset_pipe[*]}]\n'
             f'set_max_delay 13 -from [get_registers {{{bundle_74}}}] -to [get_registers {{{dest_2x}}}]\n'
             f'set_min_delay -13 -from [get_registers {{{bundle_74}}}] -to [get_registers {{{dest_2x}}}]\n'
@@ -1210,7 +1211,7 @@ psx_spu_ch3_cache #(.CHEAT(1)) spu_cache ('''),
             f'set_min_delay -13 -from [get_registers {{{card}*}}] -to [get_registers {{{x3_aux}}}]\n'
             if args.vram_x3 else ''))
     if args.vram_full_rate:
-        if not args.sotn_memory: parser.error('--vram-full-rate needs --sotn-memory')
+        if not args.core_memory: parser.error('--vram-full-rate needs --core-memory')
         if args.sdram_clock_ps is not None or args.psram_main: parser.error('--vram-full-rate uses the fourth CPU PLL output (not with --sdram-clock-ps/--psram-main)')
         if args.vram_phase is None: args.vram_phase = 4716 if args.vram_x3 else 10047
         period_ps = 9842 if args.vram_x3 else 14763
@@ -1881,16 +1882,8 @@ LOG_DECL
             text = text.replace('.field_swap(apf_swap),', '.field_swap(apf_swap), .video_test(video_test_sync),', 1)
             if text.count('.video_test(video_test_sync)') != 1: parser.error('video test connection failed')
     elif args.weave_setting: parser.error('--weave-setting: no psx_apf_video instance')
-    # Older Native copies used the original single-word module interface.
-    # They now compile against the packet-aware module in this checkout.
     if 'psx_native_memory native_memory' in text:
-        old_native = '.load_valid(c_valid),.load_addr(c_addr),.load_data(c_data[31:0]),.load_be(c_be[3:0]),'
-        new_native = '.load_valid(c_valid),.load_addr(c_addr),.load_halfwords(c_count),.load_data(c_data),.load_be(c_be),'
-        if old_native in text:
-            if text.count(old_native)!=1: parser.error('Ambiguous old Native loader wiring')
-            text = text.replace(old_native,new_native,1)
-        elif text.count(new_native)!=1:
-            parser.error('Unsupported Native loader wiring; reconcile the packet interface before compiling')
+        parser.error('This parent project still has the old native memory wiring; prepare from an unprepared base')
     if args.libcrypt:
         if not (args.cd_stream and args.multi_track): parser.error('--libcrypt needs --cd-stream --multi-track')
         found = re.findall(r"psx_cd_stream #\(\.DEFAULT_SLOT\(16'd101\), \.MAX_TRACKS\(\d+\), \.TRACK_STRIDE\(16'd1\)\)", text)
@@ -1923,7 +1916,8 @@ LOG_DECL
         try: text = disc_swap_text(text)
         except ValueError as error: parser.error('--disc-swap: ' + str(error))
         if args.disc_menu:
-            if not args.multi_track or not 2 <= args.disc_menu <= 4: parser.error('--disc-menu needs --multi-track and 2-4 discs')
+            if not args.multi_track or not 2 <= args.disc_menu <= 5: parser.error('--disc-menu needs --multi-track and 2-5 discs')
+            if args.disc_menu == 5 and not args.cue_mount: parser.error('--disc-menu 5 needs --cue-mount (disc 5 is loaded by the cue reader)')
             from prepare_pocket_disc_swap import disc_menu_text, MENU_SDC
             try: text = disc_menu_text(text, args.disc_menu)
             except ValueError as error: parser.error('--disc-menu: ' + str(error))
@@ -2009,7 +2003,7 @@ LOG_DECL
         # measure_spu_scalar_full_top.inputs() looks up HDL-named ROMs).
         # With the Disc menu, the reader also loads a cue's "(Disc n)" siblings
         # (its reg is declared with psx_disc_menu, before the stream).
-        text = text.replace('CUE_DISC_SETTING', 'disc_setting' if args.disc_menu else "2'd0", 1)
+        text = text.replace('CUE_DISC_SETTING', ('disc_setting' if args.disc_menu == 5 else "{1'b0,disc_setting}") if args.disc_menu else "3'd0", 1)
         if args.cue_libcrypt: text = text.replace('psx_cue_mount #(.FIRMWARE0(', 'psx_cue_mount #(.LIBCRYPT(1), .FIRMWARE0(', 1)
         if args.cue_debug:
             # Overlay rows top to bottom: reader state bits with the LibCrypt
@@ -2062,8 +2056,8 @@ LOG_DECL
         qsf_path.write_text(qsf_path.read_text() + ''.join(f'set_global_assignment -name VERILOG_FILE "{p}" -library work\n'
             for p in sorted(serv.glob('serv_*.v')) if p.name not in ('serv_compdec.v', 'serv_synth_wrapper.v'))
             + f'set_global_assignment -name SYSTEMVERILOG_FILE "{repo}/rtl/pocket/psx_cue_mount.sv" -library work\n')
-    if args.sotn_memory and re.search(r'^\s*(?:sdr_ctrl|psram)\b(?:\s*#\s*\(|\s+\w+\s*\()', text, re.M):
-        parser.error('--sotn-memory: core_top still instantiates a MIRLO64 memory controller')
+    if args.core_memory and re.search(r'^\s*(?:sdr_ctrl|psram)\b(?:\s*#\s*\(|\s+\w+\s*\()', text, re.M):
+        parser.error('--core-memory: core_top still instantiates a MIRLO64 memory controller')
     if args.wide_lines:
         # Every line stretched to 640 pixels (psx_apf_video_wide): the scaler
         # slots only differ by height (package --wide-lines writes them).

@@ -6,15 +6,20 @@ applied on top of the release-init source: every control output on every
 2x tick, the DDR address and payload whenever a request is up, the SS and
 SPU payloads with their strobes. Three planted faults in the lean source
 must fail: a VRAM clear address, a header address step and a header read
-address left at a dropped value.
+address left at a dropped value. With --addr, prepare_reset_seq_addr.py is
+applied on top (no address copies), with two more planted faults: the
+scratchpad end tested without the pending step and the SPU RAM cursor
+stepping at the request.
 """
 import json
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
 
 from prepare_release_init import release_init_source
 from prepare_reset_seq_lean import lean_text
+from prepare_reset_seq_addr import addr_text
 from prepare_resource_targets import UPSTREAM, digest
 from run_release_init import bench_text
 from tool_paths import ROOT, find_tool
@@ -35,13 +40,21 @@ FAULTS = [
      ('                     ddr3_ADDR      <= std_logic_vector(to_unsigned(Softmap_SaveState_ADDR, 26));\n', ''),
      'Reset DDR request mismatch'),
 ]
+ADDR_FAULTS = [
+    ('addr-scratch-end', ["-gFASTSIM='1'", '-gSEED=1'],
+     ('RAMAddrNext >= 255) or', 'RAMAddrNext >= 256) or'), 'mismatch'),
+    ('addr-spu-step-early', ["-gSPUSDRAM='0'", '-gSEED=4'],
+     ("               SS_SPURAM_request   <= '1';\n", "               SS_SPURAM_request   <= '1';\n               RAMAddrNext         <= RAMAddrNext + 1;\n"), 'mismatch'),
+]
 
 
 def main():
+    addr = '--addr' in sys.argv[1:]
     parent = ROOT/'build/sim/reset-seq-lean'; parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='checks-', dir=parent))
     lean = work/'savestates_lean.vhd'
-    lean.write_text(lean_text(Path(release_init_source(work/'rtl')['path']).read_text()))
+    text = lean_text(Path(release_init_source(work/'rtl')['path']).read_text())
+    lean.write_text(addr_text(text) if addr else text)
     bench = work/'tb.vhd'; bench.write_text(bench_text()); reference = UPSTREAM/'rtl/savestates.vhd'
     ghdl = find_tool('ghdl'); runs = []
 
@@ -65,11 +78,11 @@ def main():
         return passed
 
     ok = all([run(name, args) for name, args in PROFILES])
-    caught = [run(name, args, mutation, marker) for name, args, mutation, marker in FAULTS]
+    caught = [run(name, args, mutation, marker) for name, args, mutation, marker in FAULTS + (ADDR_FAULTS if addr else [])]
     report = dict(passed=ok and all(caught), runs=runs, lean_sha256=digest(lean))
     (work/'report.json').write_text(json.dumps(report, indent=2) + '\n'); print(work/'report.json')
     if not report['passed']: raise SystemExit('reset-seq-lean check failed')
-    print('PASS reset-seq-lean: equal to the pinned reset sequence; 3 planted faults caught')
+    print('PASS reset-seq-lean' + (' --addr' if addr else '') + f': equal to the pinned reset sequence; {len(caught)} planted faults caught')
 
 
 if __name__ == '__main__':

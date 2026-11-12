@@ -7,7 +7,11 @@
 2. sim/reference/tb_spu_save_tap.vhd: the state of one SPU, saved at the
    quiet point the way the save routine does, restored into another,
    gives the same output after a settle time (2 seeds); four planted
-   restore faults must keep a mismatch to the end.
+   restore faults must keep a mismatch to the end. Held, the release mask
+   (0x1F801DBC/E) must match the voice records.
+3. REKEY: the guest-only restore the build uses (save port off) plus the
+   save routine's re-key: keyed voices play, the others are off and silent
+   (2 seeds); a release mask from the wrong phase bit must fail.
 The SPU is the build's chain: context RAM, reverb table, guest M10K, static
 readback, lean ADSR, CD queue, free voice slot.
 """
@@ -35,14 +39,18 @@ def build_chain(text):
     return text.replace(*FREE_SLOT)
 
 
-def save_tap(directory, seeds, faults, extra=()):
+MASK_FAULT = ('save_released(index) <= voice.adsrphase(2);', 'save_released(index) <= voice.adsrphase(0);')
+
+
+def save_tap(directory, seeds, faults, extra=(), tap=None):
     """Run tb_spu_save_tap on the tapped build chain; return {(seed, fault): passed}."""
     ghdl = find_tool('ghdl')
     # reuse the lockstep run's prepared libraries and base SPU
     base = directory / 'lockstep' / 'spu_guest.vhd'
     work = directory / 'lockstep'
     tapped = work / 'spu_t.vhd'
-    tapped.write_text(re.sub(r'\bspu\b', 'spu_t', spu_tap_text(build_chain(base.read_text()))))
+    text = spu_tap_text(build_chain(base.read_text()))
+    tapped.write_text(re.sub(r'\bspu\b', 'spu_t', tap(text) if tap else text))
     log = (work / 'build.log').open('w')
     def call(*args): subprocess.run([ghdl, *args], cwd=work, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
     call('-a', '--std=08', '-frelaxed', str(tapped))
@@ -55,8 +63,8 @@ def save_tap(directory, seeds, faults, extra=()):
                                 '--assert-level=error', '--ieee-asserts=disable'], cwd=work, capture_output=True, text=True, timeout=7200)
             out = r.stdout + r.stderr
             summary = [l.split('): ')[-1] for l in out.splitlines() if 'SPU save tap' in l or 'quiet point' in l]
-            results[(seed, fault)] = (r.returncode == 0 and 'PASS SPU save tap' in out, summary)
-            print(f'seed {seed} fault {fault}:', 'PASS' if results[(seed, fault)][0] else 'FAIL', *summary[:2], flush=True)
+            results[(seed, fault, *extra)] = (r.returncode == 0 and 'PASS SPU save tap' in out, summary)
+            print(f'seed {seed} fault {fault}', *extra, ':', 'PASS' if results[(seed, fault, *extra)][0] else 'FAIL', *summary[:2], flush=True)
     return results
 
 
@@ -71,9 +79,13 @@ def main():
         if not passed: failures.append('unheld lockstep')
     results = save_tap(directory, (1, 2), (0,))
     results.update(save_tap(directory, (1,), (1, 2, 3, 4)))
-    failures += [f'seed {s} fault {f}' for (s, f), (ok, _) in results.items() if not ok]
+    results.update(save_tap(directory, (1, 2), (0,), ('-gREKEY=true',)))
+    failures += [' '.join(map(str, key)) for key, (ok, _) in results.items() if not ok]
+    mask_fault = save_tap(directory, (1,), (0,), ('-gREKEY=true',), tap=lambda t: t.replace(*MASK_FAULT))
+    print('release mask fault:', 'caught' if not any(ok for ok, _ in mask_fault.values()) else 'NOT caught', flush=True)
+    if any(ok for ok, _ in mask_fault.values()): failures.append('release mask fault not caught')
     if failures: raise SystemExit('SPU save tap check failed: ' + ', '.join(failures))
-    print('PASS SPU save tap: unheld lockstep, restored state matches, planted faults caught')
+    print('PASS SPU save tap: unheld lockstep, restored state matches, release mask, re-key, planted faults caught')
 
 
 if __name__ == '__main__':

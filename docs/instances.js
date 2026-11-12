@@ -17,6 +17,7 @@
   const LIBCRYPT_SLOT = 99;
   const CHEAT_SLOT = 98;
   const CARD_SLOT = 16;
+  const MAX_DISCS = 5;   // the most discs a game file or playlist names (core 0.5.9+; 4 before)
   const TSZ_SLOT = 97;   // track sizes (--track-sizes cores): see trackSizes()
   const DISC = / \(Disc \d+\)/;
   const DISC_N = /\s*\(Disc (\d+)\)/i;
@@ -771,14 +772,14 @@
   }
 
   // Why a playlist the user wrote can't be a game file, or null: the core
-  // takes up to four discs, each a .cue or .bin relative to the playlist
-  // (or from the card's root with a leading /).
-  async function playlistCheck(card, m3u) {
+  // takes up to discs discs (its Swap Discs list), each a .cue or .bin
+  // relative to the playlist (or from the card's root with a leading /).
+  async function playlistCheck(card, m3u, discs = 4) {
     const file = await fileAt(card, m3u);
     if (!file) return 'not readable';
     const entries = playlistEntries(await file.text());
     if (!entries.length) return 'no discs listed';
-    if (entries.length > 4) return `${entries.length} discs (the core takes 4)`;
+    if (entries.length > discs) return `${entries.length} discs (the core takes ${discs})`;
     for (const entry of entries) {
       if (!/\.(cue|bin)$/i.test(entry)) return `${entry}: not a .cue or .bin`;
       const path = [];   // with ".." resolved
@@ -788,6 +789,16 @@
       if (!await fileAt(card, path)) return `${entry} not found`;
     }
     return null;
+  }
+
+  // How many discs the core's Swap Discs list (interact.json, the list on
+  // bridge address 0x50000044) offers, 0 without one.
+  async function menuDiscs(card, core) {
+    try {
+      const variables = JSON.parse(await (await fileAt(card, ['Cores', core, 'interact.json'])).text()).interact.variables;
+      const menu = Array.isArray(variables) ? variables.find((v) => v && String(v.address || '').toLowerCase() === '0x50000044' && Array.isArray(v.options)) : null;
+      return menu ? menu.options.length : 0;
+    } catch (e) { return 0; }
   }
 
   async function makeInstances(card, options, log = () => {}) {
@@ -804,7 +815,7 @@
     // --one-file-disc cores: one .bin plus a .trk table per disc (slots 100n+1, 100n+2).
     // --cue-mount cores read the cue themselves (their launch slot takes .cue files).
     const cueReader = declared !== null && declared.some((s) => s && s.id === 0 && (s.extensions || []).includes('cue'));
-    // Cue-reader cores read .m3u playlists (up to four discs); slot 100 taking
+    // Cue-reader cores read .m3u playlists (up to five discs; four before 0.5.9); slot 100 taking
     // them means a game file can name one.
     const playlistSlot = declared !== null && declared.some((s) => s && s.id === 100 && (s.extensions || []).includes('m3u'));
     const oneFile = !cueReader && declared !== null && declared.some((s) => s && s.id === 102 && (s.extensions || []).includes('trk'));
@@ -825,6 +836,9 @@
     for (let n = 2; n < 10; n++) discTracks[n] = ids.filter((id) => id >= 100 * n + 1 && id <= 100 * n + 99).length;
     let discsDeclared = 1;
     for (let n = 2; n < 10; n++) if (discTracks[n]) discsDeclared++;
+    // A cue reader core loads discs past the declared slots by name (disc 5
+    // has none): its Swap Discs list says how many.
+    if (cueReader) discsDeclared = Math.max(discsDeclared, await menuDiscs(card, core));
     const discs = new Map();   // shared card name -> stems of its discs
     const games = new Map();   // game name -> Map(disc number -> [[cue, files, tags]])
     const named = new Set();   // game file names written this run
@@ -868,7 +882,7 @@
       if (tag) (tag[0] === 1 ? first : later).add(tag[1].replace(RELEASE, '').trim());
     }
     const untaggedFirst = (s) => { const t = s.replace(RELEASE, '').trim(); return later.has(t) && !first.has(t); };
-    // A subfolder holding only 2-4 cues that no disc tag groups, named as one
+    // A subfolder holding only 2-4 cues (2-5 on a five-disc core) that no disc tag groups, named as one
     // game's discs, is that game ("Riven/disc1.cue", "Riven/disc2.cue"),
     // named after the folder.
     const byFolder = new Map();
@@ -881,7 +895,7 @@
     const folderDisc = new Map();   // cue rel -> [disc number, game key]
     for (const [key, rels] of byFolder) {
       const stems = rels.map((r) => stem(r[r.length - 1]));
-      if (rels.length < 2 || rels.length > 4 || stems.some((s) => discTag(s) || untaggedFirst(s))) continue;
+      if (rels.length < 2 || rels.length > Math.max(4, discsDeclared) || stems.some((s) => discTag(s) || untaggedFirst(s))) continue;
       const numbers = folderDiscs(stems);
       if (numbers) rels.forEach((r, i) => folderDisc.set(r.join('/'), [numbers[i], key + '/']));   // never a title's key
     }
@@ -992,10 +1006,10 @@
         const root = folders[0].slice(0, depth), m3u = [...root, name + '.m3u'];
         const shown = m3u.slice(common.length).join('/');
         const shared = cardOf();
-        if (numbers.length <= 4) {
+        if (numbers.length <= MAX_DISCS) {
           await writeFile(card, m3u, numbers.map((n) => parts.get(n)[0].slice(root.length).join('/') + '\n').join(''));
         }
-        if (numbers.length <= 4 && playlistSlot) {
+        if (numbers.length <= MAX_DISCS && playlistSlot) {
           const dataPath = posix(root.slice(common.length)), prefix = dataPath !== '.' ? dataPath + '/' : '';
           const useShared = sharedCards && shared;
           const [cue1, files1] = parts.get(1);
@@ -1019,7 +1033,7 @@
           summary.written++;
           continue;
         }
-        if (numbers.length <= 4) {
+        if (numbers.length <= MAX_DISCS) {
           say(`${label}: the discs' names differ by more than their number: wrote the playlist ${shown} ` +
               "(pick it in the core's file list to swap discs); each disc also gets its own game file");
         } else {
@@ -1077,7 +1091,7 @@
       for (const rel of await walk(commonDir, (n) => /\.m3u$/i.test(n))) {
         const m3u = [...common, ...rel], m3uStem = stem(rel[rel.length - 1]);
         if (named.has(m3uStem)) continue;
-        const reason = await playlistCheck(card, m3u);
+        const reason = await playlistCheck(card, m3u, Math.max(4, discsDeclared));
         if (reason) { say(`skip ${rel.join('/')}: ${reason}`); summary.skipped++; continue; }
         const dataPath = posix(m3u.slice(common.length, -1));
         await writeInstance(m3uStem, [{ id: 100, filename: rel[rel.length - 1] }], dataPath !== '.' ? dataPath + '/' : '');

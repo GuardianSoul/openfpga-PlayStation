@@ -14,7 +14,8 @@ use std.textio.all;
 entity tb_cd_lockstep is
    generic (SEED : integer := 1; RUN_CYCLES : integer := 2000000; SECTORS : integer := 40;
             METADATA : string := "metadata.hex"; FASTCD_IN : integer := 0;
-            PAUSE_READ : integer := 0);   -- 1: also Pause mid-sector while reading or playing
+            PAUSE_READ : integer := 0;   -- 1: also Pause mid-sector while reading or playing
+            SUBCHANNEL_READS : integer := 0);
 end entity;
 
 architecture sim of tb_cd_lockstep is
@@ -281,6 +282,15 @@ begin
          else   -- reset
             reset <= '1'; tick(12); reset <= '0'; wait until hasCD = '1' for 1 ms; tick(1000);
             wr(0, 1); wr(2, 31); wr(0, 1); wr(3, 31); wr(0, 0);
+         end if;
+         if SUBCHANNEL_READS = 1 then
+            -- GetlocP publishes the current snapshot. Service every response
+            -- byte so a corrupted copied row reaches the public comparison.
+            wr(0, 1); wr(3, 31); wr(0, 0);
+            wr(1, 16#11#); n_cmds <= n_cmds + 1;
+            tick(40000);
+            for i in 0 to 7 loop rd(1); end loop;
+            wr(0, 1); wr(3, 31); wr(0, 0);
          end if;
       end loop;
       report "LOCKSTEP PASS cycles " & integer'image(cycles) & " commands " & integer'image(n_cmds)

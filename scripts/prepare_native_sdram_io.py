@@ -59,6 +59,15 @@ REVIEWED_CAS3_CAPTURE_SHA256 = {
     # OPEN_ROW hit column address chosen in the idle edge (open_hit1) to keep
     # the precharge compare off the a[] pin path; same pins/commands/capture.
     'c67c8b418bf205de9d6d3f2c6dc2065a5bf4cdf7b094213c72b705e53402bc0c',
+    # The same source with ramstyle = "M10K" on the five read-tag arrays (save-state builds, dd872462):
+    # synthesis attributes and a comment only, no logic line differs from c67c8b41.
+    'dbb26df24000a586150a7f69da9dbad0968d576e2e8bb1b3c539caaf1bdfe597',
+    # c67c8b with the one-chip parameter renamed SINGLE_CHIP -> CS_TIED_LOW
+    # (name and comments only; every line of logic is identical).
+    '6cd22854b935950d7d60b8f3f897a66f30a729cd5efe652e798d75bcc8c9d988',
+    # dbb26df2 (ramstyle on the read-tag arrays) merged with the CS_TIED_LOW rename:
+    # no non-comment line differs from dbb26df2 once the name is normalised.
+    '13d14bbca691bede58296bff8672377805e0c1c94cee7337a1398c0fb5f87f97',
 }
 REVIEWED_SPU_FIRST_CAPTURE_SHA256 = {
     'e96f00a8a26ab2c47b77ba6ed8a066f7653e1215e83872b2aa1d417a83753adf',
@@ -68,6 +77,13 @@ REVIEWED_SPU_FIRST_CAPTURE_SHA256 = {
     '8b3bb6655041400411d003151b2771f048559043148fa7192b891710b984269e',
     '8c1dab71b1b4e4b03053b572d04fcbdc3c9d37c869f7f673ece1704a8fb7813d',
     'c67c8b418bf205de9d6d3f2c6dc2065a5bf4cdf7b094213c72b705e53402bc0c',
+    'dbb26df24000a586150a7f69da9dbad0968d576e2e8bb1b3c539caaf1bdfe597',
+    # c67c8b with the one-chip parameter renamed SINGLE_CHIP -> CS_TIED_LOW
+    # (name and comments only; every line of logic is identical).
+    '6cd22854b935950d7d60b8f3f897a66f30a729cd5efe652e798d75bcc8c9d988',
+    # dbb26df2 (ramstyle on the read-tag arrays) merged with the CS_TIED_LOW rename:
+    # no non-comment line differs from dbb26df2 once the name is normalised.
+    '13d14bbca691bede58296bff8672377805e0c1c94cee7337a1398c0fb5f87f97',
 }
 
 
@@ -129,7 +145,7 @@ def wrapper_parameters(text):
     instances=re.findall(r'psx_sdram_ctrl\s*#\(([^\n]+)\)\s+controller\s*\(',text)
     if len(instances)!=1 or text.count('.clk(clk3x), .clk_base(clk1x)')!=1:
         raise ValueError('Unknown single-chip Native clock/instance wiring')
-    parameters=re.fullmatch(r'\s*\.SINGLE_CHIP\(1\)(?:,\s*\.CAS_LATENCY\(([23])\))?(?:,\s*\.SPU_FIRST\(([01])\))?(?:,\s*\.OPEN_ROW\(([01])\))?\s*',instances[0])
+    parameters=re.fullmatch(r'\s*\.CS_TIED_LOW\(1\)(?:,\s*\.CAS_LATENCY\(([23])\))?(?:,\s*\.SPU_FIRST\(([01])\))?(?:,\s*\.OPEN_ROW\(([01])\))?\s*',instances[0])
     if not parameters:raise ValueError('Unknown Native SDRAM parameter override')
     # OPEN_ROW keeps the per-READ capture contract (same tags and pipeline)
     return tuple(int(x) if x is not None else None for x in parameters.groups()[:2])
@@ -153,7 +169,7 @@ def project_contract(directory, expected_controller_sha256):
     directory=Path(directory).resolve()
     assigned=assignments(directory,(directory/'apf_top.qsf').read_text())
     controllers=[p for kind,p in assigned if kind=='SYSTEMVERILOG_FILE' and p.name=='psx_sdram_ctrl.sv']
-    wrappers=[p for kind,p in assigned if kind=='SYSTEMVERILOG_FILE' and p.name=='psx_native_memory.sv']
+    wrappers=[p for kind,p in assigned if kind=='SYSTEMVERILOG_FILE' and p.name=='psx_core_memory.sv']
     if len(controllers)!=1 or digest(controllers[0])!=expected_controller_sha256 or len(wrappers)!=1:
         raise ValueError('Expected one identity-checked clean Native SDRAM controller and wrapper')
     override,priority_override=wrapper_parameters(wrappers[0].read_text())
@@ -212,7 +228,7 @@ set_multicycle_path -setup 2 -from $native_sdram_inputs -to $native_sdram_caps
         added.append(capture)
         physical=[
             'set_global_assignment -name AUTO_DELAY_CHAINS ON',
-            'set_instance_assignment -name ALLOW_SYNCH_CTRL_USAGE OFF -to "core_top:ic|psx_native_memory:native_memory|psx_sdram_ctrl:controller|dq_oe"',
+            'set_instance_assignment -name ALLOW_SYNCH_CTRL_USAGE OFF -to "core_top:ic|psx_core_memory:native_memory|psx_sdram_ctrl:controller|dq_oe"',
             'set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to "dram_dq[*]"',
         ]
         if input_delay_taps is not None:

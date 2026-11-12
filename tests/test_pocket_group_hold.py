@@ -39,8 +39,8 @@ foreach leaf {
  {ic|psx|component_core|idma|pocket_hold_dma12|identity_lut}
  {other|pocket_hold_dma11|identity_lut}
 } {if {![catch {group53_key $leaf} why] || ![string match {Unknown group identity leaf*} $why]} {error "Unknown leaf accepted"}}
-set source {core_top:ic|psx_native_memory:native_memory|psx_sdram_ctrl:controller|wdata[20]}
-set target {core_top:ic|psx_native_memory:native_memory|psx_sdram_ctrl:controller|dq_out[4]~_Duplicate_1}
+set source {core_top:ic|psx_core_memory:native_memory|psx_sdram_ctrl:controller|wdata[20]}
+set target {core_top:ic|psx_core_memory:native_memory|psx_sdram_ctrl:controller|dq_out[4]~_Duplicate_1}
 group53_reg sdr 20 source $source
 group53_reg sdr 20 target $target
 foreach {bit direction name} [list 21 source $source 21 target $target] {

@@ -81,7 +81,24 @@ def joypad_transcode_source(text):
                            end loop;''')
 
 
-def prepare(directory,fast_reset=True,gpu_line_share=False,fast_boot=False,gpu_divider_pool=False,gpu_timing_prune=False):
+def save_state_exp1_rom(rom_hex):
+    """VHDL for psx_save_exp1's guest-visible reads at rest (no request, trap off): handler ROM
+    0x0000-0x0FFF, page 0x1000-0x17FF (zero), registers 0x1800-0x1BFF (zero), ROM2 0x1C00-0x1FFF."""
+    words=[int(l,16) for l in Path(rom_hex).read_text().split()]
+    rom1=[(w>>(8*(a&3)))&255 for a in range(4096) for w in [words[(a>>2)&1023]]]
+    rom2=[(words[a]>>32)&255 for a in range(1024)]
+    def table(name,values):
+        return f'   type t_{name} is array(0 to {len(values)-1}) of std_logic_vector(7 downto 0);\n' \
+               f'   constant {name} : t_{name} := (' + ','.join(f'x"{v:02X}"' for v in values) + ');\n'
+    signals=table('sim_exp1_rom1',rom1)+table('sim_exp1_rom2',rom2)+'   signal sim_exp1_q : std_logic_vector(7 downto 0);\n'
+    logic=('   sim_exp1_q <= sim_exp1_rom1(to_integer(save_exp1_addr(11 downto 0))) when save_exp1_addr(12) = \'0\' else\n'
+           '                 sim_exp1_rom2(to_integer(save_exp1_addr(9 downto 0))) when save_exp1_addr(11 downto 10) = "11" else\n'
+           '                 (others => \'0\');\n')
+    return signals,logic
+
+
+def prepare(directory,fast_reset=True,gpu_line_share=False,fast_boot=False,gpu_divider_pool=False,gpu_timing_prune=False,
+            save_states=None):
     # Do not modify upstream entities or the resource-fit projects.
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     manifest=prepare_resources(directory/'project',['psx_top'])
@@ -132,7 +149,17 @@ def prepare(directory,fast_reset=True,gpu_line_share=False,fast_boot=False,gpu_d
         key=(library,name)
         if key in seen:continue
         seen.add(key);selected=Path(substitutions.get(name,original))
-        text=hardware_text(selected.read_text());changes=['Omit synthesis translate-off debug sections']
+        raw=selected.read_text();ss_changes=[]
+        if save_states and name in save_states['transforms']:
+            raw=save_states['transforms'][name](raw);ss_changes.append('Save-state transform (prepare_save_states.py)')
+            if name=='psx_top.vhd':
+                signals,logic=save_states['exp1']
+                raw=re.sub(r'(bus_exp1_dataRead\s*=>\s*)save_exp1_dataRead,',r'\1sim_exp1_q,',raw,count=1)
+                parts=re.split(r'(?m)^begin[ \t\r]*$',raw)
+                head,body=(parts[0],parts[1]) if len(parts)==2 else (None,None)
+                if head is None or 'sim_exp1_q,' not in raw:raise ValueError('psx_top EXP1 read hookup not found')
+                raw=head+signals+'begin\n'+logic+body;ss_changes.append('EXP1 reads from the handler ROM image')
+        text=hardware_text(raw);changes=['Omit synthesis translate-off debug sections']+ss_changes
         if name=='export.vhd':
             text=text.split('end package;')[0]
             marker='   signal regs                   : tExportRegs;'

@@ -31,6 +31,8 @@ const CHEAT_SLOT: i64 = 98;
 /// A cue-reader core's track sizes for a game file whose files it opens by path.
 const TSZ_SLOT: i64 = 97;
 const CARD_SLOT: i64 = 16;
+/// The most discs a game file or playlist names (core 0.5.9+; 4 before).
+const MAX_DISCS: usize = 5;
 /// Files a cue-reader core reads from the game file's slots 101+ (disc 1).
 const CUE_FILE_SLOTS: usize = 19;
 /// Space a large write always leaves free on the SD card.
@@ -1075,6 +1077,19 @@ pub fn disc_menu_name(card: &Path, core: &str) -> String {
     named.unwrap_or_else(|| "Swap Discs".to_string())
 }
 
+/// How many discs the core's disc menu (the list on bridge address
+/// 0x50000044) offers, 0 without one.
+fn menu_discs(card: &Path, core: &str) -> usize {
+    read_json(&card.join("Cores").join(core).join("interact.json"))
+        .and_then(|j| {
+            j.get("interact")?.get("variables")?.as_array()?.iter().find_map(|v| {
+                let address = v.get("address")?.as_str()?.to_ascii_lowercase();
+                if address == "0x50000044" { v.get("options")?.as_array().map(|o| o.len()) } else { None }
+            })
+        })
+        .unwrap_or(0)
+}
+
 /// Slots the core declares in its data.json, or None.
 fn declared_slots(card: &Path, core: &str) -> Option<Vec<(Option<i64>, Vec<String>)>> {
     let data = read_json(&card.join("Cores").join(core).join("data.json"))?;
@@ -1200,9 +1215,9 @@ fn playlist_entries(text: &str) -> Vec<String> {
 }
 
 /// Why a playlist the user wrote can't be a game file, or None: the core
-/// takes up to four discs, each a .cue or .bin relative to the playlist (or
+/// takes up to `discs` discs (its Swap Discs list), each a .cue or .bin relative to the playlist (or
 /// from the card's root with a leading /).
-fn playlist_check(m3u: &Path, card: &Path) -> Option<String> {
+fn playlist_check(m3u: &Path, card: &Path, discs: usize) -> Option<String> {
     let text = match fs::read(m3u) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) => return Some(e.to_string()),
@@ -1211,8 +1226,8 @@ fn playlist_check(m3u: &Path, card: &Path) -> Option<String> {
     if entries.is_empty() {
         return Some("no discs listed".into());
     }
-    if entries.len() > 4 {
-        return Some(format!("{} discs (the core takes 4)", entries.len()));
+    if entries.len() > discs {
+        return Some(format!("{} discs (the core takes {discs})", entries.len()));
     }
     for entry in &entries {
         if !has_ext(entry, ".cue") && !has_ext(entry, ".bin") {
@@ -1322,7 +1337,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     let one_file = is_one_file(card, core);
     let cue_reader = is_cue_reader(card, core);
     let track_sizes_slot = cue_reader && ids.contains(&TSZ_SLOT);
-    // Cue-reader cores read .m3u playlists (up to four discs); slot 100 taking
+    // Cue-reader cores read .m3u playlists (up to five discs; four before 0.5.9); slot 100 taking
     // them means a game file can name one.
     let playlist_slot = declared.iter().flatten().any(|(id, ext)| *id == Some(100) && ext.iter().any(|e| e == "m3u"));
     let common = card.join("Assets").join(platform).join("common");
@@ -1336,7 +1351,12 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     for n in 2..10i64 {
         disc_tracks.insert(n, ids.iter().filter(|&&id| (100 * n + 1..=100 * n + 99).contains(&id)).count());
     }
-    let discs_declared = 1 + (2..10).filter(|n| disc_tracks[n] > 0).count();
+    let mut discs_declared = 1 + (2..10).filter(|n| disc_tracks[n] > 0).count();
+    // A cue reader core loads discs past the declared slots by name (disc 5
+    // has none): its Swap Discs list says how many.
+    if cue_reader {
+        discs_declared = discs_declared.max(menu_discs(card, core));
+    }
     let (mut written, mut skipped) = (0, report_chds(&common, log));
     skipped += write_lone_cues(&common, log);
     skipped += report_other_images(&common, log);
@@ -1352,7 +1372,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
         }
     }
     let untagged_first: std::collections::HashSet<String> = later.difference(&first).cloned().collect();
-    // A subfolder holding only 2-4 cues that no disc tag groups, named as one
+    // A subfolder holding only 2-4 cues (2-5 on a five-disc core) that no disc tag groups, named as one
     // game's discs, is that game ("Riven/disc1.cue", "Riven/disc2.cue"),
     // named after the folder.
     let mut by_folder: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
@@ -1366,7 +1386,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     for (folder, cues) in &by_folder {
         let stems: Vec<String> = cues.iter().map(|c| stem(&name_of(c)).to_string()).collect();
         let tagged = stems.iter().any(|s| disc_tag(s).is_some() || untagged_first.contains(release().replace_all(s, "").trim()));
-        if !(2..=4).contains(&cues.len()) || tagged {
+        if !(2..=discs_declared.max(4)).contains(&cues.len()) || tagged {
             continue;
         }
         if let Some(numbers) = folder_discs(&stems) {
@@ -1500,11 +1520,11 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
                 let m3u = root.join(format!("{name}.m3u"));
                 let shown = rel(&m3u, &common);
                 let card = card_of.clone();
-                if numbers.len() <= 4 {
+                if numbers.len() <= MAX_DISCS {
                     let text: String = numbers.iter().map(|n| rel(&parts[n].0, &root) + "\n").collect();
                     write_bytes(&m3u, text.as_bytes()).map_err(|e| format!("{shown}: {e}"))?;
                 }
-                if numbers.len() <= 4 && playlist_slot {
+                if numbers.len() <= MAX_DISCS && playlist_slot {
                     let data_path = rel(&root, &common);
                     let prefix = if data_path != "." { format!("{data_path}/") } else { String::new() };
                     let shared = card.clone().filter(|_| shared_cards);
@@ -1538,7 +1558,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
                     written += 1;
                     continue;
                 }
-                if numbers.len() <= 4 {
+                if numbers.len() <= MAX_DISCS {
                     log(&format!(
                         "{label}: the discs' names differ by more than their number: wrote the playlist {shown} (pick it in the core's \
                          file list to swap discs); each disc also gets its own game file"
@@ -1629,7 +1649,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
                 continue;
             }
             let shown = rel(&m3u, &common);
-            if let Some(reason) = playlist_check(&m3u, card) {
+            if let Some(reason) = playlist_check(&m3u, card, discs_declared.max(4)) {
                 log(&format!("skip {shown}: {reason}"));
                 skipped += 1;
                 continue;

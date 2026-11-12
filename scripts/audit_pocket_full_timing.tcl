@@ -89,7 +89,7 @@ if {$native_corners} {
     set cpu [get_clocks {*cpu_pll*OUTPUT_COUNTER*divclk}]
     set video [get_clocks {*video_pll*OUTPUT_COUNTER*divclk}]
     set audio [get_clocks {*audio_pll*OUTPUT_COUNTER*divclk}]
-    set native [get_keepers {*|psx_native_memory:native_memory|*}]
+    set native [get_keepers {*|psx_core_memory:native_memory|*}]
     if {[get_collection_size $cpu]!=3 || [get_collection_size $video]!=2 ||
         [get_collection_size $audio]!=1 || [get_collection_size $native]<50} {
         error "Unexpected Native integrated clock/memory geometry"

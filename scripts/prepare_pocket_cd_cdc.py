@@ -18,6 +18,15 @@ from prepare_resource_targets import digest
 from tool_paths import ROOT
 
 MENU_SHA = 'd5115fc7f0e6e73b4e1820271744e8d2a668ce273884405cddd91826c0140b22'
+# Output-only wanted/stable observations; selector state/CDC are unchanged.
+MENU_OBSERVER_SHA = '36ec562c4a2c38e1432e88d9119b3088298cd00329947bd6e451b4cfcb4fb0cf'
+# Five-disc menu (0.5.9): a third setting bit only when DISCS is 5; disc 5
+# remounts FIRST_SLOT. Four-disc builds keep two-bit registers.
+MENU_FIVE_SHA = '0970ddb842a8dc67f33ef3de0ace71491df8fa501f10c6d359d29dc82d49e095'
+# Five-disc menu plus the output-only selected_disc port (save-state remount reads the
+# menu's disc); selector state and CDC are those of MENU_FIVE_SHA.
+MENU_FIVE_SELECTED_SHA = 'cb4259ad7a3d0ace68b67751e6085f67e67825d2a4a1f76a5eb0634ca3816808'
+REVIEWED_MENU_SOURCES = {MENU_SHA, MENU_OBSERVER_SHA, MENU_FIVE_SHA, MENU_FIVE_SELECTED_SHA}
 SWAP_SHA = 'a81899cb61fde35da7077daf9deb296f9066fc3edda8fe8d6d3a469a0f80c56d'
 MENU_FIRST_STAGE = 'set_false_path -to [get_registers {*|disc_menu|disc_meta[*]}]\n'
 MENU_HELD = HELD + ' *|disc_stream|m_present[*]'
@@ -147,9 +156,10 @@ def top_profile(text):
             raise ValueError('Disc-swap transport domain differs')
         if module in ('psx_disc_select', 'psx_disc_menu'):
             if menu:
-                header = "psx_disc_menu #(.FIRST_SLOT(16'd101), .STEP(16'd100), .DISCS(4)) disc_menu ("
-                if instance.count(header) != 1:
-                    raise ValueError('Expected the released four-disc menu profile')
+                # Four discs as released, or five (disc 5 by the cue reader).
+                headers = ["psx_disc_menu #(.FIRST_SLOT(16'd101), .STEP(16'd100), .DISCS(%d)) disc_menu (" % n for n in (4, 5)]
+                if sum(instance.count(h) for h in headers) != 1:
+                    raise ValueError('Expected the released four- or five-disc menu profile')
             else:
                 slot = re.findall(r'\.DISC_SLOT\((.*?)\)', instance)
                 if len(slot) != 1 or slot_value(slot[0]) != 101:
@@ -192,12 +202,13 @@ def top_contract(text):
 
 def preserve_menu_flops(text):
     import hashlib
-    if hashlib.sha256(text.encode()).hexdigest() != MENU_SHA:
+    if hashlib.sha256(text.encode()).hexdigest() not in REVIEWED_MENU_SOURCES:
         raise ValueError('Disc menu source identity differs')
-    old = '    reg [1:0] disc_sync=0, disc_last=0, wanted=0, selected=0;'
-    new = ('    (* async_reg="true", preserve, dont_merge *) reg [1:0] disc_sync=0;\n'
-           '    (* preserve, dont_merge *) reg [1:0] disc_last=0;\n'
-           '    reg [1:0] wanted=0, selected=0;')
+    width = '[W-1:0]' if '    reg [W-1:0] disc_sync=0,' in text else '[1:0]'
+    old = f'    reg {width} disc_sync=0, disc_last=0, wanted=0, selected=0;'
+    new = (f'    (* async_reg="true", preserve, dont_merge *) reg {width} disc_sync=0;\n'
+           f'    (* preserve, dont_merge *) reg {width} disc_last=0;\n'
+           f'    reg {width} wanted=0, selected=0;')
     if text.count(old) != 1:
         raise ValueError('Disc menu synchronizer declaration differs')
     return text.replace(old, new, 1)
@@ -254,9 +265,9 @@ def prepare_project(directory, expected_top_sha256):
             raise ValueError('Disc menu requires the reviewed file-presence stream')
         for name, sha in (('psx_disc_menu.sv', MENU_SHA), ('psx_disc_swap.sv', SWAP_SHA)):
             found = [p for k, p in selected if k == 'SYSTEMVERILOG_FILE' and p.name == name]
-            if len(found) != 1 or digest(found[0]) != sha:
+            if len(found) != 1 or digest(found[0]) not in (REVIEWED_MENU_SOURCES if name == 'psx_disc_menu.sv' else {sha}):
                 raise ValueError('Disc menu dependency identity differs: ' + name)
-            dependencies[str(found[0])] = sha
+            dependencies[str(found[0])] = digest(found[0])
             if name == 'psx_disc_menu.sv':
                 menu_source = found[0]
     work = directory / 'cd-cdc'; scope = work / 'pocket_cd_scope.sdc'; config = work / 'cd.sdc'

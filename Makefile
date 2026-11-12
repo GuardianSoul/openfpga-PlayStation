@@ -13,11 +13,18 @@ check-native-sdram-spec:
 	python3 scripts/run_native_sdram_spec.py
 
 release:
-	@test -n "$(RC_PROJECT)" -a -n "$(RC_PACKAGE)" -a -n "$(VERSION)" || \
-		(echo 'make release RC_PROJECT=<fitted project> RC_PACKAGE=<package_pocket_early.py output> VERSION=x.y.z'; exit 1)
-	python3 scripts/release_timing.py "$(RC_PROJECT)"
-	python3 scripts/package_release.py "$(RC_PACKAGE)" --version $(VERSION)
-	python3 scripts/release_source.py "$(RC_PROJECT)" --version $(VERSION)
+	@test -n "$(RC_PACKAGE)" -a -n "$(VERSION)" -a -n "$(RC_PROJECT)$(RC_CAPTURE)" || \
+		(echo 'make release RC_PROJECT=<fitted project> RC_PACKAGE=<package_pocket_early.py output> VERSION=x.y.z'; \
+		 echo '  or RC_CAPTURE=<signed-off ~/probecap capture> in place of RC_PROJECT: repoints it into build/fits'; \
+		 echo '  (scripts/repoint_capture.py), keeps its release-timing.json, runs no Quartus.'; \
+		 echo '  Package RC_PACKAGE from the repointed project (the path repoint_capture.py prints).'; exit 1)
+	@set -e; if [ -n "$(RC_CAPTURE)" ]; then \
+		P=$$(python3 scripts/repoint_capture.py "$(RC_CAPTURE)"); T="$$P/release-timing.json"; \
+	else \
+		P="$(RC_PROJECT)"; T=build/release/timing.json; python3 scripts/release_timing.py "$$P"; \
+	fi; \
+	python3 scripts/package_release.py "$(RC_PACKAGE)" --version $(VERSION) --timing "$$T"; \
+	python3 scripts/release_source.py "$$P" --version $(VERSION)
 
 .PHONY: test-spu-cd-queue
 test: test-spu-cd-queue
@@ -147,6 +154,11 @@ test-memorymux-fifo-ram:
 	python3 scripts/run_memorymux_fifo_ram.py --quick
 
 .PHONY: test-memcard-format test-vram-psram test-memcard-slot test-memorymux-fifo-ram
+.PHONY: test-save-exp1
+test: test-save-exp1
+test-save-exp1:
+	python3 scripts/run_save_exp1.py
+
 # Slow (GHDL SPU benches): run after changing the SPU save tap or the SPU chain.
 .PHONY: test-spu-save-tap
 test-spu-save-tap:
@@ -463,19 +475,28 @@ test-release-init:
 test-reset-seq-lean:
 	python3 scripts/run_reset_seq_lean.py
 
-.PHONY: test-cd-controller-apf test-cd-swap-apf
-test: test-cd-controller-apf test-cd-swap-apf
+.PHONY: test-cd-stream test-cd-controller-apf
+test: test-cd-stream test-cd-controller-apf
+
+test-cd-stream:
+	python3 scripts/run_cd_stream.py
+
+test-cd-split-buffers:
+	python3 scripts/run_cd_stream.py --split --side-slot
 
 test-cd-controller-apf:
 	python3 scripts/run_cd_controller.py --apf
 
-test-cd-swap-apf:
-	python3 scripts/run_cd_swap_apf.py
-
-.PHONY: test-cd-menu-cdc
-test: test-cd-menu-cdc
+.PHONY: test-cd-menu-cdc test-cd-table-cdc test-cd-table-menu-cdc
+test: test-cd-menu-cdc test-cd-table-cdc test-cd-table-menu-cdc
 test-cd-menu-cdc:
 	python3 scripts/run_cd_menu_cdc.py
+
+test-cd-table-cdc:
+	python3 scripts/run_cd_table_cdc.py
+
+test-cd-table-menu-cdc:
+	python3 scripts/run_cd_table_menu_cdc.py
 
 .PHONY: test-clean-memory-cdc
 test-clean-memory-cdc:

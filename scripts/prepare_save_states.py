@@ -35,6 +35,18 @@ def _sub_once(text, pattern, repl, what):
 TRAP_VECTOR = 0xBF000000
 
 
+def exp1_byte_bus_text(text):
+    """The internal save device has one byte lane, including its first fetch.
+
+    Keep programmable delays and register readback. The upstream external
+    EXP1 stub allowed width/increment settings our internal ROM cannot use;
+    firmware cannot repair these after fetching an invalid first opcode.
+    """
+    return _once(text, "ex1_memctrl when (ext_select_ex1 = '1') else",
+                 "(\"10\" & ex1_memctrl(11 downto 0)) when (ext_select_ex1 = '1') else",
+                 'internal EXP1 byte bus')
+
+
 def cpu_trap_text(text):
     if 'trapRequest' in text:
         raise ValueError('save states: CPU already has trapRequest')
@@ -60,6 +72,12 @@ def cpu_trap_text(text):
     text = _sub_once(text, r'^([ \t]*)exception           <= exceptionNew;\n',
                      lambda m: m.group(0) + f"{m.group(1)}exceptionTrap       <= exceptionNew5 and trapRequest and not exceptionNew1;\n",
                      'exception register')
+    # The release accuracy step raises IBE outside RAM/BIOS/KSEG2. The trap
+    # handler executes from EXP1, which memorymux_exp1_text serves below.
+    # Keep this decode matched with the reverse preparation order as well.
+    from prepare_cpu_exceptions import TAG, BAD_FETCH, SAVE_BAD_FETCH
+    if TAG in text:
+        text = _once(text, BAD_FETCH, SAVE_BAD_FETCH, 'CPU save-handler fetch error decode')
     return text
 
 
@@ -98,53 +116,59 @@ def memorymux_exp1_text(text):
            '                           mem_tagvalids   <= mem_oldtagvalids;\n'
            '                           state           <= BUSREADEXTERNAL;\n' + old)
     text = _once(text, old, new, 'instruction fetch decode')
-    return text
+    return exp1_byte_bus_text(text)
 
 
 TAP_PORT = '      bus_dataRead         : out std_logic_vector(31 downto 0);\n'
 
 
+# The set tap: psx_save_exp1's last 0x1805-0x180A write (save_set_sel 1-6)
+# and its byte, held until its next register write.
+SET_PORTS = ("      save_set_sel         : in  std_logic_vector(2 downto 0) := (others => '0');\n"
+             "      save_set_data        : in  std_logic_vector(7 downto 0) := (others => '0');\n")
+
+
 def irq_set_text(text):
-    """irq.vhd: I_STAT bits the save routine sets while save_set_go is 1 (no game can set them)."""
-    if 'save_set_go' in text:
+    """irq.vhd: I_STAT bits the save routine sets (no game can set them):
+    bits 7:0 while save_set_sel is 1, bits 10:8 while it is 2."""
+    if 'save_set_sel' in text:
         raise ValueError('save states: irq already has the set tap')
-    text = _once(text, TAP_PORT, TAP_PORT + "      save_set_go          : in  std_logic := '0';\n"
-                 "      save_set_irq         : in  std_logic_vector(10 downto 0) := (others => '0');\n", 'irq ports')
+    text = _once(text, TAP_PORT, TAP_PORT + SET_PORTS, 'irq ports')
     old = '            I_STATUSNew := I_STATUSNew or (irqIn and (not irqIn_1));\n'
-    return _once(text, old, old + "            if (save_set_go = '1') then I_STATUSNew := I_STATUSNew or unsigned(save_set_irq); end if;\n",
+    return _once(text, old, old +
+                 "            if (save_set_sel = \"001\") then I_STATUSNew := I_STATUSNew or resize(unsigned(save_set_data), 11); end if;\n"
+                 "            if (save_set_sel = \"010\") then I_STATUSNew := I_STATUSNew or shift_left(resize(unsigned(save_set_data(2 downto 0)), 11), 8); end if;\n",
                  'irq status update')
 
 
 def dma_set_text(text):
-    """dma.vhd: DICR flag bits (24-30) the save routine sets while save_set_go is 1."""
-    if 'save_set_go' in text:
+    """dma.vhd: DICR flag bits (24-30) the save routine sets while save_set_sel is 3."""
+    if 'save_set_sel' in text:
         raise ValueError('save states: dma already has the set tap')
-    text = _once(text, TAP_PORT, TAP_PORT + "      save_set_go          : in  std_logic := '0';\n"
-                 "      save_set_dma         : in  std_logic_vector(6 downto 0) := (others => '0');\n", 'dma ports')
+    text = _once(text, TAP_PORT, TAP_PORT + SET_PORTS, 'dma ports')
     return _sub_once(text, r'^([ \t]*)end if; -- ce\n',
-                     lambda m: f"{m.group(1)}   if (save_set_go = '1') then DICR_IRQs <= DICR_IRQs or unsigned(save_set_dma); end if;\n"
+                     lambda m: f"{m.group(1)}   if (save_set_sel = \"011\") then DICR_IRQs <= DICR_IRQs or unsigned(save_set_data(6 downto 0)); end if;\n"
                                + m.group(0), 'dma ce end')
 
 
 def timer_tap_text(text):
     """timer.vhd: the hidden flags {irqDone, T_MODE(12:10)} per timer read out
-    without side effects (a T_MODE read clears 11-12) and forced while
-    save_set_go is 1."""
-    if 'save_set_go' in text:
+    without side effects (a T_MODE read clears 11-12) and forced from
+    save_set_data(3:0) while save_set_sel is 4 + the timer."""
+    if 'save_set_sel' in text:
         raise ValueError('save states: timer already has the tap')
-    text = _once(text, TAP_PORT, TAP_PORT + "      save_set_go          : in  std_logic := '0';\n"
-                 "      save_set_timer       : in  std_logic_vector(11 downto 0) := (others => '0');\n"
+    text = _once(text, TAP_PORT, TAP_PORT + SET_PORTS +
                  "      save_timer_flags     : out std_logic_vector(11 downto 0);\n", 'timer ports')
     text = _sub_once(text, r'^begin[ \t]*\n', lambda m: m.group(0) + ''.join(
         f"\n   save_timer_flags({4 * i + 3} downto {4 * i}) <= timerArray({i}).irqDone & std_logic_vector(timerArray({i}).T_MODE(12 downto 10));"
         for i in range(3)) + '\n', 'timer architecture begin')
     return _sub_once(text, r'^([ \t]*)-- bus interface\n',
-                     lambda m: f"{m.group(1)}if (save_set_go = '1') then\n"
-                               f"{m.group(1)}   for i in 0 to 2 loop\n"
-                               f"{m.group(1)}      timerArray(i).T_MODE(12 downto 10) <= unsigned(save_set_timer(4 * i + 2 downto 4 * i));\n"
-                               f"{m.group(1)}      timerArray(i).irqDone <= save_set_timer(4 * i + 3);\n"
-                               f"{m.group(1)}   end loop;\n"
-                               f"{m.group(1)}end if;\n\n" + m.group(0), 'timer bus interface')
+                     lambda m: f"{m.group(1)}for i in 0 to 2 loop\n"
+                               f"{m.group(1)}   if (to_integer(unsigned(save_set_sel)) = 4 + i) then\n"
+                               f"{m.group(1)}      timerArray(i).T_MODE(12 downto 10) <= unsigned(save_set_data(2 downto 0));\n"
+                               f"{m.group(1)}      timerArray(i).irqDone <= save_set_data(3);\n"
+                               f"{m.group(1)}   end if;\n"
+                               f"{m.group(1)}end loop;\n\n" + m.group(0), 'timer bus interface')
 
 
 def gpu_tap_text(text):
@@ -166,16 +190,33 @@ def cd_tap_text(text):
     routine at save time could land between the game's own commands and
     sector interrupts): stat byte, mode, XA filter, the last sector read and
     a busy bit (a command, a second response or a drive interrupt on its
-    way; with it 0 and IRQFLAG 0 the game has every sector up to
-    currentLBA)."""
+    way, or a sector being copied into the data FIFO; with it 0 and IRQFLAG
+    0 the game has every sector up to currentLBA).
+
+    The data FIFO's unread bytes are part of a state (a game may leave the
+    rest of a sector there for seconds): the routine reads them out at
+    1F801802 and puts them back through the set tap, select 7 (psx_save_exp1
+    CD_PUT): one FIFO write each time it turns 7."""
     if 'save_cd_state' in text:
         raise ValueError('save states: cd_top already has the tap')
-    text = _once(text, CD_TAP_PORT, CD_TAP_PORT + '      save_cd_state        : out std_logic_vector(63 downto 0);\n',
+    text = _once(text, CD_TAP_PORT, CD_TAP_PORT + '      save_cd_state        : out std_logic_vector(63 downto 0);\n' + SET_PORTS,
                  'cd_top ports')
-    tap = ('\n   save_cd_state <= "0000000" & (working or cmd_busy or cmdPending or (pendingDriveIRQ(0) or pendingDriveIRQ(1) or\n'
+    signals = ("   signal save_copy_busy : std_logic;\n"
+               "   signal save_put_d     : std_logic := '0';\n")
+    tap = ("\n   save_copy_busy <= '0' when (copyState = COPY_IDLE) else '1';\n"
+           '   save_cd_state <= "0000000" & (working or cmd_busy or cmdPending or save_copy_busy or (pendingDriveIRQ(0) or pendingDriveIRQ(1) or\n'
            '                    pendingDriveIRQ(2) or pendingDriveIRQ(3) or pendingDriveIRQ(4))) &\n'
            '                    std_logic_vector(to_unsigned(currentLBA, 24)) & XaFilterChannel & XaFilterFile & modeReg & internalStatus;\n')
-    return _sub_once(text, r'^begin[ \t]*\n', lambda m: m.group(0) + tap, 'cd_top architecture begin')
+    text = _sub_once(text, r'^begin[ \t]*\n', lambda m: signals + m.group(0) + tap, 'cd_top architecture begin')
+    anchor = '            -- if data fifo is reset while copy is still ongoing, stop copy immidiatly so fifo stays empty\n'
+    return _once(text, anchor,
+                 '            -- save states: a byte the save routine puts back into the data fifo\n'
+                 '            save_put_d <= \'0\';\n'
+                 '            if (save_set_sel = "111") then save_put_d <= \'1\'; end if;\n'
+                 '            if (save_set_sel = "111" and save_put_d = \'0\') then\n'
+                 '               FifoData_Wr  <= \'1\';\n'
+                 '               FifoData_Din <= save_set_data;\n'
+                 '            end if;\n\n' + anchor, 'cd_top data fifo copy')
 
 
 SPU_KEEP_WRITES = {2, 3, 4, 5, 6, 37, 43}   # plus the IRQ9 line of 40
@@ -199,6 +240,13 @@ def spu_tap_text(text):
     carry that state).
     While quiet, the voice-record readback uses the engine's bank (the
     voice loop is idle), so the guest copy of the records stays unused.
+
+    The build ties the savestate register port off (psx_top_spu_text): the
+    save routine only reads and writes guest registers (owner, 2026-11-04:
+    a brief sound glitch on load is fine). For its re-key on load, a held
+    SPU reads 0x1F801DBC/E as the voices in ADSR release (save_released,
+    set with each voice record); unheld they read all ones as before. The
+    benches still use the port to check the restore.
     """
     if 'save_spu_hold' in text:
         raise ValueError('save states: spu already has the tap')
@@ -231,6 +279,20 @@ def spu_tap_text(text):
     for flag in ('voice_adsrWrite', 'voice_repeatWrite'):
         text = _sub_once(text, r'(=> )(' + flag + r'\(to_integer\(bus_addr\(8 downto 4\)\)\)) *<= \'1\';',
                          lambda m: m.group(1) + f"if (save_spu_hold = '0') then {m.group(2)} <= '1'; end if;", 'spu ' + flag)
+    # the voices in ADSR release, for the save routine's re-key on load
+    text = _once(text, "   signal voice_repeatWrite : std_logic_vector(23 downto 0) := (others => '0');\n",
+                 "   signal voice_repeatWrite : std_logic_vector(23 downto 0) := (others => '0');\n"
+                 "   signal save_released     : std_logic_vector(23 downto 0) := (others => '0');   -- save states: ADSR release\n",
+                 'spu release mask signal')
+    text = _once(text, '                  RamVoiceRecord_dataA( 76 downto  74) <= std_logic_vector(voice.adsrphase);\n',
+                 '                  RamVoiceRecord_dataA( 76 downto  74) <= std_logic_vector(voice.adsrphase);\n'
+                 '                  save_released(index) <= voice.adsrphase(2);   -- save states: RELEASE = "100"\n',
+                 'spu release mask')
+    text = _once(text, '                     when 16#1BA# => bus_dataRead <= CURVOL_R;\n',
+                 '                     when 16#1BA# => bus_dataRead <= CURVOL_R;\n'
+                 "                     when 16#1BC# => if (save_spu_hold = '1') then bus_dataRead <= save_released(15 downto 0); end if;\n"
+                 "                     when 16#1BE# => if (save_spu_hold = '1') then bus_dataRead <= x\"00\" & save_released(23 downto 16); end if;\n",
+                 'spu release mask read')
     text, n = re.subn(r'(SS_DataRead <= [^;]*?)RamVoiceRecord_dataB\(1\)', r'\1RamVoiceRecord_dataB(0)', text)
     if n != 4:
         raise ValueError(f'save states: spu record readback found {n} times')
@@ -259,15 +321,32 @@ def spu_tap_text(text):
     return text
 
 
+# The build's SPU port is off: the record engine address needs no port select.
+SPU_RECORD_ADDR = ("   RamVoiceRecord_addrB(0)  <= SS_Adr(6 downto 2) when (save_spu_quiet = '1') else to_unsigned(index, 5);\n",
+                   '   RamVoiceRecord_addrB(0)  <= to_unsigned(index, 5);\n')
+
+
+def spu_build_text(text):
+    """The build's SPU: the tap with the savestate port off (no record
+    engine address select, and held voice register writes flag ADSR and
+    repeat writes as unheld ones do: nothing restores the records, and
+    the load's key-on clears both flags)."""
+    text = _once(spu_tap_text(text), *SPU_RECORD_ADDR, 'spu record engine address (port off)')
+    for flag in ('voice_adsrWrite', 'voice_repeatWrite'):
+        text = _sub_once(text, r"if \(save_spu_hold = '0'\) then (" + flag + r"\(to_integer\(bus_addr\(8 downto 4\)\)\) <= '1';) end if;",
+                         lambda m: m.group(1), 'spu build ' + flag)
+    return text
+
+
 SAVE_PORTS_VHDL = ('save_trap : in std_logic := \'0\';\n'
+                   '      save_mode : in std_logic := \'0\';\n'
+                   '      save_cd_freeze : in std_logic := \'0\';\n'
                    '      save_exp1_addr : out unsigned(12 downto 0);\n'
                    '      save_exp1_write : out std_logic;\n'
                    '      save_exp1_dataWrite : out std_logic_vector(7 downto 0);\n'
                    '      save_exp1_dataRead : in std_logic_vector(7 downto 0) := (others => \'0\');\n'
-                   '      save_set_go : in std_logic := \'0\';\n'
-                   '      save_set_irq : in std_logic_vector(10 downto 0) := (others => \'0\');\n'
-                   '      save_set_dma : in std_logic_vector(6 downto 0) := (others => \'0\');\n'
-                   '      save_set_timer : in std_logic_vector(11 downto 0) := (others => \'0\');\n'
+                   '      save_set_sel : in std_logic_vector(2 downto 0) := (others => \'0\');\n'
+                   '      save_set_data : in std_logic_vector(7 downto 0) := (others => \'0\');\n'
                    '      save_timer_flags : out std_logic_vector(11 downto 0);\n'
                    '      save_gpu_ranges : out std_logic_vector(62 downto 0);\n'
                    '      save_cd_state : out std_logic_vector(63 downto 0);\n'
@@ -296,16 +375,17 @@ SPU_TOP_SIGNALS = '''   -- save states: the SPU savestate and RAM ports from the
    signal save_spu_ram_rnw   : std_logic;
 '''
 SPU_TOP_LOGIC = '''
-   -- (the reset-only sequencer never strobes the SPU's register port)
-   save_spu_ss_adr    <= save_spu_adr;
-   save_spu_ss_wdata  <= save_spu_wdata;
-   save_spu_ss_wren   <= save_spu_wren;
-   save_spu_ss_rden   <= save_spu_rden;
+   -- (the reset-only sequencer never strobes the SPU's register port; the
+   -- save routine restores the SPU by guest writes only, so it is off)
+   save_spu_ss_adr    <= (others => '0');
+   save_spu_ss_wdata  <= (others => '0');
+   save_spu_ss_wren   <= '0';
+   save_spu_ss_rden   <= '0';
    save_spu_ram_wdata <= save_spuram_wdata  when (save_spu_hold = '1') else SS_SPURAM_dataWrite;
    save_spu_ram_adr   <= save_spuram_adr    when (save_spu_hold = '1') else SS_SPURAM_Adr;
    save_spu_ram_req   <= save_spuram_req    when (save_spu_hold = '1') else SS_SPURAM_request;
    save_spu_ram_rnw   <= save_spuram_rnw    when (save_spu_hold = '1') else SS_SPURAM_rnw;
-   save_spu_rdata     <= SS_DataRead_SOUND;
+   save_spu_rdata     <= (others => '0');
    save_spuram_rdata  <= SS_SPURAM_dataRead;
    save_spuram_done   <= SS_SPURAM_done;
 '''
@@ -350,12 +430,25 @@ def psx_top_text(text):
                      'memorymux EXP1 map')
     text = _sub_once(text, r'(icpu : entity work\.cpu\s*port map\s*\([^;]*?\n([ \t]*)irqRequest[ \t]*=> irqRequest,)',
                      lambda m: m.group(1) + f'\n{m.group(2)}trapRequest       => save_trap,', 'CPU irqRequest map')
-    for unit, maps in (('irq', ('save_set_go', 'save_set_irq')), ('dma', ('save_set_go', 'save_set_dma')),
-                       ('tmr', ('save_set_go', 'save_set_timer', 'save_timer_flags')), ('gpu', ('save_gpu_ranges',)),
-                       ('cd', ('save_cd_state',))):
+    for unit, maps in (('irq', ('save_set_sel', 'save_set_data')), ('dma', ('save_set_sel', 'save_set_data')),
+                       ('tmr', ('save_set_sel', 'save_set_data', 'save_timer_flags')), ('gpu', ('save_gpu_ranges',)),
+                       ('cd', ('save_cd_state', 'save_set_sel', 'save_set_data'))):
         text = _sub_once(text, r'^([ \t]*)bus_dataRead([ \t]*)=> bus_' + unit + r'_dataRead,[ \t]*\n',
                          lambda m: m.group(0) + ''.join(f'{m.group(1)}{name} => {name},\n' for name in maps),
                          unit + ' bus map')
+    # save mode (psx_save_exp1 SAVE_MODE): the CPU's main RAM bits 22:21 reach
+    # the SDRAM above main RAM, where the save routine's stage 2 lives (mirrors
+    # of main RAM otherwise; DMA addresses are unchanged)
+    text = _once(text, '                    ram_cpu_Adr(24 downto 23) & "00" & ram_cpu_Adr(20 downto 0);\n',
+                 '                    ram_cpu_Adr(24 downto 23) & (ram_cpu_Adr(22 downto 21) and (save_mode & save_mode)) & ram_cpu_Adr(20 downto 0);\n',
+                 'psx_top main RAM address')
+    # (save_mode is a clk1x register of psx_save_exp1: these bits stay clk1x-timed)
+    # CD freeze (psx_save_exp1 CD_FREEZE): cd_top's clock enable off while the
+    # save routine copies, so no sector arrives that nobody reads
+    text = _sub_once(text, r'(icd_top : entity work\.cd_top\s*port map\s*\(\s*clk1x\s*=> clk1x,\s*\n\s*ce\s*=> )ce,',
+                     lambda m: m.group(1) + 'save_cd_ce,', 'cd_top ce map')
+    text = _sub_once(text, r'^begin[ \t]*\n', lambda m: '   signal save_cd_ce : std_logic;\n' + m.group(0) +
+                     "\n   save_cd_ce <= ce and not save_cd_freeze;\n", 'psx_top architecture begin (cd ce)')
     return psx_top_spu_text(text)
 
 
@@ -363,11 +456,10 @@ def resource_wrapper_text(text):
     """psx_mister_psx_top_resource (the generated psx_top wrapper): pass the ports through."""
     if 'save_trap' in text:
         raise ValueError('save states: wrapper already has save_trap')
-    ports = ('    save_trap : in std_logic;\n    save_exp1_addr : out unsigned(12 downto 0);\n'
+    ports = ('    save_trap : in std_logic;\n    save_mode : in std_logic;\n    save_cd_freeze : in std_logic;\n    save_exp1_addr : out unsigned(12 downto 0);\n'
              '    save_exp1_write : out std_logic;\n    save_exp1_dataWrite : out std_logic_vector(7 downto 0);\n'
-             '    save_exp1_dataRead : in std_logic_vector(7 downto 0);\n    save_set_go : in std_logic;\n'
-             '    save_set_irq : in std_logic_vector(10 downto 0);\n    save_set_dma : in std_logic_vector(6 downto 0);\n'
-             '    save_set_timer : in std_logic_vector(11 downto 0);\n    save_timer_flags : out std_logic_vector(11 downto 0);\n'
+             '    save_exp1_dataRead : in std_logic_vector(7 downto 0);\n    save_set_sel : in std_logic_vector(2 downto 0);\n'
+             '    save_set_data : in std_logic_vector(7 downto 0);\n    save_timer_flags : out std_logic_vector(11 downto 0);\n'
              '    save_gpu_ranges : out std_logic_vector(62 downto 0);\n'
              '    save_cd_state : out std_logic_vector(63 downto 0);\n'
              '    save_spu_hold : in std_logic;\n    save_spu_quiet : out std_logic;\n'
@@ -378,11 +470,10 @@ def resource_wrapper_text(text):
              '    save_spuram_wdata : in std_logic_vector(15 downto 0);\n    save_spuram_rdata : out std_logic_vector(15 downto 0);\n'
              '    save_spuram_done : out std_logic')
     text = _sub_once(text, r'(\S)(\n\);\nend entity;)', lambda m: m.group(1) + ';\n' + ports + m.group(2), 'wrapper entity end')
-    maps = ('        save_trap => save_trap,\n        save_exp1_addr => save_exp1_addr,\n'
+    maps = ('        save_trap => save_trap,\n        save_mode => save_mode,\n        save_cd_freeze => save_cd_freeze,\n        save_exp1_addr => save_exp1_addr,\n'
             '        save_exp1_write => save_exp1_write,\n        save_exp1_dataWrite => save_exp1_dataWrite,\n'
-            '        save_exp1_dataRead => save_exp1_dataRead,\n        save_set_go => save_set_go,\n'
-            '        save_set_irq => save_set_irq,\n        save_set_dma => save_set_dma,\n'
-            '        save_set_timer => save_set_timer,\n        save_timer_flags => save_timer_flags,\n'
+            '        save_exp1_dataRead => save_exp1_dataRead,\n        save_set_sel => save_set_sel,\n'
+            '        save_set_data => save_set_data,\n        save_timer_flags => save_timer_flags,\n'
             '        save_gpu_ranges => save_gpu_ranges,\n        save_cd_state => save_cd_state,\n' +
             ',\n'.join(f'        {n} => {n}' for n in SPU_SIGNALS))
     text = _sub_once(text, r'(\S)(\n    \);\nend architecture;)', lambda m: m.group(1) + ',\n' + maps + m.group(2), 'wrapper port map end')
@@ -395,10 +486,10 @@ SPU_SIGNALS = ('save_spu_hold', 'save_spu_quiet', 'save_spu_adr', 'save_spu_wdat
 
 SAVE_BLOCK = '''    // Save states (prepare_save_states.py): EXP1 device + APF save/load handshake.
     // The copy engine sits in front of the card slot on psx_vram_psram's aux port.
-    wire save_trap, save_exp1_write, ss_aux_req, ss_aux_we, ss_aux_done;
+    wire save_trap, save_mode, save_cd_freeze, save_exp1_write, ss_aux_req, ss_aux_we, ss_aux_done;
     wire [1:0] save_disc;   // the disc in the drive - 1, assigned at the end of the module
     wire [12:0] save_exp1_addr; wire [7:0] save_exp1_dataWrite, save_exp1_dataRead;
-    wire save_set_go; wire [10:0] save_set_irq; wire [6:0] save_set_dma; wire [11:0] save_set_timer, save_timer_flags;
+    wire [2:0] save_set_sel; wire [7:0] save_set_data; wire [11:0] save_timer_flags;
     wire [62:0] save_gpu_ranges; wire [63:0] save_cd_state;
     wire save_spu_hold, save_spu_quiet, save_spu_rden, save_spu_wren, save_spuram_req, save_spuram_rnw, save_spuram_done;
     wire [8:0] save_spu_adr; wire [31:0] save_spu_wdata, save_spu_rdata;
@@ -407,11 +498,11 @@ SAVE_BLOCK = '''    // Save states (prepare_save_states.py): EXP1 device + APF s
     wire ss_supported, ss_start_ack, ss_start_busy, ss_start_ok, ss_start_err;
     wire ss_load_ack, ss_load_busy, ss_load_ok, ss_load_err, ss_start, ss_load;
     wire [31:0] ss_addr, ss_size, ss_maxloadsize;
-    psx_save_exp1 #(.ROM_HEX("{rom}"), .ROM2_HEX("{rom2}"), .SAVE_BASE(32'h3000_0000), .SAVE_SIZE(32'h0040_0000)) save_exp1 (
+    psx_save_exp1 #(.ROM_HEX("{rom}"), .SAVE_BASE(32'h3000_0000), .SAVE_SIZE(32'h0040_0000)) save_exp1 (
         .clk2x(clk2x), .reset_2x(mc_reset2x[1]),
         .bus_addr(save_exp1_addr), .bus_write(save_exp1_write), .bus_dataWrite(save_exp1_dataWrite),
-        .bus_dataRead(save_exp1_dataRead), .trap(save_trap),
-        .set_go(save_set_go), .set_irq(save_set_irq), .set_dma(save_set_dma), .set_timer(save_set_timer),
+        .bus_dataRead(save_exp1_dataRead), .trap(save_trap), .save_mode(save_mode), .cd_freeze(save_cd_freeze),
+        .set_sel(save_set_sel), .set_data(save_set_data),
         .timer_flags(save_timer_flags), .gpu_ranges(save_gpu_ranges),
         .clk1x(clk1x), .spu_hold(save_spu_hold), .spu_quiet(save_spu_quiet), .spu_ss_adr(save_spu_adr),
         .spu_ss_wdata(save_spu_wdata), .spu_ss_rden(save_spu_rden), .spu_ss_wren(save_spu_wren), .spu_ss_rdata(save_spu_rdata),
@@ -426,7 +517,7 @@ SAVE_BLOCK = '''    // Save states (prepare_save_states.py): EXP1 device + APF s
         .savestate_start(ss_start), .savestate_start_ack(ss_start_ack), .savestate_start_busy(ss_start_busy),
         .savestate_start_ok(ss_start_ok), .savestate_start_err(ss_start_err),
         .savestate_load(ss_load), .savestate_load_ack(ss_load_ack), .savestate_load_busy(ss_load_busy),
-        .savestate_load_ok(ss_load_ok), .savestate_load_err(ss_load_err), .disc(save_disc),
+        .savestate_load_ok(ss_load_ok), .savestate_load_err(ss_load_err), .disc(save_disc), .core_held(!reset_n),
         .cd_state(save_cd_state));
 '''
 
@@ -455,16 +546,30 @@ def core_top_text(text, rom_hex, save_size=0x400000):
     head = f'    psx_vram_psram #({params}) vram (' if params else '    psx_vram_psram vram ('
     at = text.index(head)
     vram = text[at:text.index(');', at)]
-    vram = _once(vram, '.aux_req(mc_aux_req),.aux_we(mc_aux_we),.aux_addr(mc_aux_addr),.aux_din(mc_aux_din),.aux_dout(mc_aux_dout),\n'
-                       '        .aux_done(mc_aux_done),',
-                 '.aux_req(ss_aux_req),.aux_we(ss_aux_we),.aux_addr(ss_aux_addr),.aux_din(ss_aux_din),.aux_dout(ss_aux_dout),\n'
-                 '        .aux_done(ss_aux_done),', 'VRAM aux port')
+    x3 = '    psx_vram_x3 vram_x3 ('
+    if x3 in text:
+        # --vram-x3: the card slot's aux port reaches the controller through the
+        # clk2x side of psx_vram_x3; aux_dout comes straight from the controller
+        vram = _once(vram, '.aux_dout(mc_aux_dout),', '.aux_dout(ss_aux_dout),', 'VRAM aux_dout')
+        b = text.index(x3); line = text[b:text.index(');', b)]
+        new_line = line
+        for port in ('aux_req', 'aux_we', 'aux_addr', 'aux_din', 'aux_done'):
+            new_line = _once(new_line, f'.{port}(mc_{port}),', f'.{port}(ss_{port}),', f'VRAM x3 bridge {port}')
+    else:
+        vram = _once(vram, '.aux_req(mc_aux_req),.aux_we(mc_aux_we),.aux_addr(mc_aux_addr),.aux_din(mc_aux_din),.aux_dout(mc_aux_dout),\n'
+                           '        .aux_done(mc_aux_done),',
+                     '.aux_req(ss_aux_req),.aux_we(ss_aux_we),.aux_addr(ss_aux_addr),.aux_din(ss_aux_din),.aux_dout(ss_aux_dout),\n'
+                     '        .aux_done(ss_aux_done),', 'VRAM aux port')
     text = text[:at] + vram + text[at + len(vram):]
-    block = SAVE_BLOCK.replace('{rom}', str(rom_hex)).replace('{rom2}', str(rom2_hex(rom_hex)))
+    if x3 in text:
+        text = _once(text, line, new_line, 'VRAM x3 bridge')
+    block = SAVE_BLOCK.replace('{rom}', str(rom_hex))
     if save_size != 0x400000:
         block = block.replace(".SAVE_SIZE(32'h0040_0000)", f".SAVE_SIZE(32'h{save_size:08X})")
-    text = _once(text, head, block + f'    psx_vram_psram #(.SAVE_AUX(1){", " + params if params else ""}) vram (',
-                 'VRAM instance')
+    text = _once(text, head, f'    psx_vram_psram #(.SAVE_AUX(1){", " + params if params else ""}) vram (', 'VRAM instance')
+    # the save block's nets are declared before their first use (the x3 bridge comes first)
+    first = '    // --vram-x3: controller on clk3x' if x3 in text else f'    psx_vram_psram #(.SAVE_AUX(1)'
+    text = _once(text, first, block + first, 'save block position')
     # the disc in the drive: psx_disc_menu/psx_disc_select's first slot 101/201/301/401
     disc = '{swap_slot_id[8], swap_slot_id[7]}' if 'wire [15:0] swap_slot_id;' in text else "2'd0"
     if text.count('\nendmodule') < 1:
@@ -477,10 +582,10 @@ def core_top_text(text, rom_hex, save_size=0x400000):
     text = _once(text, mux, mux + "\n        if (bridge_addr[31:22]==10'h0C0) bridge_rd_data=memcard_rd_data;   // save states 0x30000000",
                  'bridge read mux')
     text = _sub_once(text, r'(psx_mister_psx_top_resource\s+psx\s*\()',
-                     lambda m: m.group(1) + '.save_trap(save_trap),.save_exp1_addr(save_exp1_addr),.save_exp1_write(save_exp1_write),'
+                     lambda m: m.group(1) + '.save_trap(save_trap),.save_mode(save_mode),.save_cd_freeze(save_cd_freeze),.save_exp1_addr(save_exp1_addr),.save_exp1_write(save_exp1_write),'
                                            '.save_exp1_dataWrite(save_exp1_dataWrite),.save_exp1_dataRead(save_exp1_dataRead),'
-                                           '.save_set_go(save_set_go),.save_set_irq(save_set_irq),.save_set_dma(save_set_dma),'
-                                           '.save_set_timer(save_set_timer),.save_timer_flags(save_timer_flags),.save_gpu_ranges(save_gpu_ranges),'
+                                           '.save_set_sel(save_set_sel),.save_set_data(save_set_data),'
+                                           '.save_timer_flags(save_timer_flags),.save_gpu_ranges(save_gpu_ranges),'
                                            '.save_cd_state(save_cd_state),'
                                            + ''.join(f'.{n}({n}),' for n in SPU_SIGNALS),
                      'psx instance')
@@ -501,6 +606,13 @@ SDC = '''
 set_false_path -to [get_registers {*|psx_save_exp1:save_exp1|s74_fin[0] *|psx_save_exp1:save_exp1|s2x_req[0]}]
 set_max_delay 13 -from [get_registers {*|psx_save_exp1:save_exp1|req_load_74 *|psx_save_exp1:save_exp1|fin_ok_2x *|psx_save_exp1:save_exp1|size_pages[*]}]
 set_min_delay -13 -from [get_registers {*|psx_save_exp1:save_exp1|req_load_74 *|psx_save_exp1:save_exp1|fin_ok_2x *|psx_save_exp1:save_exp1|size_pages[*]}]
+# The copy engine's aux word into psx_vram_x3, as the card slot's (pocket.sdc):
+# aux_we/addr/din are set a clk2x or more before own_req rises (cp_word moves
+# only with own_req low, the page word cp_q is valid from the edge own_req
+# rises on) and held until aux_done; c_aux_* load only after the request has
+# crossed into the memory clock. get_keepers: the page RAM's port registers.
+set_max_delay 13 -from [get_keepers {*|psx_save_exp1:save_exp1|*}] -to [get_registers {*|psx_vram_x3:vram_x3|c_aux_we *|psx_vram_x3:vram_x3|c_aux_addr[*] *|psx_vram_x3:vram_x3|c_aux_din[*]}]
+set_min_delay -13 -from [get_keepers {*|psx_save_exp1:save_exp1|*}] -to [get_registers {*|psx_vram_x3:vram_x3|c_aux_we *|psx_vram_x3:vram_x3|c_aux_addr[*] *|psx_vram_x3:vram_x3|c_aux_din[*]}]
 '''
 
 
@@ -523,11 +635,15 @@ def prepare_project(directory, rom_hex, save_size=0x400000):
         return paths.pop()
     work = directory / 'save-states'
     work.mkdir()
+    # both handler ROMs in psx_save_exp1's one 1024 x 40 ROM
+    from build_save_fw import rom40_from_byte_hex
+    (work / 'psx_save_rom40.hex').write_text(rom40_from_byte_hex(rom_hex, rom2_hex(rom_hex)))
     changes = {'cpu.vhd': cpu_trap_text, 'memorymux.vhd': memorymux_exp1_text, 'psx_top.vhd': psx_top_text,
                'irq.vhd': irq_set_text, 'dma.vhd': dma_set_text, 'timer.vhd': timer_tap_text, 'gpu.vhd': gpu_tap_text,
-               'spu.vhd': spu_tap_text, 'cd_top.vhd': cd_tap_text,
+               'spu.vhd': spu_build_text,
+               'cd_top.vhd': cd_tap_text,
                'psx_mister_psx_top_resource.vhd': resource_wrapper_text,
-               'core_top.sv': lambda t: core_top_text(t, rom_hex, save_size)}
+               'core_top.sv': lambda t: core_top_text(t, work / 'psx_save_rom40.hex', save_size)}
     for name, transform in changes.items():
         source = one(name)
         out = work / name

@@ -71,6 +71,7 @@ wire [7:0] disc_generation;wire [19:0] sector_count;
 wire change_req,change_done,lid_open,swap_busy,guest_idle;
 reg transport_reset=1;
 wire [3:0] discs_present;
+wire disc_settled;
 `ifdef DISC_MENU
 psx_cd_stream #(.DISC_STEP(16'h100)) loader(
 `else
@@ -85,16 +86,37 @@ psx_cd_stream loader(
  .disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done),.has_disc(has_disc),.discs_present(discs_present),
  .disc_pending(disc_pending),.guest_idle(guest_idle),.cd_hps_req(cd_hps_req),.cd_hps_lba(cd_hps_lba),.cd_hps_ack(cd_hps_ack),
  .cd_hps_write(cd_hps_write),.cd_hps_data(cd_hps_data),.disc_generation(disc_generation),
- .sector_count(sector_count),.stream_idle(stream_idle),
+ .sector_count(sector_count),.stream_idle(stream_idle),.disc_settled(disc_settled),
  .trackinfo_addr(trackinfo_addr),.trackinfo_data(trackinfo_data),.trackinfo_write(trackinfo_write));
 wire menu_request;reg [1:0] disc_setting=0;
+wire [1:0] menu_target, selector_wanted;
+wire selector_stable;
+`ifdef SAVE_DISC
+reg restore_start=0, restore_cancel=0, menu_write=0;
+reg [1:0] saved_disc=0;
+wire restore_busy, restore_done, restore_error, restore_ready;
+wire media_ready, mount_failed;
+wire [1:0] mounted_disc, failed_disc;
+psx_save_media media(.clk(clk1x),.reset(transport_reset),.select_strobe(disc_select_strobe),
+ .selected_disc(disc_slot_id[9:8]),.mount_done(disc_change_done),.has_disc(has_disc),
+ .catalog_ready(disc_settled),.media_ready(media_ready),.mounted_disc(mounted_disc),
+ .mount_failed(mount_failed),.failed_disc(failed_disc));
+psx_save_disc restore(.clk(clk1x),.reset(transport_reset),.menu_setting(disc_setting),.menu_write(menu_write),
+ .restore_start(restore_start),.restore_cancel(restore_cancel),.restore_disc(saved_disc),
+ .catalog_ready(disc_settled),.discs_present(discs_present),.selector_wanted(selector_wanted),
+ .selector_stable(selector_stable),.swap_busy(swap_busy),.media_ready(media_ready),.mounted_disc(mounted_disc),
+ .mount_failed(mount_failed),.failed_disc(failed_disc),.target_setting(menu_target),
+ .restore_busy(restore_busy),.restore_done(restore_done),.restore_error(restore_error),.restore_ready(restore_ready));
+`else
+assign menu_target=disc_setting;
+`endif
 psx_disc_swap #(.OPEN_CYCLES(300000),.CLOSE_CYCLES(200000)) swap(.clk(clk1x),.reset(transport_reset),
  .manual_lid_open(1'b0),.swap_request(menu_request),.disc_pending(disc_pending),.quiet(guest_idle),.change_req(change_req),
  .change_done(change_done),.lid_open(lid_open),.busy(swap_busy));
 `ifdef DISC_MENU
 psx_disc_menu #(.FIRST_SLOT(16'h0),.STEP(16'h100),.DISCS(2)) select(.clk(clk1x),.reset(transport_reset),
- .disc_setting(disc_setting),.change_req(change_req),.change_done(change_done),.disc_slot_id(disc_slot_id),
- .disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done),.discs_present(discs_present),.swap_request(menu_request));
+ .disc_setting(menu_target),.change_req(change_req),.change_done(change_done),.disc_slot_id(disc_slot_id),
+ .disc_select_strobe(disc_select_strobe),.disc_change_done(disc_change_done),.discs_present(discs_present),.swap_request(menu_request),.wanted_disc(selector_wanted),.selection_stable(selector_stable));
 `else
 assign menu_request=1'b0;
 psx_disc_select select(.clk(clk1x),.reset(transport_reset),.change_req(change_req),.change_done(change_done),
@@ -335,6 +357,39 @@ initial begin
  checks++;
  init_and_id(8'h41);
 read_sector0(1);
+`ifdef SAVE_DISC
+ // The saved selection was disc A. The menu remains at disc B throughout
+ // restore; verify metadata AND sector payload before allowing later swaps.
+ current=0;
+ @(negedge clk1x);saved_disc=0;restore_start=1;
+ @(negedge clk1x);restore_start=0;
+ begin : restore_wait
+  integer n;n=0;
+  while(!restore_done) begin
+   @(negedge clk1x);n++;
+   if(n>40000000) $fatal(1,"Saved disc restore timed out");
+  end
+ end
+ if(restore_error || !restore_ready || mounted_disc!=0 || tables!=3 || sector_count!=sectors_a)
+  $fatal(1,"Saved media not ready at completion");
+ repeat(1000) @(negedge clk1x);
+ if(swap_busy || !restore_ready || disc_slot_id!=0) $fatal(1,"Stale menu undid saved selection");
+ drain_irqs();init_and_id(8'h41);read_sector0(0);
+ // An explicit write of the SAME menu value must still swap to disc B.
+ current=1;
+ @(negedge clk1x);menu_write=1;
+ @(negedge clk1x);menu_write=0;
+ begin : manual_wait
+  integer n;n=0;
+  while(!(tables==4 && !swap_busy && media_ready && mounted_disc==1)) begin
+   @(negedge clk1x);n++;if(n>40000000) $fatal(1,"Post-load same-value menu swap failed");
+  end
+ end
+ if(restore_ready || sector_count!=sectors_b) $fatal(1,"Post-load media identity stale");
+ drain_irqs();init_and_id(8'h41);read_sector0(1);
+ if(checks!=2048*4+6 || read_error) $fatal(1,"Saved disc checks incomplete %0d",checks);
+ $display("PASS saved disc via APF checks=%0d apf_reads=%0d tables=%0d cycles=%0d",checks,apf_reads,tables,cycles);$finish;
+`endif
  if(checks!=2048*2+4 || read_error) $fatal(1,"Swap checks incomplete %0d",checks);
  $display("PASS CD swap via APF checks=%0d apf_reads=%0d tables=%0d getstat_polls=%0d drained_irqs=%0d cycles=%0d",checks,apf_reads,tables,polls,drained,cycles);$finish;
 end

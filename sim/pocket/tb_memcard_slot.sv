@@ -57,14 +57,14 @@ module tb_memcard_slot;
 
     // ---------------- DUT ----------------
     reg [31:0] bridge_addr = 0, bridge_wr_data = 0;
-    reg bridge_wr = 0, bridge_rd = 0, load_done = 0, reset_2x = 1, card_write = 0;
+    reg bridge_wr = 0, bridge_rd = 0, load_done = 0, reset_2x = 1, card_write = 0, ovf_clear = 0;
     wire [31:0] bridge_rd_data, aux_din, aux_dout;
     wire [20:0] aux_addr;
     wire overflow, busy, aux_req, aux_we, aux_done;
     psx_memcard_slot #(.BRIDGE_LITTLE(LITTLE), .FAULT(FAULT)) dut (
         .clk_74a(clk_74a), .bridge_addr(bridge_addr), .bridge_wr(bridge_wr),
         .bridge_wr_data(bridge_wr_data), .bridge_rd(bridge_rd), .bridge_rd_data(bridge_rd_data),
-        .overflow(overflow), .clk2x(clk2x), .reset_2x(reset_2x), .busy(busy),
+        .overflow(overflow), .clk2x(clk2x), .reset_2x(reset_2x), .overflow_clear(ovf_clear), .busy(busy),
         .aux_req(aux_req), .aux_we(aux_we), .aux_addr(aux_addr), .aux_din(aux_din),
         .aux_dout(aux_dout), .aux_done(aux_done), .card_write(card_write), .load_done(load_done));
 
@@ -294,6 +294,9 @@ module tb_memcard_slot;
             load_all(64);
             repeat (2000) @(posedge clk_74a);
             if (!overflow) fail("overflow flag not set by writes faster than aux");
+            @(posedge clk2x) ovf_clear <= 1; @(posedge clk2x) ovf_clear <= 0;
+            repeat (6) @(posedge clk_74a);
+            if (overflow) fail("overflow_clear pulse did not clear overflow");
             $display("RESULT {\"scen\":\"overflow\",\"overflow\":%0d,\"errors\":%0d}", overflow, errors);
             if (errors == 0) $display("PASS"); else $display("FAIL");
             $finish;

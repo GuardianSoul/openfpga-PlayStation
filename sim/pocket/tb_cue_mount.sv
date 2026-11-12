@@ -6,7 +6,7 @@
 // CH=1 (+cheats): the cheat port on a model main RAM; frames are flipped
 // with the Cheats setting off, then on, and the RAM is checked (+cheatcheck
 // file: halfword index and value per line). Every run checks that the
-// firmware's stack (0x3E00-0x3FFF) keeps 64 bytes unused (stores come
+// firmware's stack (0x3E50-0x3FFF) keeps 64 bytes unused (stores come
 // within 64 bytes of its floor only if it overflows into the variables).
 // A launch counts the firmware's tries (its 4-byte reads of slot 0 at
 // offset 0) and the shortest stretch with no command before a retry; +cold=N
@@ -23,7 +23,7 @@ module tb_cue_mount;
     localparam [31:0] STRUCT=32'h2C000000;
     reg clk=0; always #5 clk=~clk;
     reg in_menu=0, allcomplete=0; wire s_allcomplete;
-    reg [1:0] disc_setting=0; wire table_grant;
+    reg [2:0] disc_setting=0; wire table_grant;
     reg reset=1;
 
     // ---------------- file system ----------------
@@ -34,7 +34,7 @@ module tb_cue_mount;
     reg [31:0] cheatcheck[0:127];
     reg [31:0] bounds[0:BOUND_COUNT-1];
     reg [7:0] image[0:2097151];
-    integer nfiles, picked, expect_size, nsectors, expect_fail, expect_bin, launch, expect_json, size2, nsectors2;
+    integer nfiles, picked, expect_size, nsectors, expect_fail, expect_bin, launch, expect_json, size2, nsectors2, menu2, slot2;
     reg [7:0] slot_of[0:1023];
     integer sk; reg [8*16:1] pname;
     reg [8*256-1:0] dir;
@@ -49,6 +49,19 @@ module tb_cue_mount;
     wire u_done; wire [2:0] u_error;
     wire d_read, d_getfile, d_openfile; wire [15:0] d_id; wire [31:0] d_offset, d_bridge, d_length;
     reg d_done=1; reg [2:0] d_error=0;
+    // +sdrop=N: the stream's Nth sector read is never answered by the Pocket. With the save-cmd-abort step
+    // (CMD_ABORT: psx_cue_mount's d_abort) core_bridge_cmd answers it with done and error 7 once the
+    // firmware gives it up; the firmware must then ask again and the stream must get the right data.
+    wire d_abort; reg aborted=0; integer sdrop=0, s_dropped=0;
+    reg save_hold=0;
+    wire [3:0] cur_disc_o;   // save-disc-wrong (DISC_REPORT): the firmware's disc in the drive
+`ifndef DISC_REPORT
+    assign cur_disc_o=4'd15;
+`endif   // save-readout-end (SAVE_HOLD: psx_cue_mount with the step): a save holds the drive
+`ifndef CMD_ABORT
+    assign d_abort=0;
+`endif
+    always @(posedge clk) if(d_abort) aborted<=1;
     wire cue_mounted, mount_failed;
     wire [255:0] dbg_words;   // probe readout (DEBUG)
     wire [31:0] param_struct, resp_struct;
@@ -63,6 +76,15 @@ module tb_cue_mount;
         .u_read(u_read),.u_ready(u_ready),.u_id(u_id),.u_offset(u_offset),.u_bridge(u_bridge),.u_length(u_length),
         .u_done(u_done),.u_error(u_error),.d_read(d_read),.d_getfile(d_getfile),.d_openfile(d_openfile),.d_id(d_id),
         .d_offset(d_offset),.d_bridge(d_bridge),.d_length(d_length),.d_done(d_done),.d_error(d_error),
+`ifdef CMD_ABORT
+        .d_abort(d_abort),
+`endif
+`ifdef SAVE_HOLD
+        .save_hold(save_hold),.cmd_busy_o(),
+`endif
+`ifdef DISC_REPORT
+        .cur_disc_o(cur_disc_o),
+`endif
         .param_struct(param_struct),.resp_struct(resp_struct),.cue_mounted(cue_mounted),.mount_failed(mount_failed),.dbg_words(dbg_words),
         .cheats_on(cheats_on),.vbl_tgl(vbl_tgl),.ch_ack(ch_ack),.ch_q(ch_q),.ch_tgl(ch_tgl),.ch_rnw(ch_rnw),.ch_byte(ch_byte),
         .ch_addr(ch_addr),.ch_data(ch_data));
@@ -83,11 +105,21 @@ module tb_cue_mount;
             repeat(3) @(posedge clk); #1; ch_ack=ch_tgl;
         end
     end
-    // the stack (0x3E00-0x3FFF): the lowest firmware store in it
-    always @(posedge clk) if(dut.a_we && dut.adr[13:0]>=14'h3E00 && dut.adr[13:0]<min_store) min_store=dut.adr[13:0];
+    // the stack (0x3E50-0x3FFF): the lowest firmware store in it
+    always @(posedge clk) if(dut.a_we && dut.adr[13:0]>=14'h3E50 && dut.adr[13:0]<min_store) min_store=dut.adr[13:0];
 
     integer apf_lat=0, coldopen=0, hold=0, errors=0, commands=0, opens=0, reads=0, cold=0, launch_tries=0, want_tries=0;
     time last_cmd=0, retry_gap=0;
+    // The stream's reads while APF is busy (a Memory being written): +serr=N answers the first N
+    // commands into the stream's window with error 2, +sopen=N the first N opens after the mount
+    // with error 5, +sstall=N leaves the first such command unanswered for N clocks. The firmware
+    // must ask again after a pause (+spause=N clocks at least) and the stream must see no error.
+    integer serr=0, sopen=0, sstall=0, spause=0, in_stream=0, s_failed=0, s_open_failed=0, s_stalled=0;
+    // +sstale=N: a card write invalidates the open track files at the stream's Nth sector read: from
+    // then every read in the stream's window answers error 2 until a track file is opened again
+    // (drive-state.md; the firmware must reopen, not ask the same handle for ever).
+    integer sstale=0, s_reads=0, s_stale_fail=0, s_reopened=0; reg stale_on=0;
+    time s_fail_at=0, s_gap=0;
     integer mount_commands, mount_opens, mount_reads;
     time mount_time;
     task fail(input [8*80-1:0] what); begin $display("FAIL: %0s", what); errors=errors+1; end endtask
@@ -120,6 +152,10 @@ module tb_cue_mount;
                 if(launch_tries>1 && (launch_tries==2 || $time-last_cmd<retry_gap)) retry_gap=$time-last_cmd;
             end
             prev_rd=d_read;prev_gf=d_getfile;prev_of=d_openfile;
+            if(s_fail_at!=0) begin
+                if(s_gap==0 || $time-s_fail_at<s_gap) s_gap=$time-s_fail_at;
+                s_fail_at=0;
+            end
             if($test$plusargs("trace")) $display("%0t cmd kind %0d id %0d off %0d br %08x len %0d",$time,kind,d_id,d_offset,d_bridge,d_length);
             repeat(3) @(negedge clk); d_done=0; d_error=0;
             repeat(5) @(negedge clk);
@@ -184,6 +220,24 @@ module tb_cue_mount;
             end
             if($test$plusargs("trace")) $display("%0t   done err %0d",$time,d_error);
             if(kind==2 && opens<=coldopen) d_error=5;   // +coldopen=N: an open's general error
+            if(in_stream && kind==0 && d_bridge[31:13]==19'h12000 && d_error==0) begin
+                if(sstall!=0 && !s_stalled) begin s_stalled=1; repeat(sstall) @(negedge clk); end
+                if(s_failed<serr) begin d_error=2; s_failed=s_failed+1; s_fail_at=$time; end
+            end
+            if(in_stream && kind==0 && d_bridge[31:13]==19'h12000 && d_error==0) begin
+                s_reads=s_reads+1;
+                if(sstale!=0 && s_reads==sstale) stale_on=1;
+                if(stale_on) begin d_error=2; s_stale_fail=s_stale_fail+1; s_fail_at=$time; end
+                if(sdrop!=0 && s_reads==sdrop && !s_dropped) begin
+                    s_dropped=1;
+                    while(!aborted) @(negedge clk);   // no answer; the abort ends it (core_bridge_cmd: done, error 7)
+                    d_error=7;
+                end
+            end
+            if(kind==2 && d_error==0 && stale_on) begin stale_on=0; s_reopened=s_reopened+1; end
+            if(in_stream && kind==2 && d_error==0 && s_open_failed<sopen) begin
+                d_error=5; s_open_failed=s_open_failed+1; slot_of[d_id]=255; s_fail_at=$time;
+            end
             @(negedge clk); d_done=1; last_cmd=$time;
         end
         prev_rd=d_read;prev_gf=d_getfile;prev_of=d_openfile;
@@ -202,7 +256,7 @@ module tb_cue_mount;
             while(!u_ready) @(negedge clk);
             @(negedge clk); u_read=0;
             if(u_done) fail("done still high after accept");
-            tries=0; while(!u_done && tries<STREAM_LIMIT) begin @(negedge clk); tries=tries+1; end
+            tries=0; while(!u_done && tries<(sdrop!=0 ? 100*STREAM_LIMIT : STREAM_LIMIT)) begin @(negedge clk); tries=tries+1; end
             if(!u_done) begin $fatal(1,"stream read timed out (bench limit)"); end
         end
     endtask
@@ -226,6 +280,7 @@ module tb_cue_mount;
             table_addr=6; @(negedge clk); table_addr=7; @(negedge clk); @(negedge clk);
             if(table_view!==0) fail("table view: other slot");
             // The table file.
+            in_stream=1;
             stream_read(dslot+1,0,32'h24001000,1600);
             if(u_error!=0) fail("table read error");
             for(mi=0;mi<400;mi=mi+1) if(cap[1024+mi]!==table_exp[mi]) begin
@@ -257,6 +312,10 @@ module tb_cue_mount;
         if(!$value$plusargs("size=%d",expect_size)) expect_size=0;
         if(!$value$plusargs("sectors=%d",nsectors)) nsectors=0;
         if(!$value$plusargs("size2=%d",size2)) size2=0;
+        // The menu Disc that loads the second disc and the slot the stream
+        // then reads it from (Disc 5 remounts slot 101: psx_disc_menu).
+        if(!$value$plusargs("menu2=%d",menu2)) menu2=1;
+        if(!$value$plusargs("slot2=%d",slot2)) slot2=201;
         if(!$value$plusargs("sectors2=%d",nsectors2)) nsectors2=0;
         expect_fail=$test$plusargs("fail");
         expect_bin=$test$plusargs("bin");
@@ -265,6 +324,12 @@ module tb_cue_mount;
         if(!$value$plusargs("cold=%d",cold)) cold=0;
         if(!$value$plusargs("apf_lat=%d",apf_lat)) apf_lat=0;
         if(!$value$plusargs("coldopen=%d",coldopen)) coldopen=0;
+        if(!$value$plusargs("serr=%d",serr)) serr=0;
+        if(!$value$plusargs("sstale=%d",sstale)) sstale=0;
+        if(!$value$plusargs("sdrop=%d",sdrop)) sdrop=0;
+        if(!$value$plusargs("sopen=%d",sopen)) sopen=0;
+        if(!$value$plusargs("sstall=%d",sstall)) sstall=0;
+        if(!$value$plusargs("spause=%d",spause)) spause=0;
         if(!$value$plusargs("hold=%d",hold)) hold=0;   // a card that never answers: after this many tries the stream must still wait
         if(!$value$plusargs("tries=%d",want_tries)) want_tries=0;
         if(nsectors!=0) begin $readmemh({base,"/table.hex"},table_exp); $readmemh({base,"/image.hex"},image); $readmemh({base,"/bounds.hex"},bounds); end
@@ -348,6 +413,79 @@ module tb_cue_mount;
         end else begin
             if(got_size!=expect_size || !cue_mounted) fail("virtual disc size");
             check_disc(101,expect_size,nsectors);
+            if($test$plusargs("shold")) begin
+                // A save holds the drive (save-readout-end): a stream read waiting then makes no APF
+                // command until the hold ends, then it is read (drive-state.md section 9).
+                @(negedge clk); save_hold=1; repeat(20) @(negedge clk); mi=commands;
+                fork
+                    begin stream_read(101,bounds[0]*2352,32'h24000000,2352); end
+                    begin
+                        repeat(600000) @(negedge clk);
+                        if(commands!=mi) fail("an APF command while the save held the drive");
+                        if(u_done) fail("the read ended while the save held the drive");
+                        save_hold=0;
+                    end
+                join
+                if(u_error!=0) fail("the held read ended with an error");
+                for(mi=0;mi<588;mi=mi+1) begin
+                    for(mj=0;mj<4;mj=mj+1) mw[8*mj+:8]=image[bounds[0]*2352+4*mi+mj];
+                    if(cap[mi]!==mw) begin fail("sector data after the hold"); mi=588; end
+                end
+                $display("stream: held read answered after the hold");
+                if(errors==0) $display("PASS"); else $display("%0d errors",errors);
+                $finish;
+            end
+            if($test$plusargs("smenu")) begin
+                // A Swap Discs value for a disc the game does not have arrives while the stream's
+                // reads fail (the Pocket busy with a Memory): the read must not end with filler; it is
+                // answered with the right data once APF reads again; the absent disc is reported and
+                // the lookups are released (drive-state.md).
+                serr=1000000; s_failed=0;
+                fork
+                    begin stream_read(101,bounds[0]*2352,32'h24000000,2352); end
+                    begin
+                        repeat(300000) @(negedge clk);
+                        if(u_done) fail("the failing read ended before the Pocket answered");
+                        disc_setting=1;   // Disc 2: slot 201, not in the game file
+                        repeat(1500000) @(negedge clk);
+                        if(u_done) fail("the failing read ended (filler) while a menu Disc was handled");
+                        serr=s_failed;    // APF reads again
+                    end
+                join
+                if(u_error!=0) fail("filler: the read ended with an error");
+                for(mi=0;mi<588;mi=mi+1) begin
+                    for(mj=0;mj<4;mj=mj+1) mw[8*mj+:8]=image[bounds[0]*2352+4*mi+mj];
+                    if(cap[mi]!==mw) begin fail("sector data after the gap"); mi=588; end
+                end
+                tries=0; while(!table_grant && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
+                if(!table_grant) fail("lookups held after the absent menu Disc");
+                if(!mount_failed || !cue_mounted) fail("absent menu Disc not reported, or the disc dropped");
+                $display("stream: %0d failed reads around an absent menu Disc, then the data",s_failed);
+                if(errors==0) $display("PASS"); else $display("%0d errors",errors);
+                $finish;
+            end
+            if($test$plusargs("sdead")) begin
+                // A file that never reads again (card pulled, file gone): the read is asked
+                // again and again; a pick from the menu ends it with the error and is taken.
+                serr=1000000; s_failed=0; mi=commands;
+                fork
+                    begin stream_read(101,bounds[0]*2352,32'h24000000,2352); end
+                    begin
+                        repeat(400000) @(negedge clk);
+                        if(u_done) fail("a dead file's read ended without a pick");
+                        if(commands-mi<3) fail("a dead file's read was not asked again");
+                        in_menu=1; repeat(4) @(negedge clk); in_menu=0;
+                        repeat(100) @(negedge clk); slot_update=1;slot_update_id=101;slot_update_size=1234;
+                        @(negedge clk); slot_update=0;
+                    end
+                join
+                if(u_error==0) fail("a dead file's read ended without its error");
+                tries=0; while(dut.upd_pending && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
+                if(dut.upd_pending) fail("the pick behind a dead file's read was not taken");
+                $display("stream: dead file asked %0d times, then the pick was taken",s_failed);
+                if(errors==0) $display("PASS"); else $display("%0d errors",errors);
+                $finish;
+            end
             // Other slots pass through untouched.
             slot_of[50]=picked;
             stream_read(50,0,32'h24000000,4);
@@ -355,23 +493,33 @@ module tb_cue_mount;
             if(size2!=0) begin
                 // The menu's Disc 2: lookups wait while it loads, then every
                 // disc slot shows it.
-                @(negedge clk); disc_setting=1;
+                @(negedge clk); disc_setting=menu2;
                 @(negedge clk); if(table_grant) fail("menu Disc did not hold the lookups");
                 tries=0; while(!table_grant && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
-                if(!table_grant || !cue_mounted) begin fail("menu Disc 2 did not load"); $finish; end
+                if(!table_grant || !cue_mounted) begin fail("menu Disc did not load the second disc"); $finish; end
                 $readmemh({base,"/table2.hex"},table_exp); $readmemh({base,"/image2.hex"},image); $readmemh({base,"/bounds2.hex"},bounds);
-                check_disc(201,size2,nsectors2);
-                $display("menu: disc 2 after %0d commands (%0d opens)",commands,opens);
+                check_disc(slot2,size2,nsectors2);
+                $display("menu: Disc %0d after %0d commands (%0d opens)",menu2+1,commands,opens);
+                if(mount_failed) fail("menu Disc loaded but reported as not loaded");
+                if(cur_disc_o!==4'd15 && cur_disc_o!==menu2+1) fail("disc report after the menu's Disc is not that disc");
                 // A Disc the game doesn't have keeps disc 2.
                 @(negedge clk); disc_setting=3;
+                @(negedge clk); if(table_grant) fail("absent Disc 4 did not hold the lookups");
                 tries=0; while(!table_grant && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
                 @(negedge clk); table_addr=2; @(negedge clk); table_addr=3; @(negedge clk); @(negedge clk);
                 if(table_view!==size2) fail("absent Disc 4 changed the disc");
+                if(!mount_failed || !cue_mounted) fail("absent Disc 4 not reported (mount_failed with the disc kept)");
+                if(cur_disc_o!==4'd15 && cur_disc_o!==menu2+1) fail("disc report after the absent Disc 4 changed");
+                // Disc 2 still reads after the failed open (its folder's "(Disc 2)" mark; audit-059 #14)
+                $readmemh({base,"/table2.hex"},table_exp); $readmemh({base,"/image2.hex"},image); $readmemh({base,"/bounds2.hex"},bounds);
+                check_disc(slot2,size2,nsectors2);
                 // Back to disc 1.
                 @(negedge clk); disc_setting=0;
                 @(negedge clk); tries=0; while(!table_grant && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
                 $readmemh({base,"/table.hex"},table_exp); $readmemh({base,"/image.hex"},image); $readmemh({base,"/bounds.hex"},bounds);
                 check_disc(101,expect_size,nsectors);
+                if(mount_failed) fail("disc 1 loaded but still reported as not loaded");
+                if(cur_disc_o!==4'd15 && cur_disc_o!==4'd1) fail("disc report after disc 1 is not 1");
             end
         end
         // Cheats (before the pick below, which drops the launched game's list).
@@ -408,8 +556,22 @@ module tb_cue_mount;
             @(negedge clk); slot_update=0;
             if(!dut.upd_pending) fail("a pick after the menu was ignored");
         end
+        if(sdrop!=0) begin
+            $display("stream: read %0d not answered, aborted %0d", sdrop, aborted);
+            if(!s_dropped || !aborted) fail("bench: the dropped command was not given up");
+        end
+        if(sstale!=0) begin
+            $display("stream: stale handles at read %0d, %0d reads failed, %0d reopens", sstale, s_stale_fail, s_reopened);
+            if(s_stale_fail==0 || s_reopened==0) fail("bench: the stale handle was not used");
+        end
+        if(serr!=0 || sopen!=0 || sstall!=0) begin
+            $display("stream: %0d of %0d read errors, %0d of %0d open errors, stalled %0d, shortest pause before the next command %0d clocks",
+                     s_failed,serr,s_open_failed,sopen,s_stalled,s_gap/10);
+            if(s_failed!=serr || s_open_failed!=sopen || (sstall!=0 && !s_stalled)) fail("bench: a planned stream fault was not used");
+            if((serr!=0 || sopen!=0) && s_gap/10<spause) fail("no pause before a stream read was asked again");
+        end
         $display("stack: lowest store %h",min_store);
-        if(min_store<'h3E40) fail("firmware stack within 64 bytes of 0x3E00");
+        if(min_store<'h3E90) fail("firmware stack within 64 bytes of 0x3E50");
         if(errors==0) $display("PASS"); else $display("%0d errors",errors);
         $finish;
     end

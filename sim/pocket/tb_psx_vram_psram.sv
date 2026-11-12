@@ -26,6 +26,7 @@ module tb_psx_vram_psram;
     parameter real T_CLK_MIN = 15.0;          // FULL_RATE runs 14.76 ns (other Pocket cores run these chips at 104 MHz)
     parameter integer ROW_LOG2 = 6;
     parameter integer AUX = 1;
+    parameter integer SAVE_PARK = 0;         // 1: SAVE_AUX controller, save-window accesses while parked (a wake from Sleep)
     parameter integer AUX_MAX = 60;          // aux request -> done bound while the core runs (clk2x)               // aux traffic during the random phase
     parameter real CLK_DLY = 1.0, CTL_DLY = 1.0, DQ_DLY = 1.0, RET_DLY = 1.0;
     parameter real T_ACLK = 9.0, T_KOH = 2.0;
@@ -84,7 +85,7 @@ module tb_psx_vram_psram;
         assign k_aux_req = aux_req, k_aux_we = aux_we, k_aux_addr = aux_addr, k_aux_din = aux_din;
     end endgenerate
 
-    psx_vram_psram #(.LATENCY(LATENCY), .ROW_LOG2(ROW_LOG2), .FULL_RATE(FULL_RATE != 0 || X3 != 0), .CLK_KHZ(CLK_KHZ),
+    psx_vram_psram #(.SAVE_AUX(SAVE_PARK), .LATENCY(LATENCY), .ROW_LOG2(ROW_LOG2), .FULL_RATE(FULL_RATE != 0 || X3 != 0), .CLK_KHZ(CLK_KHZ),
                      .SLOW_DIV(X3 != 0 ? 3 : SLOW_DIV), .READ_PIPE(READ_PIPE), .OUT_REG(OUT_REG != 0)) dut (
         .clk(cclk), .reset(reset), .park(park),
         .ddr_busy(k_busy), .ddr_burstcnt(k_burstcnt), .ddr_addr(k_addr), .ddr_dout(k_dout),
@@ -354,6 +355,17 @@ module tb_psx_vram_psram;
             end
         end
     endtask
+    // one aux access with the full 21-bit address, no golden-memory bookkeeping (SAVE_PARK checks)
+    task automatic raw_aux(input we, input [20:0] a, input [31:0] d);
+        integer t0;
+        begin
+            aux_addr <= a; aux_we <= we; aux_din <= d; aux_req <= 1'b1; t0 = now_cyc();
+            @(posedge clk);
+            while (!aux_done) begin @(posedge clk); if (now_cyc() - t0 > 4000) fail("raw aux access timed out"); end
+            aux_req <= 1'b0; @(posedge clk);
+        end
+    endtask
+    reg [31:0] sp_card;
     initial begin : aux_master
         integer ok, r;
         reg [14:0] i;
@@ -634,7 +646,28 @@ module tb_psx_vram_psram;
         clear_hist();
         for (i = 0; i < 32; i = i + 1) aux_op(i % 2, 15'h7000 + i, $urandom(seed), ok);
         $write("VP_PARKED_AUX {"); print_hist("aux_read_done", 3); $write(","); print_hist("aux_write_done", 4); $display("}");
+        // A wake from Sleep: the Pocket writes the state into the save window (aux_addr[20]) while the
+        // core is held in reset. The word must reach the save buffer on die 1 and leave the card alone.
+        if (SAVE_PARK != 0) begin
+            raw_aux(1'b0, 21'h000124, 32'h0); sp_card = aux_dout;
+            raw_aux(1'b1, 21'h1F8124, 32'hC0DE5A7E);
+            raw_aux(1'b0, 21'h000124, 32'h0);
+            if (aux_dout !== sp_card) begin
+                $display("card word 0x124 was %h, now %h", sp_card, aux_dout);
+                fail("parked save-window write landed in the card area");
+            end
+            raw_aux(1'b0, 21'h1F8124, 32'h0);
+            if (aux_dout !== 32'hC0DE5A7E) fail("parked save-window word does not read back while parked");
+            aux_last_valid = 0;
+        end
         park <= 1'b0;
+        if (SAVE_PARK != 0) begin
+            idle(400);
+            raw_aux(1'b0, 21'h1F8124, 32'h0);
+            if (aux_dout !== 32'hC0DE5A7E) fail("parked save-window word is not in the save buffer after the park");
+            $display("SAVE_PARK PASS");
+            aux_last_valid = 0;
+        end
         for (i = 0; i < 8; i = i + 1) ddr_read(22'h023000 + 64 * i, 64, ok);   // the same words, synchronous again
         // final read-back of both card windows and a VRAM sample
         for (i = 0; i < 128; i = i + 1) ddr_read(22'h020000 + 128 * i, 128, ok);

@@ -55,6 +55,8 @@ enum { W_CMD, W_IDLEN, W_OFF, W_DONE, W_UPD, W_FLAGS, W_DISC, W_CLR };
 // IO reads
 // R_STATUS: status in bits 7:0, the menu's Disc in 9:8, the stream's slot
 // in 18:10 and length in 30:19, bit 31 set when LibCrypt is on (ST_LC)
+// R_UOFF: the stream's offset in bits 30:0 (slots are below 1 GiB), the
+// menu Disc's bit 2 in bit 31 (Disc 5)
 enum { R_STATUS, R_UOFF, R_CHEAT };
 // R_CHEAT (prepare --cheats): the last main RAM read in bits 15:0, the
 // Cheats setting in bit 29, a toggle per frame in bit 30, an access running
@@ -69,6 +71,7 @@ enum { R_STATUS, R_UOFF, R_CHEAT };
 #define ST_BOOT  64u     // allcomplete rose: the launch list's file
 #define ST_MENU  128u    // the menu's Disc is not the one loaded (stream lookups wait)
 #define ST_LC    0x80000000u   // read the cue's .sbi (prepare --cue-libcrypt)
+#define CLR_DISC 16u     // W_CLR: bits 3:0 are the disc in the drive, 0 unknown (save-disc-wrong RTL; else nothing)
 #define CLR_MENU 128u    // W_CLR: forget that the menu was open (a later DISC_SLOT update is no pick)
 enum { K_READ = 0, K_GETFILE = 1, K_OPEN = 2, K_USEU = 4 };   // K_USEU: into the stream's window
 #define F_ALLC    1u     // the stream's allcomplete
@@ -78,7 +81,7 @@ enum { K_READ = 0, K_GETFILE = 1, K_OPEN = 2, K_USEU = 4 };   // K_USEU: into th
 #define F_VTABLE  16u    // the stream sees TABLE_SLOT at 1,600 bytes
 #define F_IDLE    32u    // the stream may start a read
 #define F_ACCEPT  64u    // any DISC_SLOT update is a pick (not only after the menu)
-#define F_DISC    0x300u // the menu Disc the disc was loaded for (bits 9:8)
+#define F_DISC    0x700u // the menu Disc the disc was loaded for (bits 10:8)
 
 #define DISC_SLOT   101u
 #define LAUNCH_SLOT 0u
@@ -153,6 +156,12 @@ NOINLINE static void cmd_failed(u32 kind, u32 id, u32 s) {
 
 // One APF target command; its error (0 = done).
 NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
+    // While a save holds the drive (from its quiet point until the Pocket has read the Memory out:
+    // save-readout-end RTL, 0x08 reads exactly bit 16) the Pocket gets no command: one sent during
+    // the read-out is never answered (drive-state.md, audit-059 #16: every command, not only the
+    // stream's). A core without the RTL reads the status word there, never 0x10000 (its LIBCRYPT
+    // bit or a length while a read waits; the boot, pick and menu paths read with a length too).
+    while (IO[R_CHEAT] == 0x10000u) ;
     IO[W_IDLEN] = id | len << 16;
     IO[W_OFF] = off;
     IO[W_CMD] = kind;
@@ -424,7 +433,8 @@ NOINLINE static u32 table_word(u32 w) {
 enum { M_PICK, M_LAUNCH, M_MENU, PRESET = 4 };   // PRESET: the path struct holds the cue's path
 
 static u32 bin_slot;                     // a plain image's slot (bin)
-static u32 m3u_n, m3u_slot, m3u_ent[4];  // the playlist's slot | its size << 8; entries: offset | length << 16
+#define MAX_DISCS 5u
+static u32 m3u_n, m3u_slot, m3u_ent[MAX_DISCS];  // the playlist's slot | its size << 8; entries: offset | length << 16
 
 static int is_disc(u32 id) { return id == 101 || id == 201 || id == 301 || id == 401; }
 
@@ -620,7 +630,12 @@ static void cue(u32 slot, u32 size, int mode) {
         u32 b = fseg[k] & 0xffffff, n;
         if (!b && !(tsz && (psize = tsz_word(3 + (fseg[k] >> 24))))) {   // a file's first segment: its size
             if (rd == FILE_SLOT && open(k)) { fail(mode); return; }
-            psize = measure(rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24), 2352, 18);
+            // Most later track files are under 2^14 sectors: 14 reads, not 19 (a
+            // read is an APF round trip of some 40 ms; Tomb Raider II's 61
+            // files 1,159 -> 873 reads). All ones: the file may be longer.
+            u32 s = rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24);
+            psize = measure(s, 2352, k ? 13 : 18);
+            if (psize == 0x3fff) psize = measure(s, 2352, 18);
         }
         // up to the next segment of the same file, else its end
         n = k + 1 < nfiles && fseg[k + 1] >> 24 == fseg[k] >> 24 ? fseg[k + 1] & 0xffffff : psize;
@@ -661,7 +676,7 @@ static void cue(u32 slot, u32 size, int mode) {
     if (mode == M_PICK) IO[W_UPD] = bytes;
 }
 
-// Open playlist entry k (1-4) into CUE2_SLOT: the playlist's folder
+// Open playlist entry k (1-5) into CUE2_SLOT: the playlist's folder
 // (base up to dirlen) and the entry, or the entry alone if it starts with
 // '/'. Its error. The entry is read with getb(), which never reads past the
 // playlist's end (a last line without a newline: APF fails such reads).
@@ -683,9 +698,10 @@ NOINLINE static u32 open_entry(u32 k) {
     return err;
 }
 
-// Mount playlist entry k: a cue, or a plain image read through CUE2_SLOT.
-static void entry(u32 k, int mode) {
-    if (open_entry(k) || cmd(K_READ, CUE2_SLOT, 0, 4)) { fail(mode); return; }
+// Mount the playlist entry open in CUE2_SLOT: a cue, or a plain image read
+// through CUE2_SLOT.
+static void mount_entry(int mode) {
+    if (cmd(K_READ, CUE2_SLOT, 0, 4)) { fail(mode); return; }
     if (CHUNK[0] == 0) {
         u32 n = probe(CUE2_SLOT, 2352, 18), bytes = sectors_to_bytes(n);
         if (!n) { fail(mode); return; }
@@ -699,13 +715,19 @@ static void entry(u32 k, int mode) {
     cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), mode | PRESET);
 }
 
-// A playlist in slot (base holds its path): up to four entries, then the
+// Open and mount playlist entry k.
+static void entry(u32 k, int mode) {
+    if (open_entry(k)) { fail(mode); return; }
+    mount_entry(mode);
+}
+
+// A playlist in slot (base holds its path): up to five entries, then the
 // first one.
 static void playlist(u32 slot, int mode) {
     m3u_slot = slot | cue_size << 8; m3u_dir = dirlen; m3u_n = 0; nmarks = 0;
     cbase = clen = cpos = 0;
     c = getb();
-    while (c >= 0 && m3u_n < 4) {
+    while (c >= 0 && m3u_n < MAX_DISCS) {
         while (c >= 0 && (eol(c) || space(c))) adv();
         if (c < 0) break;
         u32 off = cpos - 1, len = 0, keep = 0;
@@ -718,18 +740,26 @@ static void playlist(u32 slot, int mode) {
     entry(1, mode);
 }
 
-// The menu asks for Disc k (1-4): load that sibling of the current cue or
+// The menu asks for Disc k (1-5): load that sibling of the current cue or
 // that playlist entry, if the game has it (a disc that fails to mount
 // brings the current one back). The menu Disc is recorded either way.
-static void menu_disc(u32 k) {
+static void menu_load(u32 k) {
     if (m3u_n) {
+        // An entry that does not open (a disc the folder lacks) leaves the
+        // current disc as it is: the current entry is opened again, which
+        // puts back what open_entry() changed (pick, cue_size, the path, the
+        // cue in CUE2_SLOT; audit-059 #14). fail() would drop the disc view.
         if (k > m3u_n || k == cur) return;
-        entry(k, M_MENU);
+        if (open_entry(k)) { open_entry(cur); return; }
+        mount_entry(M_MENU);
         if (flags & F_FAILED) { k = cur; entry(k, M_MENU); }
         cur = k;
         return;
     }
-    if (!cur || k == cur || !(flags & F_MOUNTED) || open_disc(k)) return;
+    if (!cur || k == cur || !(flags & F_MOUNTED)) return;
+    // A sibling cue that does not open: the current one again (the path's
+    // disc marks, fb and CUE2_SLOT name the current disc; audit-059 #14).
+    if (open_disc(k)) { open_disc(cur); return; }
     cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
     if (!(flags & F_MOUNTED)) k = cur;
     if (!(flags & F_MOUNTED) && !open_disc(k)) cue(CUE2_SLOT, probe(CUE2_SLOT, 1, 13), M_MENU | PRESET);
@@ -737,9 +767,30 @@ static void menu_disc(u32 k) {
     for (u32 m = 0; m < nmarks; m++) base[marks[m]] = '0' + k;
 }
 
+// menu_load(), then F_FAILED (psx_cue_mount mount_failed) tells whether the
+// disc in the drive is not the one asked for: a disc the game lacks or that
+// failed to mount keeps the current one while the menu Disc is recorded, so
+// mount_failed with cue_mounted (or the plain image) means "Disc k was not
+// loaded". A game without "(Disc n)" names or a playlist is disc 1.
+static void menu_disc(u32 k) {
+    menu_load(k);
+    if (!(flags & (F_MOUNTED | F_VDISC))) return;   // nothing mounted: fail() already set it
+    setf((cur ? cur : 1) == k ? flags & ~F_FAILED : flags | F_FAILED);
+}
+
 // ---------------- the stream's reads ----------------
-static void serve(void) {
-    u32 il = IO[R_STATUS], id = il >> 10 & 0x1ff, len = il >> 19 & 0xfff, off = IO[R_UOFF], err = 0;
+// A disc sector read that APF answers with an error is not finished: the
+// stream's request stays up and the main loop serves it again, after a pause
+// of retry_wait / 4 loop turns (0.1 s), with the track file opened again (a
+// Memory written to the card can leave the open file's handle failing every
+// read). After card writes APF's reads and
+// opens can fail (a Memory being written), and an error handed to the stream
+// reaches the game as a sector of filler. The error is passed on only for a
+// read past the disc, or for a read that still fails once a pick or a menu
+// Disc has been loaded (the disc changed; drive-state.md). A waiting pick is
+// taken while a read is outstanding; that read is not answered with filler.
+static void serve(u32 final) {
+    u32 il = IO[R_STATUS], id = il >> 10 & 0x1ff, len = il >> 19 & 0xfff, off = IO[R_UOFF] & 0x7fffffffu, err = 0;
     if ((flags & F_MOUNTED) && is_disc(id - 1)) {
         for (u32 w = 0; w < 400; w++) INJ[w] = table_word(w);
     } else if ((flags & F_MOUNTED) && is_disc(id)) {
@@ -747,6 +798,8 @@ static void serve(void) {
         while (k + 1 < nfiles && off >= sectors_to_bytes(fsec[k + 1] - (fname[k + 1] >> 24))) k++;
         if (off < sectors_to_bytes(fsec[k])) {
             for (u32 w = 0; w < len >> 2; w++) INJ[w] = 0;   // a PREGAP: silence
+        } else if (off >= sectors_to_bytes(total)) {
+            len = 0; err = 2;                                // past the disc: no file to ask
         } else {
             if (open_file != k) err = open(k);
             if (!err) err = cmd(K_READ | K_USEU, rd == FILE_SLOT ? rd : rd + (fseg[k] >> 24),
@@ -755,10 +808,15 @@ static void serve(void) {
     } else {
         err = cmd(K_READ | K_USEU, bin && is_disc(id) ? bin_slot : id, off, len);
     }
+    if (err && len == 2352 && !final) {                  // (every sector read is a disc's)
+        open_file = NONE;                                // card writes can leave the handle stale: open again
+        for (u32 n = retry_wait >> 2; n; n--) __asm__ volatile("");
+        return;
+    }
     IO[W_DONE] = err;
 }
 
-static u32 menu_now(void) { return IO[R_STATUS] >> 8 & 3; }
+static u32 menu_now(void) { return (IO[R_STATUS] >> 8 & 3) | (IO[R_UOFF] >> 29 & 4); }
 
 // ---------------- cheats ----------------
 // GameShark codes: type << 24 | address, and the value.
@@ -783,7 +841,7 @@ NOINLINE static void load_cheats(void) {
     u32 run = 0, val = 0, a8 = 0, have = 0, last4 = 0, en = 0, mark = 0;
     int line = 1;
     for (;;) {
-        if (IO[R_STATUS] & ST_U) serve();   // the game may already read the disc
+        if (IO[R_STATUS] & ST_U) serve(0);   // the game may already read the disc
         int x = getb(), h = x < 0 ? -1 : hexval(x);
         if (line && (x == '#' || x == ';')) { while (x >= 0 && !eol(x)) x = getb(); }
         line = eol(x);
@@ -817,7 +875,7 @@ NOINLINE static u32 ram(u32 a, u32 rnw, u32 byte, u32 v) {
 // are ignored. The stream's reads go first.
 NOINLINE static void apply_cheats(void) {
     for (u32 i = 0; i < ncheat; i++) {
-        if (IO[R_STATUS] & ST_U) serve();
+        if (IO[R_STATUS] & ST_U) serve(0);
         u32 a = ch_a[i], t = a >> 24, v = ch_v[i], byte = 0;
         a &= 0x1fffff;
         switch (t) {
@@ -854,7 +912,7 @@ void main(void) {
     setf(F_IDLE | F_ACCEPT);
     for (;;) {
         u32 s = IO[R_STATUS];
-        if (s & ST_U) { serve(); continue; }
+        if ((s & ST_U) && !(s & (ST_BOOT | ST_UPD | ST_MENU))) { serve(0); continue; }
         if (!(s & (ST_BOOT | ST_UPD | ST_MENU))) {
             if (ncheat) {
                 u32 cs = IO[R_CHEAT], v = cs >> 30 & 1;
@@ -862,10 +920,9 @@ void main(void) {
             }
             continue;
         }
-        // A pick or a menu Disc: stop the stream's reads (serve one that
-        // slipped in).
+        // A pick or a menu Disc: stop the stream's reads. A read already
+        // waiting is answered after the mount (serve(1) below).
         setf(flags & ~(F_IDLE | F_ACCEPT));
-        if (IO[R_STATUS] & ST_U) serve();
         u32 m = menu_now();
         if (s & ST_BOOT) {
             // A cold first launch (after a restart, a core switch or card
@@ -887,5 +944,7 @@ void main(void) {
         // The launched game's cheat list, read while the stream may run.
         if (s & ST_BOOT) load_cheats();
         boot_sizes = 0;
+        IO[W_CLR] = CLR_DISC | cur;   // the disc in the drive (0: unknown, disc 1) for the save device's DISC (audit-059 #17)
+        if (IO[R_STATUS] & ST_U) serve(!(s & ST_MENU) || !(flags & F_FAILED));   // a read still failing ends with its error, unless a menu Disc kept the old disc
     }
 }

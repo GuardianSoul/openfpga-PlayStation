@@ -1,0 +1,56 @@
+--- a/spu.vhd
++++ b/spu.vhd
+@@ -461,7 +461,6 @@
+    signal envVolume          : signed(15 downto 0);
+    signal envTicks           : unsigned(23 downto 0);
+    signal envTicksNew        : std_logic := '0'; 
+-   signal env_step           : signed(15 downto 0);
+    signal envVolLeft         : signed(15 downto 0);  
+    signal envVolRight        : signed(15 downto 0); 
+    
+@@ -1522,30 +1521,30 @@
+                         envTicksNew <= '0';
+                      end if;
+                      
++                  end if;
++                  
++               when ENV_CALC =>
++                  envelopeState <= ENV_WRITE;
++                  if (envTicks < 2) then
++                     -- base trim spu_envstep: the step from the same volumeSetting ENV_START saw
++                     -- (any volumeSetting write also forces ENV_START, so CALC follows START unchanged)
+                      env_rateshift := 0;
+                      if (env_rate(6 downto 2) <= 11) then
+                         env_rateshift := (11 - to_integer(env_rate(6 downto 2)));
+                      end if;
+-                     
+                      if (env_rate < 48) then
+-                        if (volumeSetting(13) = '1') then 
+-                           env_step <=  shift_left(to_signed(-8, 16) + to_integer(env_rate(1 downto 0)), env_rateshift);
+-                        else 
+-                           env_step <=  shift_left(to_signed( 7, 16) - to_integer(env_rate(1 downto 0)), env_rateshift);
++                        if (volumeSetting(13) = '1') then
++                           env_calcstep := resize(shift_left(to_signed(-8, 16) + to_integer(env_rate(1 downto 0)), env_rateshift), 17);
++                        else
++                           env_calcstep := resize(shift_left(to_signed( 7, 16) - to_integer(env_rate(1 downto 0)), env_rateshift), 17);
+                         end if;
+                      else
+-                        if (volumeSetting(13) = '1') then 
+-                           env_step <= (to_signed(-8, 16) + to_integer(env_rate(1 downto 0)));
+-                        else 
+-                           env_step <= (to_signed( 7, 16) - to_integer(env_rate(1 downto 0)));
++                        if (volumeSetting(13) = '1') then
++                           env_calcstep := resize(to_signed(-8, 16) + to_integer(env_rate(1 downto 0)), 17);
++                        else
++                           env_calcstep := resize(to_signed( 7, 16) - to_integer(env_rate(1 downto 0)), 17);
+                         end if;
+                      end if;
+-                  end if;
+-                  
+-               when ENV_CALC =>
+-                  envelopeState <= ENV_WRITE;
+-                  if (envTicks < 2) then
+-                     env_calcstep := resize(env_step, 17);
+                      envTicks     <= env_calcticks;
+                      if (volumeSetting(14) = '1') then 
+                         if (volumeSetting(13) = '1') then 

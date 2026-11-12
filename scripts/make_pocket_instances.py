@@ -51,13 +51,13 @@ core boots disc 1 from them), so nothing is joined and no table is written.
 A multi-disc game gets one game file with disc 1; the core finds the other
 discs by their "(Disc n)" names. When the discs' paths differ by more than
 that number (Final Fantasy IX's "(Disc 3) (v1.1)" and "(USA) (Disc 4)
-(Rev 1)"), the script writes a .m3u playlist of the discs (up to four, as
+(Rev 1)"), the script writes a .m3u playlist of the discs (up to five, as
 the core reads them) next to them: a core whose slot 100 takes .m3u gets
 one game file naming it; otherwise each disc keeps its own game file
 (sharing one card) and the playlist can be picked in the core's file list
 to swap discs. A disc's LibCrypt .sbi must have the cue's name.
 
-A .m3u playlist written by hand (up to four discs, one .cue per line,
+A .m3u playlist written by hand (up to five discs, one .cue per line,
 relative to the playlist: "Game - Cheats.m3u" with a cheat disc, then the
 game) gets a game file naming it when the core's slot 100 takes .m3u, so
 discs with any names can be one game.
@@ -102,6 +102,7 @@ CUE_BYTES = 0x3FFF   # the largest cue the core reads (cue_mount.c cue(); slot 1
 LIBCRYPT_SLOT = 99
 CHEAT_SLOT = 98
 CARD_SLOT = 16
+MAX_DISCS = 5   # the most discs a game file or playlist names (core 0.5.9+; 4 before)
 TSZ_SLOT = 97   # track sizes (--track-sizes cores): see track_sizes()
 HELP_ENTRY = '! How to add games (see README).json'   # package_release.py's placeholder
 DISC = re.compile(r' \(Disc \d+\)')
@@ -640,19 +641,30 @@ def playlist_entries(text):
     return [line.strip().replace('\\', '/') for line in text.splitlines() if line.strip() and not line.strip().startswith('#')]
 
 
-def playlist_check(m3u, card):
+def playlist_check(m3u, card, discs=4):
     """Why a playlist the user wrote can't be a game file, or None: the core
-    takes up to four discs, each a .cue or .bin relative to the playlist
-    (or from the card's root with a leading /)."""
+    takes up to discs discs (its Swap Discs list), each a .cue or .bin
+    relative to the playlist (or from the card's root with a leading /)."""
     try: entries = playlist_entries(m3u.read_text(errors='replace'))
     except OSError as error: return str(error)
     if not entries: return 'no discs listed'
-    if len(entries) > 4: return f'{len(entries)} discs (the core takes 4)'
+    if len(entries) > discs: return f'{len(entries)} discs (the core takes {discs})'
     for entry in entries:
         path = Path(os.path.normpath(card/entry.lstrip('/') if entry.startswith('/') else m3u.parent/entry))
         if Path(entry).suffix.lower() not in ('.cue', '.bin'): return f'{entry}: not a .cue or .bin'
         if not path.is_file(): return f'{entry} not found'
     return None
+
+
+def menu_discs(interact):
+    """How many discs the core's Swap Discs list (interact.json, the list on
+    bridge address 0x50000044) offers, 0 without one."""
+    try: variables = json.loads(interact.read_text())['interact']['variables']
+    except (OSError, KeyError, TypeError, ValueError): return 0
+    for v in variables if isinstance(variables, list) else []:
+        if isinstance(v, dict) and str(v.get('address', '')).lower() == '0x50000044' and isinstance(v.get('options'), list):
+            return len(v['options'])
+    return 0
 
 
 def playlist_text(m3u, cues):
@@ -700,7 +712,7 @@ def main():
     if args.cue_reader is None:
         args.cue_reader = declared is not None and any(s.get('id') == 0 and 'cue' in s.get('extensions', []) for s in declared)
     if args.cue_reader: args.one_file = False
-    # Cue-reader cores read .m3u playlists (up to four discs); slot 100 taking
+    # Cue-reader cores read .m3u playlists (up to five discs; four before 0.5.9); slot 100 taking
     # them means a game file can name one.
     playlist_slot = declared is not None and any(s.get('id') == 100 and 'm3u' in s.get('extensions', []) for s in declared)
     if args.max_tracks is None:
@@ -718,6 +730,9 @@ def main():
     disc_tracks = {n: sum(1 for s in (declared or []) if isinstance(s.get('id'), int) and 100*n+1 <= s['id'] <= 100*n+99)
                    for n in range(2, 10)}
     discs_declared = 1 + sum(1 for n in range(2, 10) if disc_tracks[n])
+    # A cue reader core loads discs past the declared slots by name (disc 5
+    # has none): its Swap Discs list says how many.
+    if args.cue_reader: discs_declared = max(discs_declared, menu_discs(data.parent/'interact.json'))
     written = skipped = 0
     named = set()   # game file names written this run
     skipped += write_lone_cues(common)[1]
@@ -762,7 +777,7 @@ def main():
     for cue in visible(common, '*.cue'):
         if tag := disc_tag(cue.stem): (first if tag[0] == 1 else later).add(RELEASE.sub('', tag[1]).strip())
     untagged_first = later - first
-    # A subfolder holding only 2-4 cues that no disc tag groups, named as one
+    # A subfolder holding only 2-4 cues (2-5 on a five-disc core) that no disc tag groups, named as one
     # game's discs, is that game ("Riven/disc1.cue", "Riven/disc2.cue"),
     # named after the folder.
     by_folder = {}
@@ -770,7 +785,7 @@ def main():
         if cue.parent != common: by_folder.setdefault(cue.parent, []).append(cue)
     folder_disc = {}   # cue -> (disc number, game key)
     for folder, cues in by_folder.items():
-        if not 2 <= len(cues) <= 4 or any(disc_tag(c.stem) or RELEASE.sub('', c.stem).strip() in untagged_first for c in cues): continue
+        if not 2 <= len(cues) <= max(4, discs_declared) or any(disc_tag(c.stem) or RELEASE.sub('', c.stem).strip() in untagged_first for c in cues): continue
         numbers = folder_discs([c.stem for c in cues])
         if numbers:
             for c, n in zip(cues, numbers): folder_disc[c] = (n, folder.relative_to(common).as_posix() + '/')   # never a title's key
@@ -842,9 +857,9 @@ def main():
             name = title(parts[1][0])
             root = Path(os.path.commonpath([str(parts[n][0].parent) for n in numbers]))
             m3u = root/(name + '.m3u')
-            if len(numbers) <= 4:
+            if len(numbers) <= MAX_DISCS:
                 m3u.write_text(playlist_text(m3u, [parts[n][0] for n in numbers]))
-            if len(numbers) <= 4 and playlist_slot:
+            if len(numbers) <= MAX_DISCS and playlist_slot:
                 data_path = root.relative_to(common).as_posix()
                 cue1 = parts[1][0]
                 slots = [{'id': 100, 'filename': m3u.name}] + [
@@ -867,7 +882,7 @@ def main():
                 if old_title and old_title != name and old_m3u.is_file() and old_m3u.read_text() == m3u.read_text(): old_m3u.unlink()
                 print(f'wrote {name}.json ({len(numbers)} discs, playlist {m3u.relative_to(common).as_posix()})'); written += 1
                 continue
-            if len(numbers) <= 4:
+            if len(numbers) <= MAX_DISCS:
                 print(f'{label}: the discs\' names differ by more than their number: wrote the playlist '
                       f'{m3u.relative_to(common).as_posix()} (pick it in the core\'s file list to swap discs); each disc also gets its own game file')
             else:
@@ -912,7 +927,7 @@ def main():
     if playlist_slot:
         for m3u in visible(common, '*.m3u'):
             if m3u.stem in named: continue
-            reason = playlist_check(m3u, args.card)
+            reason = playlist_check(m3u, args.card, max(4, discs_declared))
             if reason:
                 print(f'skip {m3u.relative_to(common)}: {reason}'); skipped += 1; continue
             data_path = m3u.parent.relative_to(common).as_posix()

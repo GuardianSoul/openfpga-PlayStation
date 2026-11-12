@@ -35,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_save_fw import image, word_hex
 from prepare_save_states import cpu_trap_text, memorymux_exp1_text
+import prepare_cpu_exceptions
 from run_memorymux_fifo_ram import ports, zero, stub_value
 from tool_paths import ROOT, find_tool
 
@@ -234,6 +235,11 @@ GTE_INSTANCE = '''   igte : entity work.gte port map (
 '''
 
 
+# The selected memorymux has the save-mode-clk1x port (prepare_save_mode_clk1x.py): the bench's
+# SAVE_MODE level goes into it, and its simulation-only check watches every RAM access.
+SAVE_MODE_PORT = False
+
+
 def bench_text():
     mux = ports(UPSTREAM / 'rtl/memorymux.vhd', 'memorymux')
     cpu = ports(UPSTREAM / 'rtl/cpu.vhd', 'cpu')
@@ -254,6 +260,9 @@ def bench_text():
     mux_inputs = {'ce': 'ce', 'reset': 'reset', 'pauseNext': 'pause_next', 'ram_dataRead': 'ram_data',
                   'ram_done': 'ram_cpu_done', 'TURBO': "'0'", 'loading_savestate': "'0'",
                   'SS_reset': "'0'", 'loadExe': "'0'"}
+    if SAVE_MODE_PORT:
+        mux.append(('save_mode', 'in', 'std_logic'))
+        mux_inputs['save_mode'] = 'save_mode_s'
     declarations, stubs = [], []
     cpu_map = ['trapRequest => trap']
     mux_map = []
@@ -338,7 +347,8 @@ def build(name, cpu_fault=None, mux_fault=None, fw_fault=None, seed=1):
     log = directory / 'checks.log'
     log.write_text('')
     rtl = UPSTREAM / 'rtl'
-    cpu = cpu_trap_text((rtl / 'cpu.vhd').read_text())
+    # Match the release recipe: accuracy exceptions precede the save trap.
+    cpu = cpu_trap_text(prepare_cpu_exceptions.transform((rtl / 'cpu.vhd').read_text()))
     mux = memorymux_exp1_text((rtl / 'memorymux.vhd').read_text())
     for fault, text in ((cpu_fault, 'cpu'), (mux_fault, 'mux')):
         if fault:
@@ -388,12 +398,14 @@ def simulate(directory, generics, tag):
     if dump.exists():
         dump.unlink()
     command = [ghdl, '-r', *GHDL_FLAGS, 'tb_save_trap_cpu', *(f'-g{k}={v}' for k, v in generics.items()),
-               '--assert-level=error', '--ieee-asserts=disable']
+               '--max-stack-alloc=0', '--assert-level=error', '--ieee-asserts=disable']
     result = run(command, directory, directory / 'checks.log')
     output = result.stdout + result.stderr
     stats = next((line[line.index('STATS') + 6:] for line in output.splitlines() if 'STATS save trap' in line), '')
     ok = result.returncode == 0 and 'PASS save trap run' in output and dump.exists()
     failure = '' if ok else next((line for line in output.splitlines() if 'failure' in line or 'error' in line), output[-300:])
+    if not ok and not failure:
+        failure = f'GHDL exited with code {result.returncode} without diagnostic output'
     values = dict(item.split('=') for item in stats.split() if '=' in item)
     image = dump.read_text() if dump.exists() else None
     if dump.exists():
@@ -401,7 +413,7 @@ def simulate(directory, generics, tag):
     return ok, values, image, failure.strip()
 
 
-def scenarios(directory, stop_on_failure=False):
+def scenarios(directory, stop_on_failure=False, only=()):
     """Run the four scenarios; returns a list of failure strings."""
     failures = []
     ok, ref, ref_image, why = simulate(directory, {}, 'reference')
@@ -429,6 +441,8 @@ def scenarios(directory, stop_on_failure=False):
     ]
     save_cycles = None
     for tag, generics, expect, replays in runs:
+        if only and tag != 'save' and tag not in only:
+            continue
         if 'LOAD_AT' in generics and generics['LOAD_AT'] is None:
             if save_cycles is None:
                 failures.append(f'{tag}: skipped, the save run failed')
@@ -450,7 +464,9 @@ def scenarios(directory, stop_on_failure=False):
             failures.append(f'{tag}: log stores {values["log_stores"]} vs reference {ref["log_stores"]}')
         elif int(values['handler_fetches']) == 0:
             failures.append(f'{tag}: the handler never ran')
-        elif ('GPU_HOLD' in generics) != (int(values.get('retries', 0)) > 0):
+        # A plain save can also retry during the CD model's busy window.
+        # A deliberately busy GPU must exercise the retry path.
+        elif 'GPU_HOLD' in generics and int(values.get('retries', 0)) == 0:
             failures.append(f'{tag}: retries {values.get("retries")}')
         print(line + ('' if not failures or not failures[-1].startswith(tag) else '  <- ' + failures[-1]), flush=True)
         if failures and stop_on_failure:
@@ -490,6 +506,9 @@ FAULTS = {
     # packed state: the save keeps no bitmap bits (a load then misplaces pages)
     'fault-handler-no-bitmap-bit': dict(fw_fault=('        jr      $ra\n        sb      $t2, BITMAP($t1)\n',
                                                   '        jr      $ra\n        nop\n')),
+    # The pre-fix release accuracy decode rejects the handler's EXP1 fetch.
+    'fault-cpu-exp1-fetch-error': dict(cpu_fault=(prepare_cpu_exceptions.SAVE_BAD_FETCH,
+                                                 prepare_cpu_exceptions.BAD_FETCH)),
     # the trap goes to the game's interrupt vector
     'fault-cpu-normal-vector': dict(cpu_fault=('x"BF000000" when (exception > 0 and exceptionTrap', 'x"80000080" when (exception > 0 and exceptionTrap')),
     # memorymux has no EXP1 instruction fetch decode
@@ -505,6 +524,9 @@ def main():
     parser.add_argument('--seeds', type=int, default=1)
     parser.add_argument('--skip-faults', action='store_true')
     parser.add_argument('--fault', action='append', choices=sorted(FAULTS), help='run only these faults (repeatable)')
+    parser.add_argument('--scenario', action='append', choices=('save', 'save+load', 'save+load fresh drive',
+                        'bad load', 'save+load other disc', 'save GPU busy', 'save never quiet'),
+                        help='seed runs: select scenarios after the prerequisite save')
     args = parser.parse_args()
     if not find_tool('ghdl'):
         raise SystemExit('GHDL is required (scripts/setup_ghdl.py)')
@@ -512,7 +534,9 @@ def main():
     for seed in range(1, args.seeds + 1):
         directory = build(f'good-seed{seed}', seed=seed)
         print(f'seed {seed}:', flush=True)
-        failures += [f'seed {seed} {f}' for f in scenarios(directory)]
+        failures += [f'seed {seed} {f}' for f in scenarios(directory, only=tuple(args.scenario or ()))]
+    if failures:
+        raise SystemExit('FAIL save trap cpu:\n  ' + '\n  '.join(failures))
     if not args.skip_faults:
         for name, fault in FAULTS.items():
             if args.fault and name not in args.fault:

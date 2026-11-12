@@ -10,8 +10,14 @@ issue #24; sim/reference/tb_spu_budget.vhd). With VOICE_SETS=1
 and every write clears the cache. Data are unchanged: the cache returns what
 SPU RAM holds (make test-spu-ch3-cache), only the timing moves.
 This step carries the voice number from spu.vhd (sdram_voice/sdram_isvoice)
-through psx_top, the wrapper, core_top and psx_native_memory to the cache.
-Usage: prepare_spu_voice_sets.py PROJECT   (after the release recipe's steps)
+through psx_top, the wrapper, core_top and psx_core_memory to the cache.
+--write-owners installs VOICE_SETS=2 instead: the same sets, but a write
+clears only the sets that may hold its block (an owner table in one M10K), so
+a game that writes SPU RAM while it plays keeps its cache (docs/spu-voice-sets.md).
+It also upgrades a project that already has this step.
+--post-write (implies --write-owners) adds POST_WRITE=1: a write is answered
+one clock after it is taken and ch3 finishes it while the SPU goes on.
+Usage: prepare_spu_voice_sets.py PROJECT [--write-owners] [--post-write]   (after the release recipe's steps)
 """
 from pathlib import Path
 import re
@@ -83,34 +89,53 @@ def memory_text(t):
     return t
 
 
-SLIM_BEFORE = 'e09c92f'   # rtl/pocket/psx_spu_ch3_cache_slim.sv before VOICE_SETS (the copy in released projects)
+# rtl/pocket/psx_spu_ch3_cache_slim.sv before VOICE_SETS, with VOICE_SETS 0/1 only (the 0.5.7 and 0.5.8 projects),
+# and with VOICE_SETS=2 before POST_WRITE
+SLIM_BEFORE = ('e09c92f', '533c49b1', '8a6e9deb')
 
 
 def cache_text(t):
-    old = subprocess.run(['git', '-C', str(ROOT), 'show', f'{SLIM_BEFORE}:rtl/pocket/psx_spu_ch3_cache_slim.sv'],
-                         capture_output=True, text=True, check=True).stdout
+    old = [subprocess.run(['git', '-C', str(ROOT), 'show', f'{rev}:rtl/pocket/psx_spu_ch3_cache_slim.sv'],
+                          capture_output=True, text=True, check=True).stdout for rev in SLIM_BEFORE]
     new = (ROOT/'rtl/pocket/psx_spu_ch3_cache_slim.sv').read_text()
-    # A project prepared after 533c49b already holds the VOICE_SETS cache (default 0).
-    if t not in (old, new): raise ValueError(f'{MARK}: the project cache is not the slim cache of {SLIM_BEFORE} or this checkout')
+    if t not in (*old, new): raise ValueError(f'{MARK}: the project cache is not the slim cache of {SLIM_BEFORE} or this checkout')
     return new
 
 
 FILES = (('spu.vhd', spu_text), ('psx_top.vhd', psx_top_text), ('psx_mister_psx_top_resource.vhd', wrapper_text),
-         ('core_top.sv', core_text), ('psx_native_memory.sv', memory_text), ('psx_spu_ch3_cache.sv', cache_text))
+         ('core_top.sv', core_text), ('psx_core_memory.sv', memory_text), ('psx_spu_ch3_cache.sv', cache_text))
 
 
-def prepare_project(project):
+def assigned(q, name):
+    hits = sorted(set(re.findall(rf'"([^"]*/{re.escape(name)})"', q)))
+    if len(hits) != 1: raise ValueError(f'{MARK}: expected one {name} in the project, found {hits}')
+    return Path(hits[0])
+
+
+def prepare_project(project, write_owners=False, post_write=False):
     project = Path(project).resolve(); qsf = project/'apf_top.qsf'; q = qsf.read_text()
     out = project/MARK; out.mkdir(exist_ok=True)
-    for name, edit in FILES:
-        hits = sorted(set(re.findall(rf'"([^"]*/{re.escape(name)})"', q)))
-        if len(hits) != 1: raise ValueError(f'{MARK}: expected one {name} in the project, found {hits}')
-        (out/name).write_text(edit(Path(hits[0]).read_text()))
-        q = q.replace(f'"{hits[0]}"', f'"{out/name}"')
-    qsf.write_text(q)
+    if MARK not in assigned(q, 'psx_core_memory.sv').read_text():
+        for name, edit in FILES:
+            hit = assigned(q, name)
+            (out/name).write_text(edit(hit.read_text()))
+            q = q.replace(f'"{hit}"', f'"{out/name}"')
+        qsf.write_text(q)
+    elif not (write_owners or post_write): raise ValueError(f'{MARK}: the project already has this step')
+    if write_owners or post_write:
+        # in place: after the step above these are the project's own copies
+        memory, cache = assigned(q, 'psx_core_memory.sv'), assigned(q, 'psx_spu_ch3_cache.sv')
+        if project not in memory.parents or project not in cache.parents: raise ValueError(f'{MARK}: the cache files are not the project\'s own')
+        text = memory.read_text()
+        hits = re.findall(r'psx_spu_ch3_cache #\(\.VOICE_SETS\([12]\)(?:, \.POST_WRITE\(1\))?\) spu_cache \(', text)
+        if len(hits) != 1: raise ValueError(f'{MARK}: cache parameter anchor found {len(hits)} times')
+        memory.write_text(text.replace(hits[0], 'psx_spu_ch3_cache #(.VOICE_SETS(2)' + (', .POST_WRITE(1)' if post_write else '') + ') spu_cache ('))
+        cache.write_text(cache_text(cache.read_text()))
     return out
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2: raise SystemExit(__doc__.split('Usage: ')[1])
-    print(prepare_project(sys.argv[1]))
+    flags = ('--write-owners', '--post-write')
+    args = [a for a in sys.argv[1:] if a not in flags]
+    if len(args) != 1: raise SystemExit(__doc__.split('Usage: ')[1])
+    print(prepare_project(args[0], write_owners='--write-owners' in sys.argv, post_write='--post-write' in sys.argv))

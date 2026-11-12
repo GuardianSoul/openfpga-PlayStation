@@ -49,6 +49,19 @@ class LaunchSlot(unittest.TestCase):
             for s in packager['data_slots']:
                 self.assertIn(s['filename'].rsplit('.', 1)[1], slots[s['id']]['extensions'])
 
+    def test_five_discs_add_no_slot(self):
+        # --disc-menu 5: Disc 5 is read through disc 1's slots, so the slot
+        # list is the four-disc one (no BIOS name loses its slot) and only
+        # the Swap Discs list grows.
+        with TemporaryDirectory() as tmp4, TemporaryDirectory() as tmp5:
+            four, _ = package(tmp4, '--disc-menu', '4')
+            five, _ = package(tmp5, '--disc-menu', '5')
+            self.assertEqual(list(four), list(five))
+            self.assertNotIn(501, five)
+            core = next((Path(tmp5)/'package/SD/Cores').iterdir())
+            menu = next(v for v in json.loads((core/'interact.json').read_text())['interact']['variables'] if v['name'] == 'Swap Discs')
+            self.assertEqual([o['name'] for o in menu['options']], [f'Disc {n}' for n in range(1, 6)])
+
     def test_load_disc_without_disc_menu_keeps_bin(self):
         # Without --disc-menu, slot 101 is both "Load disc" and a game file's
         # disc image, so it keeps .bin.

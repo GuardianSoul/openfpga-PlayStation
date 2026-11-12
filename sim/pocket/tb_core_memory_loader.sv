@@ -1,9 +1,9 @@
-// psx_native_memory's BIOS-loader path against a stand-in sdram (ch3 only):
+// psx_core_memory's BIOS-loader path against a stand-in sdram (ch3 only):
 // a 1-word packet and a 4-word packet (psx_bios_patch's shell patch) must
 // become one ch3 write per word at 0x800000 + 2*halfword address, in order,
 // with each word's byte enables, and one response per packet.
 `timescale 1ns/1ps
-module sdram #(parameter SINGLE_CHIP=0) (
+module sdram #(parameter CS_TIED_LOW=0) (
     input init, clk, clk_base, SDRAM_EN, inout [15:0] SDRAM_DQ, output [12:0] SDRAM_A, output SDRAM_DQML, SDRAM_DQMH,
     output [1:0] SDRAM_BA, output SDRAM_nCS, SDRAM_nWE, SDRAM_nRAS, SDRAM_nCAS, SDRAM_CKE, SDRAM_CLK,
     input refreshForce, output ram_idle,
@@ -23,11 +23,11 @@ module sdram #(parameter SINGLE_CHIP=0) (
     end
 endmodule
 
-module tb_native_loader;
+module tb_core_memory_loader;
     reg clk1x=0, clk3x=0; always #15 clk1x=~clk1x; always #5 clk3x=~clk3x;
     reg valid=0, rsp_ready=1; reg [24:0] addr=0; reg [3:0] hw=0; reg [127:0] data=0; reg [15:0] be=0;
     wire ready, rsp; integer errs=0, rsps=0;
-    psx_native_memory dut(.clk1x(clk1x),.clk3x(clk3x),.init(1'b0),.cpu_reset(1'b1),.ram_refresh(1'b0),.ram_ena(1'b0),.ram_rnw(1'b1),
+    psx_core_memory dut(.clk1x(clk1x),.clk3x(clk3x),.init(1'b0),.cpu_reset(1'b1),.ram_refresh(1'b0),.ram_ena(1'b0),.ram_rnw(1'b1),
         .ram_dma(1'b0),.ram_cache(1'b0),.ram_adr(25'b0),.ram_cntDMA(2'b0),.ram_dataWrite(32'b0),.ram_be(4'b0),.ram_done(),.ram_dataRead32(),
         .dma_wr(),.dma_data(),.dma_reqprocessed(),.cache_wr(),.cache_data(),.cache_addr(),.ram_dmafifo_adr(23'b0),.ram_dmafifo_data(32'b0),
         .ram_dmafifo_empty(1'b1),.ram_dmafifo_read(),.spuram_ena(1'b0),.spuram_rnw(1'b1),.spuram_adr(19'b0),.spuram_dataWrite(32'b0),

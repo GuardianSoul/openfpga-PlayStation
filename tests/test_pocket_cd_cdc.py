@@ -162,10 +162,17 @@ proc foreach_in_collection {v c body} {foreach x $c {uplevel 1 [list set $v $x];
         result = preserve_menu_flops(source)
         self.assertEqual(source[source.index('    reg change_req_d=0;'):],
                          result[result.index('    reg change_req_d=0;'):])
-        self.assertIn('preserve, dont_merge *) reg [1:0] disc_sync=0;', result)
-        self.assertIn('preserve, dont_merge *) reg [1:0] disc_last=0;', result)
+        self.assertIn('preserve, dont_merge *) reg [W-1:0] disc_sync=0;', result)
+        self.assertIn('preserve, dont_merge *) reg [W-1:0] disc_last=0;', result)
         for bad in (result, source + '\n', source.replace('disc_sync<=disc_meta', 'disc_sync<=disc_setting')):
             with self.assertRaises(ValueError): preserve_menu_flops(bad)
+
+    def test_legacy_menu_source_is_still_accepted(self):
+        fixture = (ROOT / 'sim/pocket/disc_menu_reference.sv').read_text()
+        # The fixture has one provenance comment and a renamed module only.
+        source = fixture[fixture.index('// SPDX-License-Identifier:'):].replace(
+            'module psx_disc_menu_reference #(', 'module psx_disc_menu #(', 1)
+        preserve_menu_flops(source)
 
     def test_menu_project_keeps_original_sources_and_records_dynamic_profile(self):
         parent = ROOT / 'build/sim/cd-cdc-unit'; parent.mkdir(parents=True, exist_ok=True)

@@ -51,9 +51,9 @@ MENU = '''    // "Swap Discs" menu setting (interact.json list, bridge 0x5000004
     // by the Pocket): psx_disc_menu swaps to that disc's slots in the same
     // game file (--disc-menu). The value is taken from whichever byte holds
     // it: checkbox values were seen outside bit 0 on hardware.
-    reg [1:0] disc_setting=2'd0;
+    reg [SETTING_BITS:0] disc_setting=0;
     always @(posedge clk_74a) if (bridge_wr && bridge_addr==32'h50000044)
-        disc_setting<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];
+        disc_setting<=SETTING_BYTES;
     wire disc_menu_request;
     psx_disc_menu #(.FIRST_SLOT(SLOT_VALUE), .STEP(16'd100), .DISCS(DISC_COUNT)) disc_menu (.clk(clk1x), .reset(cd_stream_reset),
         .disc_setting(disc_setting), .change_req(swap_change_req), .change_done(swap_change_done),
@@ -71,7 +71,11 @@ def disc_menu_text(text, discs):
     slot = found[0]
     old = MENU_SELECT.replace('SLOT_VALUE', slot)
     if text.count(old) != 1: raise ValueError('psx_disc_select wiring changed')
-    text = text.replace(old, MENU.replace('SLOT_VALUE', slot).replace('DISC_COUNT', str(discs)))
+    # Disc 5 needs a third setting bit; four-disc builds keep two.
+    top = 2 if discs > 4 else 1
+    setting = '|'.join(f'bridge_wr_data[{8*b+top}:{8*b}]' for b in range(4))
+    text = text.replace(old, MENU.replace('SLOT_VALUE', slot).replace('DISC_COUNT', str(discs))
+                        .replace('SETTING_BITS', str(top)).replace('SETTING_BYTES', setting))
     request = ".manual_lid_open(1'b0), .swap_request(1'b0),"
     if text.count(request) != 1: raise ValueError('psx_disc_swap request tie-off not found')
     text = text.replace(request, ".manual_lid_open(1'b0), .swap_request(disc_menu_request),")

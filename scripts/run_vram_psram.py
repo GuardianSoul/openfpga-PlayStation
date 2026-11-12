@@ -85,7 +85,8 @@ X3_MUTATIONS = [
      dict(SEED=25, N_OPS=1200, PARKS=2, FOREIGN=1)),
     ('x3-word-not-held', "ddr_dout <= rhold;", "ddr_dout <= c_dout;", ['mismatch']),
     # 0.5.7-test8's bridge: the entry read at the first clk3x edge, before the M10K holds it
-    ('x3-fifo-read-before-ram-write', "wire        have = wptr_s != rptr;", "wire        have = wptr != rptr;", ['mismatch']),
+    # (the entry's we flag is in the RAM too, so an unwritten word can also leave the command undriven)
+    ('x3-fifo-read-before-ram-write', "wire        have = wptr_s != rptr;", "wire        have = wptr != rptr;", ['mismatch', 'undriven']),
     ('x3-aux-request-not-copied', "c_aux_we <= aux_we; c_aux_addr <= aux_addr; c_aux_din <= aux_din;",
      "c_aux_we <= aux_we; c_aux_din <= aux_din;", ['mismatch']),
 ]

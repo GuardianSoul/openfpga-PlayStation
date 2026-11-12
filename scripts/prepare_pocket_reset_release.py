@@ -97,7 +97,7 @@ def adapt_top(text):
     for module, pattern in (
             ('psx_disc_swap', r'^    psx_disc_swap disc_swap \('),
             ('psx_disc_select', r"^    psx_disc_select #\(\.DISC_SLOT\(16'[dh][0-9a-fA-F]+\)\) disc_select \("),
-            ('psx_disc_menu', r"^    psx_disc_menu #\(\.FIRST_SLOT\(16'd101\), \.STEP\(16'd100\), \.DISCS\(4\)\) disc_menu \(")):
+            ('psx_disc_menu', r"^    psx_disc_menu #\(\.FIRST_SLOT\(16'd101\), \.STEP\(16'd100\), \.DISCS\([45]\)\) disc_menu \(")):
         declarations = re.findall(r'^\s*' + module + r'\b', text, re.M)
         found = list(re.finditer(pattern, text, re.M))
         if not declarations:

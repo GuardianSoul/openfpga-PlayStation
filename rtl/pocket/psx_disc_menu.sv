@@ -16,42 +16,58 @@
 // FFVII, or the disc another game was left on): only discs the loader found
 // in the APF table (discs_present) are taken; any other choice keeps the
 // current disc.
+// Disc 5 (DISCS 5, cue reader builds only: prepare --disc-menu 5 needs
+// --cue-mount) has no slots of its own: it mounts FIRST_SLOT again, which
+// the cue reader's firmware fills with the disc the menu asks for (it holds
+// the stream's lookups until then, psx_cue_mount menu_hold), so it is
+// present when disc 1's slot is.
 module psx_disc_menu #(
     parameter [15:0] FIRST_SLOT=16'd101,
     parameter [15:0] STEP=16'd100,
     parameter integer DISCS=4
 ) (
     input wire clk, reset,
-    input wire [1:0] disc_setting,          // clk_74a level: disc number - 1
+    input wire [2:0] disc_setting,          // clk_74a level: disc number - 1
     input wire change_req,                  // from psx_disc_swap
     output wire change_done,                // to psx_disc_swap
     output reg [15:0] disc_slot_id=FIRST_SLOT,
     output reg disc_select_strobe=0,
     input wire disc_change_done,            // from the loader
     input wire [3:0] discs_present,         // from the loader (after its first mount)
-    output wire swap_request                // to psx_disc_swap
+    output wire swap_request,               // to psx_disc_swap
+    output wire [2:0] wanted_disc,          // observation only, not mounted-media identity
+    output wire selection_stable,          // all setting pipeline stages agree
+    output wire [2:0] selected_disc        // the disc last selected for mounting (number - 1; save states)
 );
-    (* async_reg="true", preserve, dont_merge *) reg [1:0] disc_meta=0;
-    reg [1:0] disc_sync=0, disc_last=0, wanted=0, selected=0;
+    // Setting bits above the menu's discs are constant 0 (a 2-bit setting
+    // for DISCS 4), so a four-disc build keeps its two-bit registers.
+    localparam integer W=DISCS>4 ? 3 : 2;
+    (* async_reg="true", preserve, dont_merge *) reg [W-1:0] disc_meta=0;
+    reg [W-1:0] disc_sync=0, disc_last=0, wanted=0, selected=0;
     reg change_req_d=0;
-    wire takeable=disc_last<=DISCS-1 && discs_present[disc_last];
+    wire [4:0] present={discs_present[0],discs_present};   // disc 5 is disc 1's slot
+    wire takeable=disc_last<=DISCS-1 && present[disc_last];
     assign swap_request=wanted!=selected;
     assign change_done=disc_change_done;
+    assign wanted_disc=wanted;   // zero-extended
+    assign selected_disc=selected;   // zero-extended
+    assign selection_stable=disc_meta==disc_sync && disc_sync==disc_last && disc_last==wanted;
     always @(posedge clk) begin
         if(reset) begin
             disc_meta<=0;disc_sync<=0;disc_last<=0;wanted<=0;selected<=0;change_req_d<=0;
             disc_slot_id<=FIRST_SLOT;disc_select_strobe<=0;
         end else begin
-            disc_meta<=disc_setting;disc_sync<=disc_meta;disc_last<=disc_sync;
+            disc_meta<=disc_setting[W-1:0];disc_sync<=disc_meta;disc_last<=disc_sync;
             if(disc_sync==disc_last && takeable) wanted<=disc_last;
             change_req_d<=change_req;
             disc_select_strobe<=change_req && !change_req_d;
             if(change_req && !change_req_d) begin
                 case(wanted)   // constants, no multiplier
-                    2'd0: disc_slot_id<=FIRST_SLOT;
-                    2'd1: disc_slot_id<=FIRST_SLOT+STEP;
-                    2'd2: disc_slot_id<=FIRST_SLOT+STEP+STEP;
-                    default: disc_slot_id<=FIRST_SLOT+STEP+STEP+STEP;
+                    0: disc_slot_id<=FIRST_SLOT;
+                    1: disc_slot_id<=FIRST_SLOT+STEP;
+                    2: disc_slot_id<=FIRST_SLOT+STEP+STEP;
+                    3: disc_slot_id<=FIRST_SLOT+STEP+STEP+STEP;
+                    default: disc_slot_id<=FIRST_SLOT;   // disc 5 (cue reader)
                 endcase
                 selected<=wanted;
             end

@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--expected',type=Path,help='2648-word table for an authored reset diagnostic; otherwise run BIOS mode')
     parser.add_argument('--capture-interval',type=int,default=0,help='Periodically capture primary VRAM and display metadata (cycles)')
     parser.add_argument('--apf-loader',action='store_true',help='Serve sectors through the Pocket SD loader (psx_cd_stream) and pinned APF handler')
+    parser.add_argument('--save-states',type=Path,metavar='ROM40_HEX',help='Apply the save-state RTL transforms; EXP1 reads return this handler ROM')
     parser.add_argument('--pad-file',type=Path,help='Mutable active-high digital pad mask in a local hexadecimal text file')
     args=parser.parse_args()
     if args.max_cycles<=0 or args.max_cycles>0x7fffffff or args.timeout<=0 or not 0<=args.capture_interval<=0x7fffffff:
@@ -58,7 +59,14 @@ def main():
         identity &= all('selected' not in s or digest(Path(s['selected']))==s['selected_sha256'] for s in manifest['sources'])
         if not identity:parser.error('Recorded build changed; rebuild required')
     else:
-        manifest=prepare(directory/'sources',fast_reset=False,fast_boot=args.fastboot);bench=write_bench(directory,args.trace_devices)
+        ss=None
+        if args.save_states:
+            import prepare_save_states as pss
+            from prepare_system_verilator import save_state_exp1_rom
+            ss={'transforms':{'cpu.vhd':pss.cpu_trap_text,'memorymux.vhd':pss.memorymux_exp1_text,'psx_top.vhd':pss.psx_top_text,
+                'irq.vhd':pss.irq_set_text,'dma.vhd':pss.dma_set_text,'timer.vhd':pss.timer_tap_text,'gpu.vhd':pss.gpu_tap_text,
+                'spu.vhd':pss.spu_build_text,'cd_top.vhd':pss.cd_tap_text},'exp1':save_state_exp1_rom(args.save_states)}
+        manifest=prepare(directory/'sources',fast_reset=False,fast_boot=args.fastboot,save_states=ss);bench=write_bench(directory,args.trace_devices)
         with (directory/'build.log').open('w') as log:
             for source in manifest['sources']:
                 subprocess.run([ghdl,'-a','--std=08','-frelaxed',f'--work={source["library"]}',source['path']],cwd=directory,

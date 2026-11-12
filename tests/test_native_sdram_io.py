@@ -10,14 +10,14 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 from prepare_native_sdram_io import controller_contract,fitted_input_delays,prepare_project,project_contract
 from prepare_resource_targets import digest
-from tool_paths import ROOT
+from tool_paths import ROOT,find_tool
 
 
 class NativeSDRAMIO(unittest.TestCase):
     def project(self,root):
         ctrl=root/'psx_sdram_ctrl.sv';ctrl.write_text((ROOT/'rtl/memory/psx_sdram_ctrl.sv').read_text())
-        wrapper=root/'psx_native_memory.sv'
-        wrapper.write_text((ROOT/'rtl/pocket/psx_native_memory.sv').read_text().replace('    sdram #(', '    psx_sdram_ctrl #('))
+        wrapper=root/'psx_core_memory.sv'
+        wrapper.write_text((ROOT/'rtl/pocket/psx_core_memory.sv').read_text().replace('    sdram #(', '    psx_sdram_ctrl #('))
         (root/'pocket.sdc').write_text('derive_pll_clocks\n')
         (root/'apf_top.qsf').write_text(''.join(f'set_global_assignment -name SYSTEMVERILOG_FILE "{p}" -library work\n' for p in [ctrl,wrapper]))
         return ctrl
@@ -55,8 +55,8 @@ class NativeSDRAMIO(unittest.TestCase):
         """Interface parser fixture only, not a tested read-pipeline variant."""
         ctrl=self.project(root);text=ctrl.read_text()
         if 'parameter integer CAS_LATENCY' not in text:
-            text=text.replace('parameter SINGLE_CHIP = 1,',
-                              'parameter SINGLE_CHIP = 1,\n    parameter integer CAS_LATENCY = 2,')
+            text=text.replace('parameter CS_TIED_LOW = 1,   // one chip: nCS held low, address bit 26 unused',
+                              'parameter CS_TIED_LOW = 1,   // one chip: nCS held low, address bit 26 unused\n    parameter integer CAS_LATENCY = 2,')
             text,count=re.subn(r"a\s*<=\s*13'h0221;", "a <= CAS_LATENCY == 3 ? 13'h0231 : 13'h0221;",text)
             self.assertEqual(count,1)
             ctrl.write_text(text)
@@ -66,10 +66,10 @@ class NativeSDRAMIO(unittest.TestCase):
         for override in (None,2,3):
             with self.subTest(override=override),tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp);ctrl=self.parameterized_fixture(root)
-                wrapper=root/'psx_native_memory.sv'
+                wrapper=root/'psx_core_memory.sv'
                 if override is not None:
-                    wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                                      f'.SINGLE_CHIP(1), .CAS_LATENCY({override})) controller'))
+                    wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                                      f'.CS_TIED_LOW(1), .CAS_LATENCY({override})) controller'))
                 sha=digest(ctrl);_,_,active,selected=project_contract(root,sha)
                 self.assertEqual(selected,override)
                 self.assertEqual(active,override if override is not None else controller_contract(ctrl.read_text()))
@@ -84,9 +84,9 @@ class NativeSDRAMIO(unittest.TestCase):
         for value in ('4','runtime_cas','3), .UNKNOWN(1',
                       '3), .SPU_FIRST(2','3), .SPU_FIRST(runtime_priority'):
             with self.subTest(value=value),tempfile.TemporaryDirectory() as tmp:
-                root=Path(tmp);ctrl=self.parameterized_fixture(root);wrapper=root/'psx_native_memory.sv'
-                wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                                   f'.SINGLE_CHIP(1), .CAS_LATENCY({value})) controller'))
+                root=Path(tmp);ctrl=self.parameterized_fixture(root);wrapper=root/'psx_core_memory.sv'
+                wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                                   f'.CS_TIED_LOW(1), .CAS_LATENCY({value})) controller'))
                 with self.assertRaises(ValueError):prepare_project(root,digest(ctrl))
                 self.assertFalse((root/'native-sdram-io').exists())
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,10 +100,10 @@ class NativeSDRAMIO(unittest.TestCase):
         captures=[]
         for priority in (None,0,1):
             with self.subTest(priority=priority),tempfile.TemporaryDirectory() as tmp:
-                root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_native_memory.sv'
+                root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_core_memory.sv'
                 extra='' if priority is None else f', .SPU_FIRST({priority})'
-                wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                                   f'.SINGLE_CHIP(1), .CAS_LATENCY(3){extra}) controller'))
+                wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                                   f'.CS_TIED_LOW(1), .CAS_LATENCY(3){extra}) controller'))
                 before={p:digest(p) for p in (ctrl,wrapper)}
                 r=prepare_project(root,digest(ctrl),implementation=True,input_delay_taps=24)
                 self.assertEqual(r['spu_first'],priority or 0)
@@ -124,9 +124,9 @@ class NativeSDRAMIO(unittest.TestCase):
 
     def test_reviewed_io_recipe_preserves_hold_and_targets_only_dq_enable(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_native_memory.sv'
-            wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                               '.SINGLE_CHIP(1), .CAS_LATENCY(3)) controller'))
+            root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_core_memory.sv'
+            wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                               '.CS_TIED_LOW(1), .CAS_LATENCY(3)) controller'))
             source_sha=digest(ctrl);r=prepare_project(root,source_sha,implementation=True)
             self.assertEqual(r['cas_latency'],3);self.assertTrue(r['multicycle_added'])
             self.assertFalse(r['read_hold_relaxation']);self.assertFalse(r['timing_verified'])
@@ -142,10 +142,10 @@ class NativeSDRAMIO(unittest.TestCase):
     def test_io_recipe_rejects_cas2_override_analysis_mode_and_unreviewed_source(self):
         for reason in ('cas2','analysis','source'):
             with self.subTest(reason=reason),tempfile.TemporaryDirectory() as tmp:
-                root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_native_memory.sv'
+                root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_core_memory.sv'
                 if reason!='cas2':
-                    wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                                      '.SINGLE_CHIP(1), .CAS_LATENCY(3)) controller'))
+                    wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                                      '.CS_TIED_LOW(1), .CAS_LATENCY(3)) controller'))
                 if reason=='source':ctrl.write_text(ctrl.read_text()+'\n// unreviewed revision\n')
                 with self.assertRaises(ValueError):
                     prepare_project(root,digest(ctrl),implementation=True,analysis_only=reason=='analysis')
@@ -156,9 +156,9 @@ class NativeSDRAMIO(unittest.TestCase):
             projects=[]
             for name,taps in [('auto',None),('fixed',24)]:
                 root=Path(tmp)/name;root.mkdir();ctrl=self.project(root)
-                wrapper=root/'psx_native_memory.sv'
-                wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                                   '.SINGLE_CHIP(1), .CAS_LATENCY(3)) controller'))
+                wrapper=root/'psx_core_memory.sv'
+                wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                                   '.CS_TIED_LOW(1), .CAS_LATENCY(3)) controller'))
                 before={p.name:digest(p) for p in (ctrl,wrapper,root/'pocket.sdc')}
                 r=prepare_project(root,digest(ctrl),implementation=True,input_delay_taps=taps)
                 self.assertEqual(before,{n:digest(root/n) for n in before})
@@ -194,12 +194,12 @@ class NativeSDRAMIO(unittest.TestCase):
                        table.replace('; Bidir ;','; Output ;',1)):
             with self.assertRaises(ValueError):fitted_input_delays(broken,24)
 
-    @unittest.skipUnless(shutil.which('tclsh'),'Tcl interpreter unavailable')
+    @unittest.skipUnless(find_tool('tclsh'),'Tcl interpreter unavailable')
     def test_io_recipe_clock_guard_runs_before_applying_the_capture_exception(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_native_memory.sv'
-            wrapper.write_text(wrapper.read_text().replace('.SINGLE_CHIP(1)) controller',
-                               '.SINGLE_CHIP(1), .CAS_LATENCY(3)) controller'))
+            root=Path(tmp);ctrl=self.project(root);wrapper=root/'psx_core_memory.sv'
+            wrapper.write_text(wrapper.read_text().replace('.CS_TIED_LOW(1)) controller',
+                               '.CS_TIED_LOW(1), .CAS_LATENCY(3)) controller'))
             prepare_project(root,digest(ctrl),implementation=True)
             capture=root/'native-sdram-io/previous-beat.sdc'
             for period in (9.841,8.0,12.0):
@@ -212,7 +212,7 @@ proc get_collection_size {{collection}} {{return 16}}
 proc set_multicycle_path {{args}} {{puts CAPTURE_APPLIED}}
 source {{{capture}}}
 ''')
-                run=subprocess.run(['tclsh',str(stub)],capture_output=True,text=True,timeout=5)
+                run=subprocess.run([find_tool('tclsh'),str(stub)],capture_output=True,text=True,timeout=5)
                 self.assertEqual(run.returncode==0,period==9.841)
                 self.assertEqual('CAPTURE_APPLIED' in run.stdout,period==9.841)
 

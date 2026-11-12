@@ -444,10 +444,12 @@ always @(posedge clk) begin
             else if (!park_s) begin st <= ST_CFG; tmr <= 13'd0; cop <= 2'd0; cpass <= 1'b0; parking <= 1'b0; end
             else if (aux_req) begin
                 // asynchronous single access (power-on mode, clock stopped): halfword
-                // 0x40000 + aux_addr on die 0, cram0 = aux bits 15:0, cram1 = 31:16
+                // {aux_adr, aux_addr[0]} of the die aux_adr names (a card word: 0x40000 +
+                // aux_addr on die 0; psram-park-save: a save-window word on die 1, as when
+                // running), cram0 = aux bits 15:0, cram1 = 31:16
                 st <= ST_ASYNC; tmr <= 13'd1;
-                p_ce_n <= 2'b10; p_adv_n <= 1'b0; p_oe <= 1'b1; p_bm_n <= 4'h0;
-                p_a <= 6'd4; p_dq0 <= {1'b0, aux_addr[14:0]}; p_dq1 <= {1'b0, aux_addr[14:0]};
+                p_ce_n <= aux_adr[21] ? 2'b01 : 2'b10; p_adv_n <= 1'b0; p_oe <= 1'b1; p_bm_n <= 4'h0;
+                p_a <= aux_adr[20:15]; p_dq0 <= {aux_adr[14:0], aux_addr[0]}; p_dq1 <= {aux_adr[14:0], aux_addr[0]};
             end
         end
 

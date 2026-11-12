@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
-from prepare_pocket_disc_swap import disc_swap_text  # noqa: E402
+from prepare_pocket_disc_swap import disc_menu_text, disc_swap_text  # noqa: E402
 from prepare_pocket_dualshock_pad import dualshock_wrapper_text, DUALSHOCK_TOP  # noqa: E402
 
 TOP = """    wire LIDopen;
@@ -33,6 +33,17 @@ class DiscSwapEdit(unittest.TestCase):
     def test_rejects_missing_anchors(self):
         with self.assertRaises(ValueError): disc_swap_text(TOP.replace("assign LIDopen=1'b0;\n", ''))
         with self.assertRaises(ValueError): disc_swap_text(TOP.replace(".disc_select_strobe(1'b0)", '.disc_select_strobe(x)'))
+
+    def test_disc_menu_setting_width(self):
+        # Four discs keep the two-bit setting; Disc 5 adds a third bit.
+        top = TOP.replace(".MAX_TRACKS(19))", ".MAX_TRACKS(19), .TRACK_STRIDE(16'd1))")
+        four, five = disc_menu_text(disc_swap_text(top), 4), disc_menu_text(disc_swap_text(top), 5)
+        self.assertIn('reg [1:0] disc_setting=0;', four)
+        self.assertIn('disc_setting<=bridge_wr_data[1:0]|bridge_wr_data[9:8]|bridge_wr_data[17:16]|bridge_wr_data[25:24];', four)
+        self.assertIn('.DISCS(4)', four)
+        self.assertIn('reg [2:0] disc_setting=0;', five)
+        self.assertIn('disc_setting<=bridge_wr_data[2:0]|bridge_wr_data[10:8]|bridge_wr_data[18:16]|bridge_wr_data[26:24];', five)
+        self.assertIn('.DISCS(5)', five)
 
 
 class DualShockEdit(unittest.TestCase):
