@@ -61,6 +61,7 @@ GENERICS = '''\
       RAM_ID     : natural := 0;            -- early-load: boot name in RAM (0 none)
       STATE_ID   : natural := 0;            -- early-load: the state's name at the load request (0 as saved, 9 zero)
       STATE_DID  : natural := 0;            -- disc-id: the state's identity word at the load request (0 as saved, 1 another, 9 zero)
+      SAVE_AFTER : natural := 0;            -- diag-refusal: a save this many cycles after a refused load (guest resumed)
       DEAD_QUIET : boolean := false;        -- waits: after the first read of SPU_HOLD that shows quiet, it reads 0 for ever
       GPU_AT     : natural := 0;            -- early-load: start of the GPU_HOLD window (0: SAVE_AT), so a load can retry
 '''
@@ -161,7 +162,36 @@ GETID_NEW = GETID_OLD + '''\
                   else motor := true; push(stat); int2_left := 3000; end if;
 '''
 VAR_OLD = '      variable last_loads : natural := 0;\n'
-VAR_NEW = VAR_OLD + '      variable el_failed, el_getids : natural := 0;   -- early-load\n'
+# diag-refusal: a save request after a refused load (the record of the refusal goes into its page 0)
+SAVE2_VAR_OLD = '      variable load_at_v : natural := LOAD_AT;\n'
+SAVE2_VAR_NEW = SAVE2_VAR_OLD + '      variable el_save_at : natural := 0; variable el_save_armed : boolean := true;   -- early-load\n'
+SAVE2_OLD = """\
+               load_at_v := cycle_count + LOAD_DELAY; load_armed := false;
+            end if;
+"""
+SAVE2_NEW = SAVE2_OLD + """\
+            if SAVE_AFTER > 0 and el_save_armed and (loads_failed > 0 or loads_done > 0) and want_load = '0' and cpu_cpu_done = '1' and
+               cpu_cpu_export.pc(31 downto 21) = to_unsigned(16#400#, 11) then   -- early-load: diag-refusal
+               el_save_at := cycle_count + SAVE_AFTER; el_save_armed := false;
+            end if;
+            if el_save_at > 0 and cycle_count = el_save_at then
+               assert want_save = '0' and want_load = '0' report "early-load: save after the refused load while busy" severity failure;
+               want_save <= '1'; trap <= '1';
+            end if;
+"""
+VAR_NEW = VAR_OLD + '      variable el_failed, el_getids, el_guest_seen : natural := 0;   -- early-load\n'
+# a load that wrote nothing of the game (the R1 bench's guest-write count unchanged) was refused,
+# also when its readiness check sent CD commands (ready-remount: cd_ready, then the menu's disc back):
+# the drive set-up check of a finished load does not apply; IRQENA and index must be the game's
+REFUSED_OLD = '         if loads_done /= last_loads and ncmd = ncmd_seen then\n'
+REFUSED_NEW = """\
+         if loads_done /= last_loads and ncmd /= ncmd_seen and load_guest_writes = el_guest_seen then   -- early-load
+            last_loads := loads_done; ncmd_seen := ncmd;
+            assert irqena = "11111" and idx = 1 report "early-load: a refused load left CD IRQENA / index not the game's" severity failure;
+            report "load: refused after CD commands, nothing of the game written" severity note;
+         end if;
+         if loads_done /= last_loads then el_guest_seen := load_guest_writes; end if;   -- early-load
+""" + REFUSED_OLD
 
 
 def bench_text(text):
@@ -169,10 +199,22 @@ def bench_text(text):
         raise ValueError('early-load bench: already applied')
     for old, new in ((GENERIC_OLD, GENERIC_OLD + GENERICS), (SIGNAL_OLD, SIGNAL_OLD + signals()), (MEM_OLD, MEM_NEW),
                      (FINISH_OLD, FINISH_NEW), (DONE_OLD, DONE_NEW), (CODE_OLD, CODE_NEW), (SWAP_OLD, SWAP_NEW), (STATE_OLD, STATE_NEW),
-                     (FRESH_OLD, FRESH_NEW), (GETID_OLD, GETID_NEW), (VAR_OLD, VAR_NEW), (TAP_OLD, TAP_NEW), (QUIET_OLD, QUIET_NEW), (QUIET_STEP_OLD, QUIET_STEP_NEW), (QUIET_VAR_OLD, QUIET_VAR_NEW),
+                     (FRESH_OLD, FRESH_NEW), (GETID_OLD, GETID_NEW), (VAR_OLD, VAR_NEW), (REFUSED_OLD, REFUSED_NEW), (SAVE2_VAR_OLD, SAVE2_VAR_NEW), (SAVE2_OLD, SAVE2_NEW), (TAP_OLD, TAP_NEW), (QUIET_OLD, QUIET_NEW), (QUIET_STEP_OLD, QUIET_STEP_NEW), (QUIET_VAR_OLD, QUIET_VAR_NEW),
                      ('cycle_count >= SAVE_AT and cycle_count < SAVE_AT + GPU_HOLD', 'cycle_count >= el_gpu_from and cycle_count < el_gpu_from + GPU_HOLD')):
         text = once(text, old, new)
     return text
+
+
+# diag-refusal: what each site's record must show (D = page 0 words 200-205 of the save after the refusal)
+DIAG_70 = ('diag not ready', 'diag identity', 'diag wrong disc')   # refused through path 70: one D0, told apart by D2-D4
+DIAG_CSUM = ('diag overflow', 'diag stream word')   # cz_load's checksum compare: one D0, told apart by D4 ^ D6
+DIAG_EXPECT = {
+    'diag not ready': lambda d: d[2] == 1,
+    'diag identity': lambda d: d[2] == 0,
+    'diag wrong disc': lambda d: d[2] == 2 and d[3] == 1,
+    'diag overflow': lambda d: d[4] ^ d[6] == 0x80000000,   # only the dropped-word flag
+    'diag stream word': lambda d: d[4] ^ d[6] not in (0, 0x80000000),
+}
 
 
 def scenarios(m, directory, names, disc_id=False):
@@ -201,6 +243,10 @@ def scenarios(m, directory, names, disc_id=False):
         'id other serial': (1, dict(marked, STATE_ID=4), refused, False),
         # a save alone, its state dumped: page 0 words 193-197 must be the name in RAM
         'id stored': (1, dict(SAVE_AT=at, STAGE2_WARM='true', PAGE_MARK=1, QUIET_RULE='true', DUMP_BUF='true'), dict(saves='1', loads='0'), False),
+        # diag-refusal (prepare_save_diag_refusal_routine.py): a load of a planted magic with disc 9 is
+        # refused (no state of R1 has it), then a save; its page 0 words 200-205 must hold the refusal's record
+        'diag refusal': (1, dict(LOAD_AT=at, LOAD_PLANT=8, SAVE_AFTER=200, STAGE2_WARM='true', PAGE_MARK=1, QUIET_RULE='true', DUMP_BUF='true'),
+                         dict(saves='1', loads='0', loads_failed='1'), False),
         'id old state': (1, dict(marked, STATE_ID=9), loaded, True),
         'id state no serial': (1, dict(marked, STATE_ID=3), loaded, True),
         'id ram no serial': (3, dict(marked, STATE_ID=1), loaded, True),
@@ -244,6 +290,23 @@ def scenarios(m, directory, names, disc_id=False):
         # reset, stage 2 not unpacked, the first mount still on its way, no boot name in RAM
         'wake': (0, dict(LOAD_AT=at + cycles // 3, PLANT_BUF='true', DISC_WAKE=3000, QUIET_RULE='true'),
                  dict(saves='0', loads='1', loads_failed='0', finish='1'), True),
+        # mount-wait (prepare_save_mount_wait_routine.py bench forms): the wake's boot mount settles 1,000,000
+        # clk1x after the load; bench-short must refuse (finish 2 after the early answer: as a failed remount),
+        # bench-long must load
+        'wake slow mount': (0, dict(LOAD_AT=at + cycles // 3, PLANT_BUF='true', DISC_WAKE=1000000, QUIET_RULE='true',
+                                    MAX_CYCLES=6000000), dict(saves='0', loads='1', loads_failed='0', finish='1'), True),
+    })
+    # diag-refusal per refusal site: a planted state (EARLY_LOAD_SAVEBUF) refused at one site, then a save
+    # (SAVE_AFTER); DIAG_EXPECT below names what page 0 words 200-205 of that save must show
+    plant = dict(LOAD_AT=at, PLANT_BUF='true', STAGE2_WARM='true', PAGE_MARK=1, QUIET_RULE='true', SAVE_AFTER=200, DUMP_BUF='true')
+    one_save = dict(saves='1', load_guest_writes='0')
+    table.update({
+        'diag load-check': (1, dict(plant, STATE_FAULT=1), one_save, False),
+        'diag stream word': (1, dict(plant, STATE_FAULT=4), one_save, False),
+        'diag overflow': (1, dict(plant, STATE_FAULT=5), one_save, False),
+        'diag not ready': (4, dict(plant, STATE_ID=1, EARLY_ANSWER='true', CD_NODISC='true', **switch), one_save, False),
+        'diag identity': (0, dict(plant, STATE_ID=1, STATE_DID=1), one_save, False),
+        'diag wrong disc': (1, dict(plant, LOAD_DISC=1, DISC_SYNC=64, DISC_WRONG='true'), one_save, False),
     })
     planted = os.environ.get('EARLY_LOAD_SAVEBUF')
     if planted:
@@ -258,8 +321,9 @@ def scenarios(m, directory, names, disc_id=False):
     table['save dead quiet'] = (1, dict(SAVE_AT=at, STAGE2_WARM='true', PAGE_MARK=1, QUIET_RULE='true', DEAD_QUIET='true'),
                                 dict(saves='0', saves_failed='1', loads='0', finish='2'), False)
     failures = []
+    diag_d0 = {}
     for name in names:
-        if name == 'wake' and not (directory / 'savebuf.hex').exists():
+        if (name in ('wake', 'wake slow mount') or name.startswith('diag ') and name != 'diag refusal') and not (directory / 'savebuf.hex').exists():
             failures.append("early-load wake: needs 'id stored' earlier in the same run (savebuf.hex)")
             continue
         if name not in table:
@@ -267,10 +331,11 @@ def scenarios(m, directory, names, disc_id=False):
         ram_id, generics, expect, replays = table[name]
         ref, ref_image = reference(ram_id)
         generics = dict(dict(MAX_CYCLES=cycles * 20), **generics, RAM_ID=ram_id)
-        if expect.get('loads') == '0':
+        if expect.get('loads') == '0' or expect.get('load_guest_writes') == '0':
             # the R1 bench resets memctrl, the joypad and the MDEC model at a load request (R1_SCRUB, a wake)
             # unless one of its failure-case generics is present; a refused load must find and leave the
-            # devices as they are (as run_save_stage2_mark.py does for its refused loads)
+            # devices as they are (as run_save_stage2_mark.py does for its refused loads). A load ended
+            # after an early answer counts as a load here but changes nothing of the game either.
             generics = dict(generics, DISC_WRONG='false')
         ok, values, image, why = m.simulate(directory, generics, 'el-' + name.replace(' ', '-').replace('+', '-'))
         error = None
@@ -282,6 +347,21 @@ def scenarios(m, directory, names, disc_id=False):
             error = f'counters, expected {expect}'
         elif replays != (int(values['spu_writes']) > int(ref['spu_writes'])):
             error = f'guest SPU writes {values["spu_writes"]} vs reference {ref["spu_writes"]}'
+        if not error and name.startswith('diag '):
+            words = [int(w, 16) for w in (directory / 'savebuf.hex').read_text().split()[2:2 + 512]]
+            d = words[200:207]
+            print('  diag refusal: page 0 words 200-206 = ' + ' '.join(f'{w:08X}' for w in d), flush=True)
+            if d[0] >> 16 != 0x8020:
+                error = f'diag refusal: word 200 (D0, the return address at the refusal) is {d[0]:08X}, not in stage 2'
+            elif d[5] >> 24 not in (0x1F, 0x9F, 0xBF) or d[1] & 4 == 0:
+                error = f'diag refusal: word 205 (k0) {d[5]:08X} or word 201 (k1) {d[1]:08X} not a load\'s'
+            elif name in DIAG_EXPECT and not DIAG_EXPECT[name](d):
+                error = f'{name}: words 200-205 are not this site\'s code'
+            if not error:
+                diag_d0[name] = d[0]
+                same = [n for n, v in diag_d0.items() if v == d[0] and n != name and not any(n in g and name in g for g in (DIAG_70, DIAG_CSUM))]
+                if same:
+                    error = f'{name}: D0 {d[0]:08X} equals the one of {same[0]} (sites not told apart)'
         if not error and name == 'id stored':
             words = [int(w, 16) for w in (directory / 'savebuf.hex').read_text().split()[2:2 + 512]]
             got = words[step.NAME_WORD:step.NAME_WORD + 5]

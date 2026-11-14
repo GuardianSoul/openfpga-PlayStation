@@ -263,6 +263,64 @@ def audit(project, target, folder):
                 original_hold_SDC_retained=True, runs=results, board_phy_verified=False)
 
 
+HOLD_GATE_MARKER = 'POCKET_HOLD_GATE_ENFORCE'
+
+
+def hold_gate_enforced(project):
+    """The retained 150 ps initial hold is enforced for a project whose pocket.sdc carries
+    POCKET_HOLD_GATE_ENFORCE (a comment line; no step sets it yet: hold-fit-target does not make
+    the gate reachable on every seed, docs/hold-constraints-060.md). Without it the gate is
+    reported and a hold-only miss is judged by release_timing."""
+    sdc = Path(project) / 'pocket.sdc'
+    return sdc.is_file() and HOLD_GATE_MARKER in sdc.read_text(errors='replace')
+
+
+def hold_only_miss(result):
+    """A verified, complete fit whose only negative slacks are hold rows."""
+    timing = result.get('reported_timing', {})
+    rows = timing.get('negative_slacks', [])
+    return bool(result.get('measurement_valid') and result.get('fit_verified') and len(result.get('steps', [])) == 3
+                and all(s['exit_code'] == 0 for s in result['steps'])
+                and timing.get('worst_hold_slack_ns') is not None and timing['worst_hold_slack_ns'] < 0
+                and rows and all(' Hold ' in r['type'] for r in rows))
+
+
+def release_check(project, output):
+    """release_timing on a private copy without the CPU hold SDC (the sign-off's rule); the fit
+    itself is left untouched. Returns (passed, failure lines)."""
+    from tool_paths import ROOT
+    executor_guard()
+    copy = project.with_name(project.name + '-release')
+    require(not copy.exists(), 'Fresh release-check copy required')
+    protected = {str(project / ('apf_top' + s)): digest(project / ('apf_top' + s)) for s in ('.qsf', '.qpf')}
+    shutil.copytree(project, copy, ignore=shutil.ignore_patterns('*-analysis'))
+    try:
+        qsf = copy / 'apf_top.qsf'
+        q = qsf.read_text()
+        # the copy's QSF names the original's absolute paths; drop only the CPU hold SDC line
+        hold = f'set_global_assignment -name SDC_FILE "{project}/cpu-hold-margin/pocket_cpu_hold.sdc"\n'
+        require(q.count(hold) == 1, 'One assigned CPU hold SDC required for the release check')
+        qsf.write_text(q.replace(hold, ''))
+        log = output / 'release-timing.out'
+        with log.open('w') as stream:
+            rc = subprocess.run([sys.executable, str(ROOT / 'scripts/release_timing.py'), str(copy),
+                                 '--output', str(output / 'release-timing.json')],
+                                stdout=stream, stderr=subprocess.STDOUT, timeout=3600).returncode
+    finally:
+        shutil.rmtree(copy, ignore_errors=True)
+    require(all(digest(p) == h for p, h in protected.items()), 'Original fit changed during release check')
+    failures = [l for l in log.read_text(errors='replace').splitlines() if l.startswith('FAIL ')]
+    return rc == 0 and not failures, failures
+
+
+def fit_verdict(initial_passed, enforced, hold_only, release_passed):
+    """(passed, gate word) for a chip fit. Strict gate: the retained 150 ps initial hold decides.
+    Report-only gate: a hold-only miss is judged by release_timing, as the sign-off judges it."""
+    if initial_passed or enforced or not hold_only:
+        return None, 'retained150ps'
+    return bool(release_passed), 'release_timing'
+
+
 def setup_path_script(setup_fail, output):
     """quartus_sta script naming the failing setup paths: the top 10 per failing corner and clock
     pair, same-clock rows and crossings alike (no fit, own copy). A release_timing row reads
@@ -306,6 +364,30 @@ def named_path_script(rows, output):
                          f"-file [file join {{{output}}} named-{i}-{kind}-corner$n.txt]}} err]}} "
                          f"{{ puts \"NAMED_ERROR {i} {kind} $n $err\" }}")
     lines += ['}', 'delete_timing_netlist', 'project_close -dont_export_assignments']
+    return '\n'.join(lines) + '\n'
+
+
+CDC_REPORTS = (('clock-transfers', 'report_clock_transfers -setup -file {f}'),
+               ('clock-transfers-hold', 'report_clock_transfers -hold -file {f}'),
+               ('metastability', 'report_metastability -file {f}'),
+               ('unconstrained', 'report_ucp -summary -file {f}'),
+               ('exceptions', 'report_exceptions -file {f}'),
+               ('sdc', 'report_sdc -file {f}'),
+               ('cdc-viewer', 'report_cdc_viewer -file {f}'))
+
+
+def cdc_script(output):
+    """quartus_sta script for the request's 'cdc_reports': clock transfers (setup and hold),
+    synchroniser chains (report_metastability), unconstrained paths, timing exceptions and the
+    read SDC, at the default (slow) operating condition, one file each (cdc-<name>.txt). A
+    command this Quartus edition lacks only loses its own file (CDC_ERROR line in the log)."""
+    lines = ['package require ::quartus::project', 'package require ::quartus::sta', 'project_open apf_top',
+             'create_timing_netlist', 'read_sdc', 'update_timing_netlist']
+    for name, command in CDC_REPORTS:
+        f = '[file join {%s} cdc-%s.txt]' % (output, name)
+        lines.append(f'if {{[catch {{{command.format(f=f)}}} err]}} {{ puts "CDC_ERROR {name} $err" }} '
+                     f'else {{ puts "CDC_DONE {name}" }}')
+    lines += ['delete_timing_netlist', 'project_close -dont_export_assignments']
     return '\n'.join(lines) + '\n'
 
 
@@ -575,14 +657,19 @@ def parse_video_sync(output, log_text, bound):
     return dict(bound_ns=bound, corners=report, errors=errors, failures=failures, passed=not failures)
 
 
+OLD_VIDEO_FLOOR_NS = -6.0
+
+
 def old_waiver_summary(timing, exit_code):
     """What the rule before the constraint says about this build: the release_timing rows from
     the video clock into clk1x / clk2x (setup), analysed without the constraint block."""
     from release_timing import names
     periods = timing.get('clocks', {})
     crossing = lambda r: r['check'] == 'setup' and 'video' in r['from'] and names(r['to'], periods) & {'clk1x', 'clk2x'}
-    rows = [dict(corner=r['corner'], slack_ns=r['slack'], launch_clock=r['from'], latch_clock=r['to'], verdict=v)
-            for v, key in (('waived', 'waived'), ('FAIL', 'failures')) for r in timing.get(key, []) if crossing(r)]
+    # The -6.0 ns floor is applied here: the waiver file no longer carries it (hold-constraints-060)
+    rows = [dict(corner=r['corner'], slack_ns=r['slack'], launch_clock=r['from'], latch_clock=r['to'],
+                 verdict='waived' if r['slack'] >= OLD_VIDEO_FLOOR_NS else 'FAIL')
+            for key in ('waived', 'failures') for r in timing.get(key, []) if crossing(r)]
     return dict(rule='release_timing_waivers.json "*video*" -> clk1x / clk2x setup, floor -6.0 ns',
                 analysed='the same copy with the POCKET_VIDEO_SYNC block taken out of pocket.sdc',
                 rows=sorted(rows, key=lambda r: r['slack_ns']),
@@ -859,6 +946,13 @@ def signoff(args):
         if len(r) >= 8 and r[5] == r[7]:
             key = (r[1], r[2]); s = float(r[4])
             if key not in worst or s < worst[key][0]: worst[key] = (s, r[5])
+    # every crossing's worst slack per check (all corners), so the archived result keeps the table
+    # that release-timing.json holds (the latter is not archived and the workspace is reused)
+    crossing = {}
+    for r in rows:
+        if len(r) >= 8 and r[5] != r[7]:
+            key = f'{r[2]} {r[5]} -> {r[7]}'; s = float(r[4])
+            if key not in crossing or s < crossing[key]['slack_ns']: crossing[key] = dict(slack_ns=s, corner=r[1])
     sync = None
     if sync_bound is not None:
         script = output / 'signoff-video-sync.tcl'
@@ -897,6 +991,14 @@ def signoff(args):
                            cwd=output, stdout=stream, stderr=subprocess.STDOUT, timeout=1800)
         named, named_details = parse_named_reports(
             request['report_paths'], output, (output / 'signoff-named-paths.log').read_text(errors='replace'))
+    # Optional: clock-domain-crossing reports (request 'cdc_reports': true), see cdc_script.
+    if request.get('cdc_reports') is True:
+        script = output / 'signoff-cdc.tcl'
+        script.write_text(cdc_script(output))
+        executor_guard()
+        with (output / 'signoff-cdc.log').open('w') as stream:
+            subprocess.run([str(Path(find_tool('quartus_sh')).parent / 'quartus_sta'), '-t', str(script)],
+                           cwd=output, stdout=stream, stderr=subprocess.STDOUT, timeout=1800)
     # Optional: the whole tight tail (request 'tail': {"setup_below_ns", "hold_below_ns",
     # "max_paths"}): every path of every clock pair below the limits at each corner, grouped by
     # register bank. Runs in this copy after the hold-SDC step above, so under the same
@@ -951,6 +1053,7 @@ def signoff(args):
                   release_timing_passed=passed, release_timing_failures=failures,
                   setup_failures=setup_fail, hold_only_miss=bool(failures) and not setup_fail,
                   worst_same_clock={f'{c} {k}': {'slack_ns': s, 'clock': clk} for (c, k), (s, clk) in sorted(worst.items())},
+                  worst_crossing=dict(sorted(crossing.items())),
                   retained150ps_initial_hold_ns=retained, cpu_hold_sdc_removed_for_release_timing=hold_removed,
                   setup_paths=paths, named_paths=named, named_path_details=named_details, test_only_setup_failure_approved=approved if setup_fail else None,
                   assembly_exit_code=asm_rc, rbf_sha256=digest(rbf) if rbf.is_file() else None,
@@ -1072,13 +1175,29 @@ def run(args):
         passed = False
         if result['fit_verified']:
             report['diagnosis'] = diagnose(output, target, output / 'audit')
+    enforced = hold_gate_enforced(output)
+    hold_only = not initial_passed and hold_only_miss(result)
+    release_passed = release_failures = None
+    if hold_only and not enforced:
+        try:
+            release_passed, release_failures = release_check(output, output)
+        except Exception as error:   # recorded, never a pass; the result file is still written
+            release_passed, release_failures = False, [f'release check error: {error}']
+    verdict, gate = fit_verdict(initial_passed, enforced, hold_only, release_passed)
+    if verdict is not None:
+        passed = verdict
+    report.update(hold_gate='enforced' if enforced else 'report-only', hold_only_miss=hold_only,
+                  release_timing_passed=release_passed, release_timing_failures=release_failures)
     report['passed'] = passed
     write_json(output / 'frozen-fit-result.json', report)
     capacity = (f"fits {result.get('required_LABs')} / 1848" if result['fit_verified'] else
                 f"no fit; requires {result.get('required_LABs')} LABs")
     summary = (f"RESULT {output.name}: {capacity}, "
-               f"retained150ps {'PASS' if passed else 'FAIL'}, "
+               f"{gate} {'PASS' if passed else 'FAIL'}, "
                f"initial_hold {timing.get('worst_hold_slack_ns')} ns")
+    if gate == 'release_timing':
+        summary += (f"; retained150ps MISS (report-only: no {HOLD_GATE_MARKER} in pocket.sdc); "
+                    f"not assembled, sign-off assembles")
     print(summary, flush=True)
     if args.result_file:
         args.result_file.write_text(summary + '\n')

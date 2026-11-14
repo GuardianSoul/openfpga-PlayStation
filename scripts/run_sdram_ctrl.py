@@ -39,6 +39,10 @@ def latencies(log):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--ops', type=int, default=4000)
+    parser.add_argument('--pins', action='store_true', help='also write ours-pins.log (chip pins every clk3) in the work directory')
+    parser.add_argument('--hint', action='store_true', help='drive the read-hint ports (controllers with prepare_ram_read_hint.py)')
+    parser.add_argument('--immediate', action='store_true', help='request a scalar read that follows one on the edge that sees its ready')
+    parser.add_argument('--ctrl', type=Path, default=ROOT/'rtl/memory/psx_sdram_ctrl.sv', help='controller source (e.g. a prepare step\'s output)')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--cas', type=int, choices=(2, 3), default=2, help='controller and chip CAS latency (the reference runs only at 2)')
     parser.add_argument('--dclk', type=float, default=2.0, help='ns: chip clock delay from the FPGA clock edge to the chip')
@@ -59,20 +63,26 @@ def main():
     (work/'altddio_out.sv').write_text(ALTDDIO)
     if args.spu_first: args.spu_first_param = 1
     tac = args.tac if args.tac is not None else (6.0 if args.cas == 2 else 5.5)
-    sources = [work/'altddio_out.sv', ROOT/'rtl/memory/psx_sdram_ctrl.sv', ROOT/'sim/memory/sdram_chip_model.sv',
+    sources = [work/'altddio_out.sv', args.ctrl, ROOT/'sim/memory/sdram_chip_model.sv',
                ROOT/'sim/memory/tb_psx_sdram_ctrl.sv']
     params = [f'-Ptb_psx_sdram_ctrl.OPS={args.ops}', f'-Ptb_psx_sdram_ctrl.SEED={args.seed}',
               f'-Ptb_psx_sdram_ctrl.CAS={args.cas}', f'-Ptb_psx_sdram_ctrl.SPU_FIRST={args.spu_first_param}',
-              f'-Ptb_psx_sdram_ctrl.OPEN_ROW={int(args.open_row)}',
+              f'-Ptb_psx_sdram_ctrl.OPEN_ROW={int(args.open_row)}', f'-Ptb_psx_sdram_ctrl.IMMEDIATE={int(args.immediate)}',
               f'-Ptb_psx_sdram_ctrl.DCLK={args.dclk}',
               f'-Ptb_psx_sdram_ctrl.TAC={tac}', f'-Ptb_psx_sdram_ctrl.TOH={args.toh}', f'-Ptb_psx_sdram_ctrl.TRET={args.tret}']
-    subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *params,
+    subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *params, *(['-DHINT_PORTS'] if args.hint else []),
                     *map(str, sources)], check=True)
-    run = subprocess.run([vvp, '-n', str(work/'tb.vvp')], cwd=work, capture_output=True, text=True, timeout=3600)
+    print('work', work)
+    run = subprocess.run([vvp, '-n', str(work/'tb.vvp')] + (['+pins'] if args.pins else []), cwd=work, capture_output=True, text=True, timeout=3600)
     (work/'sim.log').write_text(run.stdout + run.stderr)
     ours, ours_summary = latencies(work/'ours.log')
     report = dict(work=str(work), ours=ours_summary, latency={})
     failed = 'ERROR' in run.stdout or not ours_summary or ours_summary.get('errors') != '0'
+    # Refresh rate: one REFRESH per 780 clk3 (8192 rows / 64 ms at 101.6 MHz) after the
+    # 20,480-clk power-up, with up to 8 owed plus the one in progress.
+    if ours_summary and int(ours_summary['refreshes']) < (int(ours_summary['clk3']) - 20480) // 780 - 9:
+        print('ERROR refresh rate: %s refreshes in %s clk3' % (ours_summary['refreshes'], ours_summary['clk3']))
+        failed = True
     for line in run.stdout.splitlines():
         if line.startswith('ERROR'): print(line)
     for kind in sorted(ours):

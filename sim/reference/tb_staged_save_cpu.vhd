@@ -719,7 +719,7 @@ begin
          end if;
          -- a finished load: the drive set up as the game had it
          -- (a load that ends with no CD command since the last one is a load refused after the
-         -- early-load answer, whose exit the bench counts as the load's end: nothing to check;
+         -- early answer of a load, whose exit the bench counts as the load's end: nothing to check;
          -- drive-state.md)
          if loads_done /= last_loads and ncmd = ncmd_seen then
             last_loads := loads_done;

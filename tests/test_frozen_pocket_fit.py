@@ -511,8 +511,11 @@ class FrozenFitAdmission(unittest.TestCase):
                              ['release_timing.py', 'quartus_sta', 'quartus_asm'])
             self.assertEqual(calls[1][1:], ['-t', str(output / 'signoff-tail.tcl')])
             self.assertIn(f'[file join {{{output}}} tail-setup-corner$n.txt]', (output / 'signoff-tail.tcl').read_text())
-            self.assertEqual(result['tail'][1]['worst_slack_ns'], -0.897)
-            self.assertEqual(result['tail'][1]['launch'], 'clk2x')          # periods from release-timing.json
+            # the real waiver file: "*video*" -> clk1x/clk2x setup is retired (hold-constraints-060),
+            # so the -5.681 video row is listed now instead of waived
+            self.assertEqual(result['tail'][1]['worst_slack_ns'], -5.681)
+            self.assertEqual(result['tail'][2]['worst_slack_ns'], -0.897)
+            self.assertEqual(result['tail'][2]['launch'], 'clk2x')          # periods from release-timing.json
             self.assertIs(result['tail_info']['cpu_hold_sdc_removed'], False)
             self.assertTrue((output / 'tail-summary.txt').read_text().startswith('tail: setup < 0.3 ns, hold < 0.1 ns'))
 

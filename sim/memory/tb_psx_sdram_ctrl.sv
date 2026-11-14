@@ -17,6 +17,9 @@
 `default_nettype none
 module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
                      parameter integer OPS = 4000, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
+                     // IMMEDIATE: a scalar read that follows a scalar read is requested on the
+                     // clk1x edge that sees the previous ready (no idle cycle in between)
+                     parameter integer IMMEDIATE = 0,
                      // ns: forwarded chip-clock delay, chip clock-to-data max / hold min, data return delay
                      parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0) (
     input wire clk3, clk1,
@@ -27,6 +30,8 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
     wire [15:0] dq; wire [12:0] a; wire [1:0] ba; wire dqml, dqmh, ncs, nwe, nras, ncas, cke, chip_clk;
     reg init = 1, refresh_force = 0;
     reg [26:0] ch1_addr = 0, ch2_addr = 0, ch3_addr = 0;
+    // HINT_PORTS (run_sdram_ctrl.py --hint): the CPU read hint of prepare_ram_read_hint.py
+    reg ch1_hint_req = 0; reg [26:0] ch1_hint_addr = 0;
     reg ch1_req = 0, ch1_dma = 0, ch1_cache = 0, ch2_req = 0, ch3_req = 0, ch3_rnw = 0;
     reg [1:0] ch1_cnt = 0;
     reg [31:0] ch2_din = 0, ch3_din = 0;
@@ -47,6 +52,7 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
             .SDRAM_DQ(dq), .SDRAM_A(a), .SDRAM_DQML(dqml), .SDRAM_DQMH(dqmh), .SDRAM_BA(ba), .SDRAM_nCS(ncs),
             .SDRAM_nWE(nwe), .SDRAM_nRAS(nras), .SDRAM_nCAS(ncas), .SDRAM_CKE(cke), .SDRAM_CLK(chip_clk),
             .refreshForce(refresh_force), .ram_idle(ram_idle),
+            `ifdef HINT_PORTS .ch1_hint_req(ch1_hint_req), .ch1_hint_addr(ch1_hint_addr), `endif
             .ch1_addr(ch1_addr), .ch1_dout(ch1_dout), .ch1_dout32(ch1_dout32), .ch1_din(16'h0), .ch1_req(ch1_req),
             .ch1_rnw(1'b1), .ch1_dma(ch1_dma), .ch1_cntDMA(ch1_cnt), .ch1_cache(ch1_cache), .ch1_ready(ch1_ready),
             .cache_wr(cache_wr), .cache_data(cache_data), .cache_addr(cache_addr),
@@ -140,6 +146,14 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
         if ((cache_wr & (cache_wr - 1)) != 0) bad("cache_wr not one-hot", cache_wr, 0);
     end
 
+    // +pins: every clk3 edge's chip command, address, bank, masks and driven data
+    // to <prefix>-pins.log, for cycle-exact comparisons of two controllers.
+    integer fp = 0;
+    initial if ($test$plusargs("pins")) fp = $fopen({PREFIX, "-pins.log"}, "w");
+    always @(posedge clk3) if (fp != 0)
+        $fdisplay(fp, "%0b %0b%0b%0b %h %0d %0b%0b %h %0b%0b%0b%0b", cke, nras, ncas, nwe, a, ba, dqmh, dqml, dq,
+                  ch1_ready, dma_wr, ch2_ready, ch3_ready);
+
     // ------------------------------------------- pulse width / misuse checks
     reg ch1_ready_d = 0, ch2_ready_d = 0, ch3_ready_d = 0, dma_rp_d = 0;
     reg [31:0] dout_d = 0;
@@ -170,21 +184,34 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
     integer dma_word_k [0:63];
     initial begin : cpu
         integer op, r1, r2, issue, fin, k, w, cnt, chain, gap;
+        reg prev_scalar;
         reg [26:0] adr;
         reg [31:0] want, d;
         reg [3:0] be;
         repeat (40) @(posedge clk1);
         // wait for the controllers to come out of initialisation
         repeat (8000) @(posedge clk1);
+        prev_scalar = 0;
         while (ops_left > 0) begin
             ops_left = ops_left - 1;
+            if (ops_left < OPS - 1) prev_scalar = op < 3;
             op = $unsigned($random(seed1)) % 10;
             r1 = $random(seed1); r2 = $random(seed1);
             adr = rand_addr({1'b0, r1[30]}, r1, r2);
             gap = $unsigned($random(seed1)) % 4;
             if (op < 3) begin                     // scalar read
                 adr[1:0] = 0;
-                @(posedge clk1); ch1_addr <= adr; ch1_cache <= 0; ch1_dma <= 0; ch1_req <= 1; issue = cyc1 + 1;
+                if (!(IMMEDIATE != 0 && prev_scalar)) @(posedge clk1);
+`ifdef HINT_PORTS
+                // the CPU presents the load, memorymux waits 0..6 clk1x, then requests it;
+                // one in eight hints is followed by a read of another address instead
+                k = $unsigned($random(seed1)) % 8;
+                ch1_hint_addr <= k == 0 ? rand_addr(2'b00, $random(seed1), $random(seed1)) & ~27'd3 : adr;
+                ch1_hint_req <= 1;
+                @(posedge clk1); ch1_hint_req <= 0;
+                repeat ($unsigned($random(seed1)) % 7) @(posedge clk1);
+`endif
+                ch1_addr <= adr; ch1_cache <= 0; ch1_dma <= 0; ch1_req <= 1; issue = cyc1 + 1;
                 @(posedge clk1); ch1_req <= 0;
                 while (!ch1_ready) @(posedge clk1);
                 fin = cyc1;
@@ -239,7 +266,7 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
                 while (!ch2_ready) @(posedge clk1);
                 $fdisplay(fd, "write %0d %0d", issue, cyc1);
             end
-            repeat (gap) @(posedge clk1);
+            repeat ((IMMEDIATE != 0 && op < 3) ? 0 : gap) @(posedge clk1);
         end
         cpu_done = 1;
     end
@@ -357,14 +384,14 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
 endmodule
 
 module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
-                          parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0);
+                          parameter integer IMMEDIATE = 0, parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0);
     reg clk3 = 0, clk1 = 0;
     always #4.921 clk3 = ~clk3;     // 101.6064 MHz
     always #14.763 clk1 = ~clk1;    // 33.8688 MHz, edges aligned
     wire done_new;
     integer err_new;
     integer seed;
-    sdram_bench #(.PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
+    sdram_bench #(.PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .IMMEDIATE(IMMEDIATE), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
     initial begin
         wait (done_new);
         $display("RESULT errors ours %0d", err_new);

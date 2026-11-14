@@ -228,8 +228,11 @@ def fault_text(text, fault):
 
 def prepare(source, output, seed=None, transforms=None):
     """Snapshot SOURCE into OUTPUT, patch the device, core_top.sv and pocket.sdc there.
-    transforms: {file name: function} (default this step's three)."""
+    transforms: {file name: function} (default this step's three). A name with a '/' matches the end
+    of the path (for a file name that occurs twice in the manifest)."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    def _named(path, name):
+        return str(path).endswith('/' + name) if '/' in name else Path(path).name == name
     from measure_pocket_seeds import inputs
     from run_frozen_pocket_fit import digest, hold_guard, load_source, snapshot
     transforms = transforms or {'psx_save_exp1.sv': device_text, 'psx_memcard_slot.sv': slot_text, 'core_top.sv': top_text,
@@ -238,7 +241,7 @@ def prepare(source, output, seed=None, transforms=None):
     manifest = load_source(source, source / 'fit-inputs.json')
     pinned = {}
     for name in transforms:
-        rows = [r for r in manifest['quartus_sources'] if Path(r['path']).name == name]
+        rows = [r for r in manifest['quartus_sources'] if _named(r['path'], name)]
         if len(rows) != 1:
             raise SystemExit(f'{TAG}: {source} does not compile one {name}')
         pinned[name] = rows[0]
@@ -248,12 +251,12 @@ def prepare(source, output, seed=None, transforms=None):
     before = inputs(output)
     changed = {}
     for name, transform in transforms.items():
-        rows = [Path(r['path']) for r in before if Path(r['path']).name == name]
+        rows = [Path(r['path']) for r in before if _named(r['path'], name)]
         if len(rows) != 1:
             raise SystemExit(f'{TAG}: snapshot does not compile one {name}')
         path = rows[0]
         # the snapshot relocates project paths in core_top.sv (ROM_HEX) and pocket.sdc; the device and slot have none
-        if name not in ('core_top.sv', 'pocket.sdc') and digest(path) != pinned[name]['sha256']:
+        if Path(name).name not in ('core_top.sv', 'pocket.sdc') and digest(path) != pinned[name]['sha256']:
             raise SystemExit(f'{TAG}: snapshot changed {name}')
         changed[str(path)] = digest(path)
         path.write_text(transform(path.read_text()))

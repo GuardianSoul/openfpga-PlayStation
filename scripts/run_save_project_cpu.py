@@ -79,7 +79,7 @@ def main():
                         help='nop: ordinary zero-base SW/LW/JR; unusable: COP0 with CU0 disabled')
     # stage2-mark (scripts/prepare_save_stage2_mark.py, run_save_stage2_mark.py); without these
     # options nothing below changes the routine, the bench or the scenarios
-    parser.add_argument('--routine-step', action='append', choices=('stage2-mark', 'load-check', 'spu-quiet', 'mdec-tap', 'early-load', 'disc-id', 'size-mib', 'rom-ext', 'waits', 'compress', 'stall-probe', 'readout-hold', 'drive-state-msf', 'switch-check', 'rom-room', 'readout-end', 'checksum', 'drive-state-seek', 'ready-remount', 'audit-quiet'),
+    parser.add_argument('--routine-step', action='append', choices=('stage2-mark', 'load-check', 'spu-quiet', 'mdec-tap', 'early-load', 'disc-id', 'size-mib', 'rom-ext', 'waits', 'compress', 'stall-probe', 'readout-hold', 'drive-state-msf', 'switch-check', 'rom-room', 'readout-end', 'checksum', 'drive-state-seek', 'ready-remount', 'audit-quiet', 'diag-refusal', 'mount-wait', 'mount-wait-wake', 'mount-id'),
                         help='apply routine step(s), in the order given, to the paired routine text (after --routine r1); not a fitted input')
     parser.add_argument('--early-load-bench', action='store_true',
                         help='run the --scenario names of save_early_load_bench.py (with --stage2-bench and the routine steps)')
@@ -407,6 +407,18 @@ def main():
         if 'ready-remount' in args.routine_step:
             import prepare_save_ready_remount_routine
             modules['ready-remount'] = prepare_save_ready_remount_routine
+        if 'mount-id' in args.routine_step:
+            import prepare_save_mount_id_routine
+            modules['mount-id'] = prepare_save_mount_id_routine
+        if 'mount-wait-wake' in args.routine_step:
+            import prepare_save_mount_wait_wake_routine
+            modules['mount-wait-wake'] = prepare_save_mount_wait_wake_routine
+        if 'mount-wait' in args.routine_step:
+            import prepare_save_mount_wait_routine
+            modules['mount-wait'] = prepare_save_mount_wait_routine
+        if 'diag-refusal' in args.routine_step:
+            import prepare_save_diag_refusal_routine
+            modules['diag-refusal'] = prepare_save_diag_refusal_routine
         if 'drive-state-msf' in args.routine_step:
             import save_drive_state_msf_step
             modules['drive-state-msf'] = save_drive_state_msf_step

@@ -57,7 +57,8 @@ def bench_text(text):
                 "   signal rd_seen_s : std_logic := '0';    -- readout-hold: a bridge read of the save window since the last SPU_HOLD write\n"
                 "   signal hold_fin, hold_kind, hold_windows, hold_last, hold_w : natural := 0;   -- FINISH cycle (0: none), 1 save 2 load\n"
                 "   signal hold_moved : natural := 0;       -- readout-hold: the routine wrote another device register after FINISH (the wait is over)\n")
-    text = once(text, '            exp1_q <= "0000000" & spu_quiet;\n', '            exp1_q <= "000000" & rd_seen_s & spu_quiet;   -- readout-hold\n')
+    # (the expression alone: save_early_load_bench.py wraps the line in its DEAD_QUIET choice)
+    text = once(text, 'exp1_q <= "0000000" & spu_quiet;', 'exp1_q <= "000000" & rd_seen_s & spu_quiet;')   # readout-hold
     text = once(text, '         a := to_integer(mux_bus_exp1_addr);\n',
                 '         a := to_integer(mux_bus_exp1_addr);\n'
                 '         -- readout-hold: the Pocket\'s reads of the save window\n'
@@ -88,8 +89,10 @@ def bench_text(text):
                 '                     hold_last <= cycle_count;\n'
                 '                  end if;\n'
                 '               end if;\n')
-    text = once(text, '               finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite));\n',
-                '               finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite));\n'
+    code = ('               else finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite)); end if;\n'   # save_early_load_bench.py's form
+            if 'else finish_code <=' in text else '               finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite));\n')
+    text = once(text, code,
+                code +
                 "               if mux_bus_exp1_dataWrite(0) = '1' and (want_save = '1' or want_load = '1') then   -- readout-hold\n"
                 "                  hold_fin <= cycle_count; hold_moved <= 0;\n"
                 "                  if want_save = '1' then hold_kind <= 1; else hold_kind <= 2; end if;\n"
@@ -139,7 +142,10 @@ def wrap_simulate(simulate):
             print(f"  readout-hold ({mode['reads']}): '{tag}': " + '; '.join(
                 f"{'save' if k == 1 else 'load'} left {c} cycles after FINISH, {n} windows of {w}" for k, c, n, w in rows), flush=True)
         if ok and requests:
-            found = expect(rows, mode['reads'], int(values.get('saves', 0)), int(values.get('loads', 0)))
+            # a load answered early (save_early_load_bench.py EARLY_ANSWER) ends at the routine's exit, not
+            # at a FINISH write: no exit row is logged for it
+            early = str(generics.get('EARLY_ANSWER', '')).lower() == 'true'
+            found = expect(rows, mode['reads'], int(values.get('saves', 0)), 0 if early else int(values.get('loads', 0)))
             if found:
                 return False, values, image, found[0]
         return ok, values, image, why

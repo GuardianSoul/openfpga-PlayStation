@@ -16,7 +16,9 @@ Modes (W = the bench window):
            rule would leave in the gap)
   none     no read: the exit at the no-read limit (30 windows)
   endless  reads to the end, never the last page: the exit at the limit (40 windows)
-  cue      as late, and the cue reader busy for CUE (300,000) cycles from CD_FREEZE: FINISH after it
+  cue      as late, and the cue reader busy for CUE (1,300,000) cycles from CD_FREEZE: FINISH after it,
+           and within CUE_SLACK cycles of its end (a busy period that ends before the save is ready
+           tests nothing: a save with compress takes about 1.01 M cycles from CD_FREEZE to FINISH)
 """
 import re
 
@@ -26,7 +28,8 @@ import save_readout_hold_bench as rh
 FAULTS = step.FAULTS
 fault_text = step.fault_text
 W = rh.W_NOMINAL
-CUE = 300000
+CUE = 1300000
+CUE_SLACK = 20000
 READS = {
     'late': dict(READ_START=5 * W, READ_LEN=4 * W + W // 3, LAST_PAGE='true'),
     'paused': dict(READ_START=1 * W, READ_LEN=8 * W, READ_GAP_AT=1 * W, READ_GAP=3 * W, LAST_PAGE='true'),
@@ -61,8 +64,8 @@ def bench_text(text):
               "   signal rd_seen_s : std_logic := '0';\n"
               "   signal rd_last_s, cue_busy_s : std_logic := '0';   -- readout-end: 0x180C bits 2 and 3\n"
               "   signal cue_until : natural := 0;")
-    t = _once(t, '            exp1_q <= "000000" & rd_seen_s & spu_quiet;   -- readout-hold\n',
-              '            exp1_q <= "0000" & cue_busy_s & rd_last_s & rd_seen_s & spu_quiet;   -- readout-hold, readout-end\n')
+    t = _once(t, 'exp1_q <= "000000" & rd_seen_s & spu_quiet;',
+              'exp1_q <= "0000" & cue_busy_s & rd_last_s & rd_seen_s & spu_quiet;')   # readout-end
     t = _once(t, READ_COND, READ_COND + ' and (READ_GAP = 0 or cycle_count < hold_fin + READ_START + READ_GAP_AT or\n'
               '            cycle_count >= hold_fin + READ_START + READ_GAP_AT + READ_GAP)', n=2)
     t = _once(t, "            rd_seen_s <= '1';\n",
@@ -72,8 +75,10 @@ def bench_text(text):
     t = _once(t, "            if a = 16#180F# then cd_freeze_s <= mux_bus_exp1_dataWrite(0); end if;\n",
               "            if a = 16#180F# then cd_freeze_s <= mux_bus_exp1_dataWrite(0); end if;\n"
               "            if a = 16#180F# and mux_bus_exp1_dataWrite(0) = '1' and CUE_BUSY > 0 then cue_until <= cycle_count + CUE_BUSY; end if;   -- readout-end\n")
-    t = _once(t, '               finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite));\n',
-              '               finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite));\n'
+    code = ('               else finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite)); end if;\n'   # save_early_load_bench.py's form
+            if 'else finish_code <=' in t else '               finish_code <= to_integer(unsigned(mux_bus_exp1_dataWrite));\n')
+    t = _once(t, code,
+              code +
               "               assert not (want_save = '1' and cue_busy_s = '1') report \"readout-end: a save's FINISH while the cue reader has a command in flight\" severity failure;\n"
               "               if want_save = '1' and CUE_BUSY > 0 then report \"CUE finish \" & integer'image(cycle_count) & \" busy until \" & integer'image(cue_until) severity note; end if;\n")
     t = _once(t, '\nbegin\n', "\nbegin\n   cue_busy_s <= '1' when cycle_count < cue_until else '0';   -- readout-end\n")
@@ -111,7 +116,7 @@ def wrap_simulate(simulate):
         if 'SAVE_AT' in generics:
             generics.update(READS[mode['reads']])
         if 'MAX_CYCLES' in generics and requests:
-            generics['MAX_CYCLES'] = int(generics['MAX_CYCLES']) + 45 * W
+            generics['MAX_CYCLES'] = int(generics['MAX_CYCLES']) + 45 * W + (CUE if mode['reads'] == 'cue' else 0)
         log = directory / 'checks.log'
         before = log.stat().st_size if log.exists() else 0
         ok, values, image, why = simulate(directory, generics, tag)
@@ -123,9 +128,14 @@ def wrap_simulate(simulate):
                 f"{'save' if k == 1 else 'load'} left {c} cycles after FINISH, {n} windows of {w}" for k, c, n, w in rows)
                 + (f'; FINISH at {cue[0][0]}, cue busy until {cue[0][1]}' if cue else ''), flush=True)
         if ok and requests:
-            found = expect(rows, mode['reads'], int(values.get('saves', 0)), int(values.get('loads', 0)))
+            # a load answered early (save_early_load_bench.py EARLY_ANSWER) ends at the routine's exit, not
+            # at a FINISH write: no exit row is logged for it
+            early = str(generics.get('EARLY_ANSWER', '')).lower() == 'true'
+            found = expect(rows, mode['reads'], int(values.get('saves', 0)), 0 if early else int(values.get('loads', 0)))
             if mode['reads'] == 'cue' and not cue:
                 found.append('readout-end: the cue busy period was not used')
+            elif mode['reads'] == 'cue' and int(values.get('saves', 0)) and int(cue[0][0]) > int(cue[0][1]) + CUE_SLACK:
+                found.append(f'readout-end: the cue busy period ended {int(cue[0][0]) - int(cue[0][1])} cycles before FINISH (not exercised)')
             if found:
                 return False, values, image, found[0]
         return ok, values, image, why

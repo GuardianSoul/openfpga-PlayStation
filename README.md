@@ -155,7 +155,7 @@ remembers your choices.
 | Skip BIOS Logo | On, **Off** | Starts the game without the PlayStation intro |
 | Fast BIOS Boot | **On**, Off | Runs the BIOS's own start-up faster, so games reach the Sony screen about 2 seconds sooner; the Sony screen and every game keep the console's timing |
 | Controller Mode | **Digital**, Analog | The DualShock's mode, switched at once (see [Controls](#controls)) |
-| Turbo Mode | Checkbox, **off** | On removes the console's memory, CPU and DMA wait states, so games run faster than on a PlayStation; Off keeps the console's timing |
+| Turbo Mode | Checkbox, **off** | On removes the console's memory, CPU and DMA wait states and the GPU's fill pacing, so games run faster than on a PlayStation; Off keeps the console's timing |
 | Aspect Ratio | **Original**, Fill Screen | Original shows the console's 4:3 picture; Fill Screen fills the Pocket's whole screen |
 | Deinterlacing | **Bob**, Weave | How high-resolution (480i) screens show: Bob line-doubles each field like a CRT TV; Weave joins the two fields into one picture, sharper when still but with combing when things move |
 | Hide Overscan | **On**, Off | In Original, blacks out the lines at the top and bottom that a TV hides; Fill Screen always crops them |
@@ -194,8 +194,9 @@ at any time.
 With Turbo Mode off, the core keeps the console's timing as closely as it
 can. Turbo Mode skips the waits a real PlayStation has when the CPU reads
 and writes main memory, when it loads and decodes instructions, and when
-DMA moves data. The clocks stay the same, and the GPU, sound, CD drive and
-geometry chip keep the console's speed; only less time is spent waiting.
+DMA moves data, and it lets the GPU fill plain and see-through shapes as
+fast as it can. The clocks stay the same, and sound, CD drive and geometry
+chip keep the console's speed; only less time is spent waiting.
 Most games are locked to the TV's frame rate, so they don't run faster
 overall: busy scenes just slow down less, for example in Bloody Roar II or
 Crash Bandicoot.
@@ -226,9 +227,10 @@ Memory card 1 is saved to the SD card, one card per game (multi-disc games
 share one), in `Saves/playstation/`. A game's first card starts blank and
 formatted.
 
-**Quit through the Pocket menu before you turn the Pocket off.** The card
-is written to the SD card when you quit, so turning off mid-game loses the
-saves made since the game started. To use a card from another emulator,
+A save made in the game is also written to the SD card a few seconds
+after the game writes it, which should keep it if the core crashes or the
+Pocket loses power. Quitting through the Pocket menu writes the card too
+and is still the safest way to stop playing. To use a card from another emulator,
 copy its raw 128 KB image (`.mcr` or `.sav`) over the game's `.sav` file.
 
 ## Save states (Memories)
@@ -260,8 +262,9 @@ What to expect:
   starting a game, "State saved" can appear late, and the controls don't
   respond for a moment before it does. This is normal.
 - **Loading takes several seconds.** Waking from Sleep takes longer: the
-  game can take up to about 30 seconds to appear. Give it that time before
-  you press anything or turn the Pocket off.
+  screen can stay black while the core finds the game's disc again, and the
+  game can take up to about a minute and a half to appear. Give it that
+  time before you press anything or turn the Pocket off.
 - **Memories are per core, not per game.** The Pocket lists the Memories of
   every PlayStation game together. Loading a Memory from another game is
   refused ("State failed") and the game you are playing carries on.
@@ -291,10 +294,6 @@ Memories and memory cards are separate:
 ## Known issues
 
 - Some games may run slower than on a real console. Turbo Mode helps.
-- In-game memory card saves reach the SD card only when you quit the core
-  normally. If the core crashes or the Pocket turns off mid-game, the memory
-  card saves made since the core started are lost (see
-  [Memory cards](#memory-cards)). A fix is planned for 0.5.10.
 
 ## Building from source
 

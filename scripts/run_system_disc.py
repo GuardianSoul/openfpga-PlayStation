@@ -29,6 +29,9 @@ def main():
     parser.add_argument('--apf-loader',action='store_true',help='Serve sectors through the Pocket SD loader (psx_cd_stream) and pinned APF handler')
     parser.add_argument('--save-states',type=Path,metavar='ROM40_HEX',help='Apply the save-state RTL transforms; EXP1 reads return this handler ROM')
     parser.add_argument('--pad-file',type=Path,help='Mutable active-high digital pad mask in a local hexadecimal text file')
+    parser.add_argument('--extra',action='append',default=[],help='Extra source [LIB=]PATH: .vhd analysed first (into LIB, default work), .sv/.v given to Verilator (modules a --swap file needs)')
+    parser.add_argument('--override',action='append',default=[],metavar='NAME=PATH',help='Read prepared source NAME from PATH before the sim transforms (unlike --swap, which replaces the prepared text)')
+    parser.add_argument('--swap',action='append',default=[],metavar='NAME=PATH',help='Replace prepared source NAME (e.g. cd_top.vhd) with PATH (a release project copy); Pocket RAM entities map to the sim models')
     args=parser.parse_args()
     if args.max_cycles<=0 or args.max_cycles>0x7fffffff or args.timeout<=0 or not 0<=args.capture_interval<=0x7fffffff:
         parser.error('Execution bounds must be positive 32-bit values and capture interval nonnegative')
@@ -66,7 +69,47 @@ def main():
             ss={'transforms':{'cpu.vhd':pss.cpu_trap_text,'memorymux.vhd':pss.memorymux_exp1_text,'psx_top.vhd':pss.psx_top_text,
                 'irq.vhd':pss.irq_set_text,'dma.vhd':pss.dma_set_text,'timer.vhd':pss.timer_tap_text,'gpu.vhd':pss.gpu_tap_text,
                 'spu.vhd':pss.spu_build_text,'cd_top.vhd':pss.cd_tap_text},'exp1':save_state_exp1_rom(args.save_states)}
-        manifest=prepare(directory/'sources',fast_reset=False,fast_boot=args.fastboot,save_states=ss);bench=write_bench(directory,args.trace_devices)
+        manifest=prepare(directory/'sources',fast_reset=False,fast_boot=args.fastboot,save_states=ss,overrides=dict(o.split('=',1) for o in args.override));bench=write_bench(directory,args.trace_devices)
+        for item in reversed(args.extra):
+            lib,_,extra=item.rpartition('=');extra=Path(extra);lib=lib or 'work'
+            if extra.suffix in ('.vhd','.vhdl'):
+                from prepare_resource_targets import digest as _digest
+                manifest['sources'].insert(0,{'path':str(extra.resolve()),'library':lib,'sha256':_digest(extra),'original':str(extra.resolve()),'original_sha256':_digest(extra)})
+        if args.swap:
+            import re
+            from prepare_resource_targets import digest as _digest
+            swapdir=directory/'sources'/'swap';swapdir.mkdir(parents=True,exist_ok=True)
+            for item in args.swap:
+                name,src=item.split('=',1);rows=[s for s in manifest['sources'] if Path(s['path']).name==name]
+                if len(rows)!=1:parser.error(f'--swap: {len(rows)} prepared sources named {name}')
+                text=Path(src).read_text()
+                text=re.sub(r'entity (?:work|mem)\.(?:pocket_dpram_sdp(?:_reverse)?|dpram)\b','entity ramip.dpram',text,flags=re.I)
+                text=re.sub(r'entity (?:work|mem)\.(RamMLAB|dpram_dif)\b',r'entity ramip.\1',text,flags=re.I)
+                from prepare_system_verilator import gpu_transcode_source,split_divider_ports
+                from prepare_resource_targets import hardware_text
+                if name.startswith(('gpu','pGPU')):text=hardware_text(text)
+                if name in ('gpu.vhd','gpu_line.vhd','gpu_poly.vhd'):   # as tools/ps1-hwtest/run_exe_test.py --release-gpu
+                    text=re.sub(r'\nbegin[ \t]*\n','\nbegin \n',text,count=1)
+                    if name=='gpu_poly.vhd':
+                        text=text.replace('abs(','magnitude(').replace('begin \n','   function magnitude(value : integer) return integer is\n   begin\n      if value < 0 then return -value; else return value; end if;\n   end function;\n\nbegin \n',1)
+                        text=text.replace('x"100000000"','signed\'("000000000" & x"100000000")')
+                        text=text.replace('to_integer(xStart(43 downto 32)) > drawingAreaRight','xStart(43 downto 32) > signed(resize(drawingAreaRight, 12))')
+                        text=split_divider_ports(text)
+                    else:
+                        try:text=gpu_transcode_source(Path(name).stem,text)
+                        except ValueError:text=split_divider_ports(text) if name=='gpu_line.vhd' else text
+                if name=='gpu_videoout_async.vhd':
+                    for e in ('lineMax - 1','lineMax - 2'):text=text.replace(f'to_unsigned(({e}), 9)',f'resize(unsigned(to_signed({e}, 10)), 9)')
+                    for v in ('((vdispNew - vDisplayStart) * 2) + 1','(vdispNew - vDisplayStart) * 2','vdispNew - vDisplayStart'):
+                        text=text.replace(f'to_unsigned({v}, 9)',f'resize(unsigned(to_signed({v}, 12)), 9)')
+                if name=='gpu_videoout.vhd':   # the GHDL integer qualifications prepare_system_verilator gives the pinned copy
+                    for expression in ('to_integer(videoout_request_clkvid.lineDisp)','to_integer(Gun1Y_screen)','to_integer(Gun2Y_screen)'):
+                        text=text.replace(expression,"integer'("+expression+")")
+                    text=re.sub(r'(i_pixel_out_x\s*=> )videoout_request_clkvid.xpos,',r"\1integer'(videoout_request_clkvid.xpos),",text)
+                if 'ramip.' in text and not re.search(r'library\s+ramip\s*;',text,re.I):text='library ramip;\n'+text
+                out=swapdir/name;out.write_text(text)
+                rows[0].update(path=str(out),sha256=_digest(out),swapped_from=str(Path(src).resolve()))
+                rows[0].pop('selected',None);rows[0].pop('selected_sha256',None)
         with (directory/'build.log').open('w') as log:
             for source in manifest['sources']:
                 subprocess.run([ghdl,'-a','--std=08','-frelaxed',f'--work={source["library"]}',source['path']],cwd=directory,
@@ -78,7 +121,7 @@ def main():
             manifest['verilog_normalization']=normalize_generated_verilog(verilog)
             print('Building connected BIOS/disc system.',flush=True)
             subprocess.run([verilator,'--binary','--timing','-O3','-j','4','-Wno-fatal','--output-split','20000',
-                '--top-module','tb_psx_fast','--Mdir',str(directory/'obj'),str(verilog),str(models),*map(str,host_rtls),str(bench)],
+                '--top-module','tb_psx_fast','--Mdir',str(directory/'obj'),str(verilog),str(models),*map(str,host_rtls),*[str(Path(e.rpartition('=')[2]).resolve()) for e in args.extra if Path(e.rpartition('=')[2]).suffix in ('.sv','.v')],str(bench)],
                 cwd=directory,stdout=log,stderr=subprocess.STDOUT,timeout=300,check=True)
         build={'preparation':manifest,'trace_devices':args.trace_devices,'apf_loader':args.apf_loader,
             'apf_loader_sha256':{str(p):digest(p) for p in host_rtls} if args.apf_loader else {},'trace_schema':2 if args.trace_devices else None,

@@ -98,7 +98,7 @@ def save_state_exp1_rom(rom_hex):
 
 
 def prepare(directory,fast_reset=True,gpu_line_share=False,fast_boot=False,gpu_divider_pool=False,gpu_timing_prune=False,
-            save_states=None):
+            save_states=None,overrides=None):
     # Do not modify upstream entities or the resource-fit projects.
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     manifest=prepare_resources(directory/'project',['psx_top'])
@@ -148,7 +148,7 @@ def prepare(directory,fast_reset=True,gpu_line_share=False,fast_boot=False,gpu_d
         if name in ('RamMLAB.vhd','dpram.vhd'):continue
         key=(library,name)
         if key in seen:continue
-        seen.add(key);selected=Path(substitutions.get(name,original))
+        seen.add(key);selected=Path((overrides or {}).get(name) or substitutions.get(name,original))   # overrides: run_system_disc --override
         raw=selected.read_text();ss_changes=[]
         if save_states and name in save_states['transforms']:
             raw=save_states['transforms'][name](raw);ss_changes.append('Save-state transform (prepare_save_states.py)')

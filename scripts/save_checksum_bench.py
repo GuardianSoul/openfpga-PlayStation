@@ -54,9 +54,28 @@ def bench_text(text):
                 '            elsif a >= 16#1830# and a < 16#1834# then   -- checksum: a write clears CSUM\n'
                 "               cs := (others => '0');\n"
                 '            elsif a = 16#1804# then\n')
-    text = once(text, '            elsif a = 16#1803# then\n',
-                '            elsif a = 16#1803# then\n'
-                '               cs_ovf := false;   -- checksum: the FINISH pulse clears the slot\'s overflow\n')
+    clear = '               cs_ovf := false;   -- checksum: the FINISH pulse clears the slot\'s overflow\n'
+    # early-load / disc-id scenarios plant the state's name (STATE_ID, words 193-197) and identity (STATE_DID,
+    # word 198) into buffer page 0 at the load request, after the save's sum: every such load would be refused
+    # on the checksum. With this step they are planted as the save copies page 0 instead (the sum covers them;
+    # the load request's planting then writes the same values again).
+    copy = "                     else buf(p * 512 + k) := page(k); end if;\n"
+    if 'el_name(STATE_ID)' in text:
+        plant = ("                     elsif want_save = '1' and page_hi * 256 + page_lo = 0 and k >= 193 and k <= 197 and STATE_ID > 0 then   -- checksum: STATE_ID at the save\n"
+                 "                        if STATE_ID = 9 then page(k) := (others => '0'); else page(k) := el_name(STATE_ID)(k - 193); end if;\n"
+                 "                        buf(p * 512 + k) := page(k);\n")
+        if 'STATE_DID  : natural' in text:
+            plant += ("                     elsif want_save = '1' and page_hi * 256 + page_lo = 0 and k = 198 and STATE_DID > 0 then   -- checksum: STATE_DID at the save\n"
+                      "                        if STATE_DID = 9 then page(k) := (others => '0'); else page(k) := x\"00FEDCBA\"; end if;\n"
+                      "                        buf(p * 512 + k) := page(k);\n")
+        text = once(text, copy, plant + copy)
+    answered = "               el_answered_s <= '1';   -- early-load: answered, the load goes on\n"
+    if answered in text:   # save_early_load_bench.py split the FINISH branch: both halves are FINISH writes
+        text = once(text, answered, answered + clear)
+        second = "               assert not (a = 16#1803# and el_answered_s = '1') report \"early-load: a second answer after the early one\" severity failure;\n"
+        text = once(text, second, second + '               if a = 16#1803# then cs_ovf := false; end if;   -- checksum (not the 0x180E end of an answered load)\n')
+    else:
+        text = once(text, '            elsif a = 16#1803# then\n', '            elsif a = 16#1803# then\n' + clear)
     text = once(text, "               want_load <= '1'; trap <= '1';\n",
                 '               if STATE_FAULT = 4 then buf(2 * 512 + 100)(0) := not buf(2 * 512 + 100)(0); end if;   -- checksum\n'
                 '               if STATE_FAULT = 5 then cs_ovf := true; end if;   -- checksum\n'
