@@ -147,14 +147,32 @@ class PocketPlugin(unittest.TestCase):
             games = plugin/'Assets/playstation'/CORE
             self.assertFalse((games/help_entry.name).exists())
             ff9 = json.loads((games/'Final Fantasy IX.json').read_text())['instance']
-            self.assertEqual([s['id'] for s in ff9['data_slots']], [100, 101, 201, 301, 401, 16])
-            self.assertEqual(ff9['data_slots'][-1]['filename'], 'Final Fantasy IX (v1.1).sav')
-            self.assertEqual((plugin/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').read_bytes(), b'disc 4')
+            # No common/ card yet: no card named; it starts in the core's folder.
+            self.assertEqual([s['id'] for s in ff9['data_slots']], [100, 101, 201, 301, 401])
+            self.assertEqual((plugin/'Saves/playstation'/CORE/'Final Fantasy IX.sav').read_bytes(), b'disc 4')
+            self.assertFalse((plugin/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').exists())
+            legend = json.loads((games/'Legend (USA).json').read_text())['instance']['data_slots']
+            self.assertIn({'id': 16, 'filename': 'Legend (USA).sav'}, legend)   # its common/ card is kept
             self.assertIn('change discs in Core Settings > Swap Discs.', out)   # no interact.json: the 0.5.3 name
             # 0.5.2 calls the menu "Disc": the plugin reads it from the core.
             (plugin/'Cores'/CORE/'interact.json').write_text(json.dumps({'interact': {'variables': [
                 {'name': 'Disc', 'id': 21, 'type': 'list', 'address': '0x50000044'}]}}))
             self.assertIn('change discs in Core Settings > Disc.', self.plugin(plugin, MAKE))
+
+    def test_card_the_user_moved_matches_the_script(self):
+        # Legend's card moved by the user from common/ into the core's folder:
+        # the next run names no card, so the game uses the moved one.
+        with TemporaryDirectory() as tmp:
+            script, plugin = Path(tmp)/'script', Path(tmp)/'plugin'
+            make_card(script)
+            saves = script/'Saves/playstation'
+            (saves/CORE/'Legend (USA).sav').write_bytes((saves/'common/Legend (USA).sav').read_bytes())
+            (saves/'common/Legend (USA).sav').unlink()
+            self.compare(script, plugin, SKIP)
+            legend = json.loads((plugin/'Assets/playstation'/CORE/'Legend (USA).json').read_text())['instance']
+            self.assertNotIn(16, [s['id'] for s in legend['data_slots']])
+            self.assertEqual((plugin/'Saves/playstation'/CORE/'Legend (USA).sav').read_bytes(), b'kept')
+            self.assertFalse((plugin/'Saves/playstation/common/Legend (USA).sav').exists())
 
     def test_skip_matches_the_script_without_convert(self):
         with TemporaryDirectory() as tmp:
@@ -512,7 +530,8 @@ class PocketPlugin(unittest.TestCase):
                 out = self.plugin(card, SKIP, verbose=False)
                 lines = [l for l in out.splitlines() if not l.startswith(('  ', '['))]
                 self.assertNotIn('wrote Library 000 (USA).json', out)
-                self.assertNotIn('shared card ', out)
+                self.assertNotIn("shared card ", out)
+                self.assertNotIn("card Final Fantasy IX.sav starts", out)
                 self.assertIn('100 game files so far ...', lines)
                 self.assertIn('200 game files so far ...', lines)
                 self.assertNotIn('400 game files so far ...', lines)
@@ -527,7 +546,7 @@ class PocketPlugin(unittest.TestCase):
                 report = (card/'Assets/playstation'/CORE/'Game files report.txt').read_text().splitlines()
                 for line in ('wrote Library 000 (USA).json (1 track)', 'wrote Library 229 (USA).json (1 track)'):
                     self.assertIn(line, report)
-                self.assertTrue(any(l.startswith('shared card ') for l in report))
+                self.assertIn('card Final Fantasy IX.sav starts from Final Fantasy IX (USA) (Disc 4) (Rev 1).sav', report)
                 self.assertEqual(len([l for l in report if l.startswith('skip Missing')]), broken)
                 self.assertFalse(any(l.startswith('... and') for l in report))
                 self.assertFalse(any(l.startswith('Every line') for l in report))

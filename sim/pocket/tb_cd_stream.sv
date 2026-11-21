@@ -322,6 +322,16 @@ module tb_cd_stream;
   while(cd_hps_ack) begin @(posedge cclk);gap++;if(gap>4) $fatal(1,"Acknowledge held after the sector");end
   sector_reads++;
  endtask
+ // cd-fetch-err: a read APF failed is acknowledged with no data (K_ERR, never filler); cd_top takes that as a read error.
+ task automatic fetch_unanswered(input integer lba);
+  integer waited,len;
+  @(negedge cclk);while(cd_hps_ack) @(negedge cclk);
+  cd_hps_lba=lba;cd_hps_req=1;waited=0;
+  do begin @(posedge cclk);waited++;if(waited>4000000) $fatal(1,"Failed sector %0d never acknowledged",lba);end while(!cd_hps_ack);
+  @(negedge cclk);cd_hps_req=0;len=1;
+  while(cd_hps_ack) begin if(cd_hps_write) $fatal(1,"Failed sector %0d was answered with data",lba); @(posedge cclk);len++;if(len>4) $fatal(1,"Failed sector %0d: acknowledge held",lba);end
+  repeat(64) begin @(posedge cclk);if(cd_hps_ack || cd_hps_write) $fatal(1,"Failed sector %0d answered after its error",lba);end
+ endtask
  task automatic select(input [15:0] slot);
   integer prior,n;prior=change_count;
   @(negedge cclk);disc_slot_id=slot;disc_select_strobe=1;@(negedge cclk);disc_select_strobe=0;
@@ -349,9 +359,9 @@ module tb_cd_stream;
   check_table(0);
   case(test_case)
    2: begin
-    // APF read error: that sector becomes 0xAA fill, later sectors recover.
+    // APF read error: that sector gets no answer (cd-fetch-err K_ERR), later sectors recover.
     fail_offset=(170-150)*2352;
-    fetch(16'h20,sectors_a,170,1);
+    fetch_unanswered(170);
     if(!read_error) $fatal(1,"APF read error not reported");
     fetch(16'h20,sectors_a,171,0);fetch(16'h20,sectors_a,172,0);fetch(16'h20,sectors_a,170,0);
    end

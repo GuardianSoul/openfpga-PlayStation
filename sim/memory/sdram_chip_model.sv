@@ -15,7 +15,7 @@
 // Storage covers 4 banks x 64 rows (row bits [5:0]) x 1024 columns.
 `timescale 1ns/1ps
 `default_nettype none
-module sdram_chip_model #(
+module sdram_chip_model #(parameter integer WIDE_ROWS = 0, 
     parameter integer T_RCD = 2, T_RP = 2, T_RAS = 5, T_RC = 7, T_RFC = 9, T_WR = 2, T_MRD = 2,
     parameter integer CAS = 2,
     parameter real T_AC = 6.0, T_OH = 2.5, T_RET = 0.0,   // ns: clock-to-data max, data hold min, return path
@@ -29,7 +29,8 @@ module sdram_chip_model #(
     input  wire [1:0]  dqm,
     inout  wire [15:0] dq
 );
-    reg [15:0] mem [0:(1<<18)-1];
+    localparam integer MB = WIDE_ROWS ? 20 : 18; // WIDE_ROWS: row bits 12:11 stored too (main-4bank bench)
+    reg [15:0] mem [0:(1<<MB)-1];
     integer cyc = 0, errors = 0, warnings = 0, refreshes = 0, reads = 0, writes = 0;
     reg        moded = 0;
     reg [3:0]  bank_open = 0;
@@ -46,12 +47,12 @@ module sdram_chip_model #(
     reg        drive = 0, launched = 0;
     assign dq = drive ? bus : 16'bz;
 
-    function [17:0] index(input [1:0] b, input [12:0] r, input [9:0] c);
-        index = {b, r[5:0], c};
+    function [19:0] index(input [1:0] b, input [12:0] r, input [9:0] c);
+        index = WIDE_ROWS ? {b, r[12:11], r[5:0], c} : {2'b00, b, r[5:0], c};
     endfunction
 
     initial begin
-        for (i = 0; i < (1<<18); i = i + 1) mem[i] = (i * 16'h9e37) ^ (i >> 5);
+        for (i = 0; i < (1<<MB); i = i + 1) mem[i] = (i * 16'h9e37) ^ (i >> 5);
         for (i = 0; i < 4; i = i + 1) begin
             open_row[i] = 0; act_at[i] = -100; pre_at[i] = -100; idle_at[i] = -100; rd_at[i] = -100; wr_at[i] = -100;
         end

@@ -25,7 +25,45 @@ CLOCKED = {'GTEEngine.sv': (2,3), 'GTERegs.sv': (6,0),
            'GTEMicroCode.sv': (2,0)}
 
 
-def adapter_sources(directory):
+# GTE command durations (docs/timing-gte-mdec.md). Upstream MicroCodeTiming.inl
+# holds the PS1 count - 1 (RTPS/RTPT - 2, DPCT + 1). Through this adapter a
+# command takes max(table, microcode steps) + 2 CPU cycles, so 'ps1' sets every
+# row to the PS1 count (psx-spx) - 2; rows whose microcode is longer stay
+# microcode-bound (DPCS, INTPL, DPCL, GPF, GPL, SQR, NCDT and buggy MVMVA +1,
+# DPCT +4). 'upstream' keeps the pinned table.
+PS1_COUNTS = {0x01:15, 0x02:8, 0x06:8, 0x0c:6, 0x10:8, 0x11:8, 0x12:8, 0x13:19, 0x14:13,
+              0x16:44, 0x1b:17, 0x1c:11, 0x1e:14, 0x20:30, 0x28:5, 0x29:8, 0x2a:17,
+              0x2d:5, 0x2e:6, 0x30:23, 0x3d:5, 0x3e:5, 0x3f:39}
+ADAPTER_OVERHEAD = 2
+TIMINGS = ('upstream', 'ps1')
+TABLE_TIMING = 'ps1'
+
+
+def timing_table(upstream_text, timing):
+    """Return MicroCodeTiming.inl text for a timing choice; the pin's rows stay in order."""
+    if timing not in TIMINGS: raise ValueError('Unknown GTE timing '+timing)
+    if timing=='upstream': return upstream_text
+    out=[]; seen=set()
+    for line in upstream_text.splitlines():
+        m=re.match(r"6'h([0-9a-f]+) : retCount = 6'd(\d+);(.*)$",line)
+        if not m: out.append(line); continue
+        op=int(m.group(1),16); seen.add(op)
+        new=PS1_COUNTS[op]-ADAPTER_OVERHEAD
+        out.append(f"6'h{m.group(1)} : retCount = 6'd{new};{m.group(3)}")
+    if seen!=set(PS1_COUNTS): raise ValueError('GTE timing table rows changed')
+    return '\n'.join(out)+'\n'
+
+
+def microcode_start_text(timing):
+    original=UPSTREAM/'rtl/GTEMicrocodeStart.sv'; text=original.read_text()
+    table=timing_table((UPSTREAM/'rtl/MicroCodeTiming.inl').read_text(),timing)
+    marker='`include "MicroCodeTiming.inl"'
+    if text.count(marker)!=1: raise ValueError('GTE timing include changed')
+    return '// Generated: MicroCodeTiming.inl inlined with PS1 command counts; original license follows.\n'+text.replace(marker,table)
+
+
+def adapter_sources(directory, timing=None):
+    timing=timing or TABLE_TIMING
     actual=subprocess.check_output(['git','-C',str(UPSTREAM),'rev-parse','HEAD'],text=True).strip()
     if actual!=PIN or subprocess.run(['git','-C',str(UPSTREAM),'diff','--quiet','HEAD']).returncode:
         raise ValueError('GTE reference differs from the recorded pin')
@@ -35,7 +73,11 @@ def adapter_sources(directory):
     for original in sorted((UPSTREAM/'rtl').iterdir()):
         if original.suffix not in ('.v','.sv','.hv','.inl'): continue
         path=original; item={}
-        if original.name in CLOCKED:
+        if original.name=='GTEMicrocodeStart.sv' and timing!='upstream':
+            path=directory/original.name; path.write_text(microcode_start_text(timing))
+            item={'original':str(original),'original_sha256':digest(original),
+                  'transform':f'Inline MicroCodeTiming.inl with {timing} command counts'}
+        elif original.name in CLOCKED:
             text=original.read_text(); clocks,connections=CLOCKED[original.name]
             text,count=re.subn(r'(input\s+i_clk\s*,)',r'\1\n    input i_ce,',text)
             if count!=1: raise ValueError('Clock port changed: '+original.name)
@@ -66,7 +108,7 @@ def adapter_sources(directory):
     sources.append({'path':str(adapter),'library':'work','sha256':digest(adapter),'assignment':'SYSTEMVERILOG_FILE',
         'original':str(original_adapter),'original_sha256':digest(original_adapter),'transform':'Unchanged adapter snapshot'})
     (directory/'manifest.json').write_text(json.dumps({'upstream_pin':PIN,'sources':sources,
-        'arithmetic_and_microcode_unchanged':True,'full_gte_verified':False,'cpu_execution_verified':False,
+        'arithmetic_and_microcode_unchanged':True,'gte_timing':timing,'full_gte_verified':False,'cpu_execution_verified':False,
         'hardware_verified':False},indent=2)+'\n')
     return sources
 

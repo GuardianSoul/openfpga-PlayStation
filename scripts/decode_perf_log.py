@@ -50,8 +50,9 @@ def load(path, dma=False):
     tag = (words[3] >> 20) & 0x3ff   # word 3: tag in 29:20, FRAMES-1 in 19:10, slot in 9:0
     ring = (words[3] >> 10) & 0x3ff  # published since 2026-10-20 (0 in older logs)
     cd = (words[1] >> 28) & 1 and not stages and not video   # --perf-cd: 5-word records, word 4 = CD counters
+    crash = cd and tag in (12, 13, 14)   # perf-crash (prepare_perf_crash.py): tag 12 = CD=5, 8 words x 511; tag 13 = CD=6, 10 words x 383
     allm = cd and tag in (10, 11)   # combined diagnosis builds (CD=4): tag 10 = 7-word records, tag 11 = 8 words (+ VRAM write times)
-    stride, frames = (8, 511) if stages else (9, 227) if video2 else (7, 511) if video else ((8, 255) if tag == 11 else (7, 292)) if allm else (5, 408) if cd else (4, 1023)
+    stride, frames = ((6, 255) if tag == 14 else (10, 383) if tag == 13 else (8, 511)) if crash else (8, 511) if stages else (9, 227) if video2 else (7, 511) if video else ((8, 255) if tag == 11 else (7, 292)) if allm else (5, 408) if cd else (4, 1023)
     if ring + 1 >= 8: frames = ring + 1   # the log says how deep its own ring is
     n = frames if recorded >= frames else recorded   # recorded wraps at 65536
     # A truncated save (the file is ring-shaped: 4 + PHASES x FRAMES words) must
@@ -66,7 +67,21 @@ def load(path, dma=False):
         row = dict(cycles=w0 & 0xfffff, samples=w0 >> 22, ram=ram & 0xfffff, spu=spu & 0xfffff, reqs=reqs,
                    vram_busy=(w3 >> 16) * 16, vram_wait=(w3 & 0xffff) * 16)
         if stages: row.update(adapter3=words[base + 4], read3=words[base + 5], write3=words[base + 6])
-        if allm:   # w4 CD, w5 {dma_cycles/16, dma_ram_wait/16}, w6 {cache_wait/16, cache_reqs}
+        if crash and tag == 14:   # w2 store-buffer full, w3 read|SPU, w4 read|refresh, w5 CD pack
+            w2, w3, w4, w5 = (words[base + k] if base + k < len(words) else 0 for k in (2, 3, 4, 5))
+            row.update(spu=0, vram_busy=0, vram_wait=0, reqs=ram >> 20,
+                       wbfull=w2 & 0xfffff, wbfull_ep=w2 >> 20, rd_spu=w3 & 0xfffff, spu_reqs=(w3 >> 20) * 16,
+                       rd_ref=w4 & 0xfffff, refreshes=w4 >> 20, wr_spu=0, dma_reqs=0,
+                       cd_sectors=w5 >> 28, cd_irqs=w5 >> 22 & 63, cd_dma_words=(w5 >> 10 & 0xfff) * 4, dma_cycles=(w5 & 0x3ff) * 1024)
+        elif crash:   # w4 store-buffer full, w5 read wait behind SPU RAM, w6 read wait in refresh, w7 write behind SPU RAM
+            w4, w5, w6, w7 = (words[base + k] if base + k < len(words) else 0 for k in (4, 5, 6, 7))
+            row.update(wbfull=w4 & 0xfffff, wbfull_ep=w4 >> 20, rd_spu=w5 & 0xfffff, spu_reqs=(w5 >> 20) * 16,
+                       rd_ref=w6 & 0xfffff, refreshes=w6 >> 20, wr_spu=w7 & 0xfffff, dma_reqs=(w7 >> 20) * 16)
+            if tag == 13:   # w8 CD stream {sectors, seeks, wait}, w9 {CD irqs, CD DMA words/4, DMA-owns-RAM cycles/256}
+                w8, w9 = (words[base + k] if base + k < len(words) else 0 for k in (8, 9))
+                row.update(cd_sectors=w8 >> 24, cd_seeks=w8 >> 20 & 15, cd_wait=w8 & 0xfffff,
+                           cd_irqs=w9 >> 24, cd_dma_words=(w9 >> 12 & 0xfff) * 4, dma_cycles=(w9 & 0xfff) * 256)
+        elif allm:   # w4 CD, w5 {dma_cycles/16, dma_ram_wait/16}, w6 {cache_wait/16, cache_reqs}
             w4, w5, w6 = (words[base + k] if base + k < len(words) else 0 for k in (4, 5, 6))
             row.update(cd_sectors=w4 >> 24, cd_seeks=w4 >> 20 & 15, cd_wait=w4 & 0xfffff,
                        dma_cycles=(w5 >> 16) * 16, dma_ram_wait=(w5 & 0xffff) * 16,
@@ -181,6 +196,10 @@ def main():
                   f"{r['out']:4} {r['first_kept']:5} {r['last_kept']:4} {r['hs']:4} {r['out_w']:4} {r['line_w']:6}"
                   f"   {100 * r['ram'] / c:7.1f}  {100 * r['spu'] / c:7.1f}")
             continue
+        if 'wbfull' in r:   # perf-crash: % of the frame
+            print(f"{i:5} {c / CLK1X * 1000:6.2f}  wbfull {100 * r['wbfull'] / c:5.2f}% ({r['wbfull_ep']:4})  rd|spu {100 * r['rd_spu'] / c:5.2f}%"
+                  f"  rd|ref {100 * r['rd_ref'] / c:5.2f}% ({r['refreshes']:4})  wr|spu {100 * r['wr_spu'] / c:5.2f}%  spu-reqs {r['spu_reqs']:6}  dma-reqs {r['dma_reqs']:6}"
+                  + (f"  cd-sect {r['cd_sectors']:3} irq {r['cd_irqs']:3} cd-dma-w {r['cd_dma_words']:5} dma-own {100 * r['dma_cycles'] / c:5.2f}%" if 'cd_irqs' in r else ''))
         print(f"{i:5} {c / CLK1X * 1000:6.2f} {r['samples']:6}   {100 * r['ram'] / c:7.1f}  {100 * r['spu'] / c:7.1f}"
               f"   {100 * r['vram_busy'] / (2 * c):8.1f}   {100 * r['vram_wait'] / (2 * c):8.1f}"
               + (f"  {r['reqs']:9}  {r['ram'] / r['reqs'] / CLK1X * 1e9:6.0f}" if r['reqs'] else ''))

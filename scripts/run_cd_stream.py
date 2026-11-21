@@ -27,6 +27,8 @@ FAULTS=[
      'Track table word'),
     ('reload-remounts-at-once',"pending_file<=1;disc_valid<=0;","pending_file<=1;disc_valid<=0;mount_pending<=1;have_size<=1;",'Slot reload remounted without a swap'),
     ('libcrypt-lane',"lc_msf<=lc_b[1] ? {q[23:16],q[31:24],8'h00} : q[23:0];","lc_msf<=lc_b[1] ? {q[15:8],q[23:16],8'h00} : q[23:0];",'Track table word'),
+    ('err-as-fill',"target_error==0 ? K_DATA : lc_cmd ? K_FILL : K_ERR;","target_error==0 ? K_DATA : K_FILL;",'was answered'),
+    ('err-no-ack',"cd_hps_ack<=1;done_t<=~done_t;cstate<=C_ERRACK;","done_t<=~done_t;cstate<=C_IDLE;",'Failed sector 170'),
     ('table-word3-from-file',"trackinfo_addr==3 ? {14'b0,host_region,q[15:0]} : q;","q;",'Track table word'),
     ('table-any-size',"side_tb ? table_q==32'd1600 :","side_tb ? table_q!=0 :",'APF sector read shape'),
     ('table-buffer-reuse',"!(i==NBUF-1 && tb_hold)","1'b1",'Track table word'),
@@ -36,7 +38,7 @@ FAULTS=[
     ('early-update-waits',"if(mounted_once && read_since_mount) begin","if(mounted_once) begin",'Early slot update left the disc pending'),
     ('done-before-accept',"wire done_window=accepted;","wire done_window=1'b1;",'Sector data mismatch'),
     ('ignore-table-grant',"t_wdata<=disc_end;end\n                        if(!table_grant) twait<=0;","t_wdata<=disc_end;end\n                        if(0) twait<=0;",'%Fatal'),
-    ('ignore-apf-error',"bkind[cmd_buf]<=target_error!=0 ? K_FILL : K_DATA;","bkind[cmd_buf]<=K_DATA;",'Sector data mismatch'),
+    ('ignore-apf-error',"bkind[cmd_buf]<=target_error==0 ? K_DATA : lc_cmd ? K_FILL : K_ERR;","bkind[cmd_buf]<=K_DATA;",'was answered'),
     # Multi-track (built with MAX_TRACKS=4, case 6)
     ('track-search-stuck',"f_lba>=f_q) begin f_k<=f_k+1'b1;","f_lba>=f_q) begin f_k<=f_k;",'%Fatal'),
     ('index-time-missing',"if(mtrack!=0 && track_sectors==PREGAP[7:0]) begin t_we<=1;t_waddr<={mtrack,2'd2};t_wdata<={4'b0,m_minutes,m_seconds};end","",'Track table word'),
@@ -118,7 +120,7 @@ def main():
             multi=name in MULTI_FAULTS;lc=name.startswith('libcrypt');tb=name.startswith('table-')
             split=name.startswith('split-')   # the 2,048 + 304 word RAM exists from NBUF 4
             faulty=build(name,[variant,*sources[1:]],name=='ignore-table-grant' or multi or lc or tb or split,4 if split else 2,4 if multi else 19 if lc else 1,lc,tb)
-            case=4 if name=='libcrypt-buffer-reuse' else 9 if tb else 8 if lc else 6 if multi else {'ignore-apf-error':2,'reload-remounts-at-once':3,'done-before-accept':5,'early-update-waits':7}.get(name,0)
+            case=4 if name=='libcrypt-buffer-reuse' else 9 if tb else 8 if lc else 6 if multi else {'ignore-apf-error':2,'err-as-fill':2,'err-no-ack':2,'reload-remounts-at-once':3,'done-before-accept':5,'early-update-waits':7}.get(name,0)
             code,output=run(faulty,case,work/(name+'.log'))
             rejected=code!=0 and marker in output
             faults.append(dict(name=name,case=case,rejected=rejected,exit_code=code,output=output.strip()[-400:],

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check clock-enable/read-port adaptation against original GTE and math probes."""
 import json
+from pathlib import Path
 import shutil
 import subprocess
 
@@ -19,7 +20,8 @@ def main(name='gte-adapter', transform=None, cflags=()):
     directory=ROOT/'build/sim'/name; directory.mkdir(parents=True,exist_ok=True)
     adapted=adapter_sources(directory/'adapted')
     if transform: transform(adapted)
-    originals=sorted(path for path in (UPSTREAM/'rtl').iterdir() if path.suffix in ('.v','.sv'))
+    overridden={Path(s['path']).name for s in adapted if s.get('original','').endswith('GTEMicrocodeStart.sv')}
+    originals=sorted(path for path in (UPSTREAM/'rtl').iterdir() if path.suffix in ('.v','.sv') and path.name not in overridden)
     sources=[str(path) for path in originals]+[source['path'] for source in adapted
         if source['assignment']=='SYSTEMVERILOG_FILE' and (source.get('original') or source['path'].endswith('adapter.sv'))]
     top=ROOT/'sim/reference/gte_adapter_top.sv'; harness=ROOT/'sim/reference/gte_adapter_probe.cpp'

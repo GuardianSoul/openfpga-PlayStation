@@ -297,9 +297,15 @@ class SdCardPage(unittest.TestCase):
             self.assertIn('Game.json', names)
             self.assertNotIn('Final Fantasy IX (USA) (Disc 4) (Rev 1).json', names)
             ff9 = json.loads((out/'Final Fantasy IX.json').read_text())['instance']['data_slots']
-            self.assertEqual([s['id'] for s in ff9], [100, 101, 201, 301, 401, 16])
-            self.assertEqual((page/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').read_bytes(), b'disc 4')
+            # No common/ card yet: the game file names none, and the card starts in
+            # the core's folder from the newest per-disc card.
+            self.assertEqual([s['id'] for s in ff9], [100, 101, 201, 301, 401])
+            self.assertFalse((page/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').exists())
+            self.assertEqual((page/'Saves/playstation'/CORE/'Final Fantasy IX.sav').read_bytes(), b'disc 4')
+            # A common/ card keeps being named, and is never overwritten.
+            self.assertIn({'id': 16, 'filename': 'Legend (USA).sav'}, json.loads((out/'Legend (USA).json').read_text())['instance']['data_slots'])
             self.assertEqual((page/'Saves/playstation/common/Legend (USA).sav').read_bytes(), b'kept')
+            self.assertFalse((page/'Saves/playstation'/CORE/'Legend (USA).sav').exists())
             self.assertIn('\\u00e9', (out/'Pokémon Stadium.json').read_text())
             for skipped in ('Long Game', 'Busy', 'Gap', 'Broken/Broken.cue', 'Short/Short.cue'):
                 self.assertTrue(any(line.startswith(f'skip {skipped}') for line in js.stdout.splitlines()), skipped)
@@ -356,6 +362,20 @@ class SdCardPage(unittest.TestCase):
             self.assertEqual(tree(script), tree(page))
             self.assertIn('wrote Final Fantasy IX.json (4 discs, playlist Final Fantasy IX (USA)/Final Fantasy IX.m3u)', js.stdout)
             out = page/'Assets/playstation'/CORE
+            ff9 = json.loads((out/'Final Fantasy IX.json').read_text())['instance']
+            self.assertEqual(ff9, {'magic': 'APF_VER_1', 'data_path': 'Final Fantasy IX (USA)/',
+                                   'data_slots': [{'id': 100, 'filename': 'Final Fantasy IX.m3u'},
+                                                  {'id': 101, 'filename': 'Final Fantasy IX (Disc 1) (v1.1).bin'}]})
+            # With a common/ card (an earlier run's), the game file names it.
+            for root in (script, page):
+                (root/'Saves/playstation/common').mkdir(parents=True, exist_ok=True)
+                (root/'Saves/playstation/common/Final Fantasy IX (v1.1).sav').write_bytes(b'played')
+            py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
+                                 '--core', 'PlayStation'], check=True, capture_output=True, text=True)
+            js = subprocess.run([NODE, str(ROOT/'tests/sd_card_page.cjs'), str(page), '--core', CORE],
+                                check=True, capture_output=True, text=True)
+            self.assertEqual(py.stdout.splitlines()[:-1], js.stdout.splitlines()[:-1])
+            self.assertEqual(tree(script), tree(page))
             ff9 = json.loads((out/'Final Fantasy IX.json').read_text())['instance']
             self.assertEqual(ff9, {'magic': 'APF_VER_1', 'data_path': '',
                                    'data_slots': [{'id': 100, 'filename': 'Final Fantasy IX (USA)/Final Fantasy IX.m3u'},
@@ -517,6 +537,9 @@ class SdCardPage(unittest.TestCase):
                 else:
                     make_card(script)
                 folder_discs(script/'Assets/playstation/common')
+                (script/'Saves/playstation/common').mkdir(parents=True, exist_ok=True)   # cards of an earlier run: still named
+                for name in ('Parasite Eve II (USA).sav', 'Parasite Eve II (Europe).sav', 'Gran Turismo 2 (USA) (Arcade Mode).sav'):
+                    (script/'Saves/playstation/common'/name).write_bytes(b'card')
                 shutil.copytree(script, page)
                 py = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(script),
                                      '--core', 'PlayStation'], check=True, capture_output=True, text=True)
@@ -571,7 +594,9 @@ class SdCardPage(unittest.TestCase):
                 self.assertIn({'id': 97, 'filename': 'Legend (Disc 1)/Legend (USA) (Disc 1).tsz'}, legend)
                 self.assertTrue(any(n.endswith('.tsz') for n in tree(page)))
                 odd = json.loads((page/'Assets/playstation'/CORE/('Odd.json' if playlist else 'Odd (Disc 1) (v1.1).json')).read_text())['instance']['data_slots']
-                self.assertIn({'id': 97, 'filename': 'Odd (USA)/Odd (Disc 1) (v1.1).tsz'}, odd)
+                # Per-disc files name the shared card in common/ (filenames from common/); the
+                # one playlist file names no new card, so its paths are from its folder.
+                self.assertIn({'id': 97, 'filename': ('' if playlist else 'Odd (USA)/') + 'Odd (Disc 1) (v1.1).tsz'}, odd)
 
     def test_cue_variants_match_the_script(self):
         # Other tools' cues and images: what the core reads gets a game file,

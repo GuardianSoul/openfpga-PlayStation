@@ -17,6 +17,8 @@
 `default_nettype none
 module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
                      parameter integer OPS = 4000, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
+                     // MAIN4: controller with prepare_main_4bank.py (1 plain, 2 hashed bank map)
+                     parameter integer MAIN4 = 0,
                      // IMMEDIATE: a scalar read that follows a scalar read is requested on the
                      // clk1x edge that sees the previous ready (no idle cycle in between)
                      parameter integer IMMEDIATE = 0,
@@ -70,12 +72,13 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
     wire chip_clk_d;
     assign #(DCLK) chip_clk_d = chip_clk;
 
-    sdram_chip_model #(.STRICT_RFC(1), .NAME(PREFIX), .CAS(CAS), .T_AC(TAC), .T_OH(TOH), .T_RET(TRET)) chip (
+    sdram_chip_model #(.WIDE_ROWS(MAIN4 != 0), .STRICT_RFC(1), .NAME(PREFIX), .CAS(CAS), .T_AC(TAC), .T_OH(TOH), .T_RET(TRET)) chip (
         .clk(chip_clk_d), .cke(cke), .ncs(1'b0), .nras(nras), .ncas(ncas), .nwe(nwe),
         .a(a), .ba(ba), .dqm({dqmh, dqml}), .dq(dq));
 
     // ---------------------------------------------------- golden memory
-    reg [15:0] gold [0:(1<<18)-1];
+    localparam integer GB = MAIN4 != 0 ? 20 : 18;
+    reg [15:0] gold [0:(1<<GB)-1];
     integer i, fd, cyc1 = 0, cyc3 = 0, local_errors = 0;
     // DQ contention: the controller driving the bus while the chip still
     // drives a read beat (the chip releases T_AC + T_RET after the edge after
@@ -90,18 +93,23 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
 
     initial errors = 0;
     initial begin
-        for (i = 0; i < (1<<18); i = i + 1) gold[i] = (i * 16'h9e37) ^ (i >> 5);
+        for (i = 0; i < (1<<GB); i = i + 1) gold[i] = (i * 16'h9e37) ^ (i >> 5);
         for (i = 0; i < 16; i = i + 1) begin fifo_adr[i] = 0; fifo_dat[i] = 0; end
         fd = $fopen({PREFIX, ".log"}, "w");
     end
     always @(posedge clk1) cyc1 <= cyc1 + 1;
     always @(posedge clk3) cyc3 <= cyc3 + 1;
 
-    function [17:0] gi(input [26:0] adr);      // halfword index as the chip model stores it
-        gi = OPEN_ROW != 0 ? {adr[24], adr[10], adr[16:11], adr[25], adr[9:1]} : {adr[24:23], adr[15:10], adr[25], adr[9:1]};
+    function [19:0] gi(input [26:0] adr);      // halfword index as the chip model stores it
+        if (MAIN4 != 0 && OPEN_ROW != 0)          // {bank, row[12:11], row[5:0], col} under main-4bank's map
+            gi = adr[24] ? {1'b1, adr[10], 2'b01, adr[16:11], adr[25], adr[9:1]}
+               : adr[23] ? {1'b0, adr[10], 1'b1, adr[22], adr[16:11], adr[25], adr[9:1]}
+               : {MAIN4 == 2 ? adr[11] ^ adr[13] : adr[11], MAIN4 == 2 ? adr[10] ^ adr[12] : adr[10], 2'b00, adr[17:12], adr[25], adr[9:1]};
+        else
+            gi = OPEN_ROW != 0 ? {2'b00, adr[24], adr[10], adr[16:11], adr[25], adr[9:1]} : {2'b00, adr[24:23], adr[15:10], adr[25], adr[9:1]};
     endfunction
     function [31:0] gold32(input [26:0] adr);  // [15:0] = halfword, [31:16] = its pair
-        gold32 = {gold[gi(adr) ^ 18'd1], gold[gi(adr)]};
+        gold32 = {gold[gi(adr) ^ 20'd1], gold[gi(adr)]};
     endfunction
     task automatic gold_write(input [26:0] adr, input [31:0] d, input [3:0] be);
         reg [15:0] h;
@@ -110,10 +118,10 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
             if (be[0]) h[7:0] = d[7:0];
             if (be[1]) h[15:8] = d[15:8];
             gold[gi(adr)] = h;
-            h = gold[gi(adr) | 18'd1];
+            h = gold[gi(adr) | 20'd1];
             if (be[2]) h[7:0] = d[23:16];
             if (be[3]) h[15:8] = d[31:24];
-            gold[gi(adr) | 18'd1] = h;
+            gold[gi(adr) | 20'd1] = h;
         end
     endtask
     task automatic bad(input [8*48-1:0] what, input [31:0] got, input [31:0] want);
@@ -129,7 +137,7 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
     // puts bit 23 into the row and bank 3 holds SPU-region rows.
     function [26:0] rand_addr(input [1:0] bank, input integer r1, input integer r2);
         if (OPEN_ROW != 0)
-            rand_addr = {r2[8], r2[7], bank == 3 ? 2'd0 : bank, bank == 3 ? 13'd8 + r1[1:0] : {11'd0, r1[1:0]}, r2[16:9], 2'b00};
+            rand_addr = {r2[8], r2[7], bank == 3 ? 2'd0 : bank, bank == 3 ? 13'd8 + r1[1:0] : (MAIN4 != 0 && bank == 0) ? {6'd0, r1[4:3], 2'b00, r1[2:0]} : {11'd0, r1[1:0]}, r2[16:9], 2'b00};
         else
             rand_addr = {r2[8], r2[7], bank, r1[12:0], r2[16:9], 2'b00};
     endfunction
@@ -373,7 +381,7 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
         wait (cpu_done && spu_done && fifo_done);
         while (!fifo_empty) @(posedge clk3);
         repeat (200) @(posedge clk3);
-        for (i = 0; i < (1<<18); i = i + 1)
+        for (i = 0; i < (1<<GB); i = i + 1)
             if (chip.mem[i] !== gold[i]) begin bad("memory contents", chip.mem[i], gold[i]); $display("  index %h (bank %0d row6 %0d col %0d)", i, i[17:16], i[15:10], i[9:0]); end
         errors = local_errors + chip.errors;
         $fdisplay(fd, "summary clk3 %0d refreshes %0d reads %0d writes %0d dma_words %0d tRFC_short %0d errors %0d",
@@ -383,7 +391,7 @@ module sdram_bench #(parameter PREFIX = "ours", parameter integer SEED = 1,
     end
 endmodule
 
-module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0,
+module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED = 1, parameter integer CAS = 2, parameter integer SPU_FIRST = 0, parameter integer OPEN_ROW = 0, parameter integer MAIN4 = 0,
                           parameter integer IMMEDIATE = 0, parameter real DCLK = 2.0, TAC = 6.0, TOH = 2.5, TRET = 2.0);
     reg clk3 = 0, clk1 = 0;
     always #4.921 clk3 = ~clk3;     // 101.6064 MHz
@@ -391,7 +399,7 @@ module tb_psx_sdram_ctrl #(parameter integer OPS = 4000, parameter integer SEED 
     wire done_new;
     integer err_new;
     integer seed;
-    sdram_bench #(.PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .IMMEDIATE(IMMEDIATE), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
+    sdram_bench #(.PREFIX("ours"), .OPS(OPS), .SEED(SEED), .CAS(CAS), .SPU_FIRST(SPU_FIRST), .OPEN_ROW(OPEN_ROW), .MAIN4(MAIN4), .IMMEDIATE(IMMEDIATE), .DCLK(DCLK), .TAC(TAC), .TOH(TOH), .TRET(TRET)) ours (.clk3(clk3), .clk1(clk1), .done(done_new), .errors(err_new));
     initial begin
         wait (done_new);
         $display("RESULT errors ours %0d", err_new);

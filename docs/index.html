@@ -86,9 +86,11 @@
         number in their names count as one game when they are alone in a folder of their own
         (<code>Game/disc1.cue</code>, <code>Game/disc2.cue</code>); the game is named after the folder.</li>
       <li>Deletes the separate per-disc game files of those games, because the new file replaces them.</li>
-      <li>Gives each multi-disc game one memory card for all its discs,
-        <code>Saves/playstation/common/&lt;game&gt;.sav</code>. It starts as a copy of the card from the disc you
-        played last. If that card already exists, it is left alone. Your other saves are not touched.</li>
+      <li>Gives each multi-disc game one memory card for all its discs, in
+        <code>Saves/playstation/GuardianSoul.PlayStation/</code> next to your other saves. A game that already has
+        its card in <code>Saves/playstation/common/</code> keeps using it there; you can move it to the other folder
+        (same name as the game file) and generate again. A new card starts as a copy of the card from the disc you
+        played last. Existing cards are never overwritten, moved or deleted.</li>
       <li id="cue-info">The game file names the disc's <code>.cue</code>, and the core finds the tracks, the
         other discs and a LibCrypt <code>.sbi</code> next to it by itself. Nothing else is written.</li>
       <li id="split-info" class="hidden">This core is older than 0.5.3, so with the box ticked it splits games that keep all their tracks in one <code>.bin</code> into

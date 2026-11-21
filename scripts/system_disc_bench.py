@@ -25,6 +25,8 @@ def write_bench(directory,trace_devices=False):
     text=(ROOT/'sim/reference/tb_psx_system_fast.sv').read_text()
     text=text.replace('integer trace;', '''integer trace,audio_file,audio_samples=0,audio_nonzero=0;
 integer capture_interval=0;
+reg [31:0] stop_pc=0;
+initial if($value$plusargs("stop_pc=%h",stop_pc)) $display("STOP AT PC %08x",stop_pc);
 string pad_path;
 integer pad_trace,pad_fd,pad_parse,pad_temporary,pad_mask=0,pad_previous=-1;
 initial begin
@@ -85,6 +87,13 @@ final begin $fclose(audio_file);$display("AUDIO samples=%d nonzero=%d",audio_sam
     text=text.replace(marker,'''if(cycles%500000==0) begin
  $display("PROGRESS cycles=%d pc=%08x sectors=%d",cycles,core.component_core.icpu.pc,disc_sectors);$fflush();
 end''')
+    # +stop_pc=HEX: stop with the same dumps when the CPU's pc first equals it
+    marker=' if(cycles>=max_cycles) begin'
+    if text.count(marker)!=1:raise ValueError('System stop condition changed')
+    text=text.replace(marker,' if(cycles>=max_cycles || (stop_pc!=0 && core.component_core.icpu.pc==stop_pc)) begin\n'
+        '  $display("STATE cycles=%0d pc=%08x istat=%x imask=%x cdstatus=%x cdirq=%x dispdis=%0d",cycles,core.component_core.icpu.pc,\n'
+        '   core.component_core.iirq.i_status,core.component_core.iirq.i_mask,core.component_core.icd_top.cdrom_status,\n'
+        '   core.component_core.icd_top.cdrom_irqflag,core.component_core.igpu.gpustat_displaydisable);')
     marker='  $display("BIOS BOUNDED STOP pc=%08x",core.component_core.icpu.pc);$finish;'
     if text.count(marker)!=1:raise ValueError('System bounded-stop marker changed')
     text=text.replace(marker,'''  begin : capture_vram
@@ -130,4 +139,13 @@ final $fclose(device_trace);
    for(integer i=0;i<524288;i++) $fwrite(dump,"%02x%02x%02x%02x\\n",
      main_memory.data[i*4+3],main_memory.data[i*4+2],main_memory.data[i*4+1],main_memory.data[i*4]);
    $fclose(dump);''',1)
+    # soft-restart repro (Pocket "Restart game"): +reset1=N / +reset2=N pulse the core reset for 100 clk1x at cycle N
+    end=text.rindex('endmodule')
+    text=text[:end]+'''integer reset_at1=0,reset_at2=0;
+initial begin void'($value$plusargs("reset1=%d",reset_at1)); void'($value$plusargs("reset2=%d",reset_at2)); end
+always @(negedge clk1x) if((reset_at1>0 && cycles==reset_at1) || (reset_at2>0 && cycles==reset_at2)) begin
+ $display("RESTART cycles=%0d pc=%08x sectors=%0d",cycles,core.component_core.icpu.pc,disc_sectors);$fflush();
+ reset=1; repeat(100) @(negedge clk1x); reset=0;
+end
+'''+text[end:]
     path=directory/'tb_system_disc.sv';path.write_text(text);return path

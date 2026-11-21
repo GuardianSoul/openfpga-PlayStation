@@ -167,6 +167,16 @@ CASES = [
     # a slow card that never errs. Nothing listed answers at once.
     ('json-cold-long', *REDUMP, 'ok', 'json-cue'),
     ('json-cold-dead', *REDUMP, 'hold', 'json-cue'),
+    # launch-retry-bounded: a card that never answers gives up after CARD_TRIES (18) tries and boots
+    # with no disc (failed, allcomplete) instead of holding the CPU on a black screen.
+    ('json-cold-giveup', *REDUMP, 'fail', 'json-cue'),
+    # launch-retry-bounded: a wake's boot mount of a multi-file cue (no loader sizes) while the card
+    # still fails slot 102's reads: the firmware opens the track by path instead (one try, a disc mounted).
+    ('json-wake-102', *REDUMP, 'ok', 'json-052'),
+    # launch-cold-nosizes: a wake's boot mount (no loader sizes) of a multi-file cue while the card fails
+    # the first reads (slot 0 and the cue): tried again and mounted, not left to APF without a disc
+    # (Mega Man Legends' wake; reproduced with run_cue_media.py on the real cue).
+    ('json-wake-nosz', *REDUMP, 'ok', 'json-052'),
     ('json-cold-open', *REDUMP, 'ok', 'json-cue'),
     ('launch-cold-long', *REDUMP, 'ok', 'launch'),
     ('json-slow', *REDUMP, 'ok', 'json-cue'),
@@ -188,6 +198,7 @@ CASES = [
     # A sector read the Pocket never answers (dropped during a Memory read-out): given up after the
     # firmware's limit, asked again, the data (needs CUE_MOUNT_SV with save-cmd-abort; drive-state.md).
     ('stream-drop', *REDUMP, 'ok', 'json-cue'),
+    ('stream-giveup', *REDUMP, 'ok', 'json-cue'),
     # A save holds the drive: no APF command while it does, the read after it (needs CUE_MOUNT_SV with
     # save-readout-end; drive-state.md section 9).
     ('stream-hold', *REDUMP, 'ok', 'json-cue'),
@@ -397,8 +408,8 @@ def expected(case, disk, cue, suffix='', mask=0):
 # Launch tries (reads of slot 0) a case takes: only a card error on a listed
 # file (with the loader's sizes) tries again, the stream's allcomplete held
 # until an answer. Others take one, a bad cue or no file at once.
-TRIES = {'json-cold': 3, 'json-cold-long': 8, 'json-cold-open': 3, 'launch-cold-long': 4}
-COLD = {'json-trk-cold': 1, 'json-cold': 6, 'json-cold-long': 21, 'json-cold-dead': 100000, 'launch-cold-long': 7}   # commands the host fails first: slot 0, slot 102 and the cue in slot 100, per try
+TRIES = {'json-wake-nosz': 2, 'json-cold-giveup': 18, 'json-wake-102': 1, 'json-cold': 3, 'json-cold-long': 8, 'json-cold-open': 3, 'launch-cold-long': 4}
+COLD = {'json-wake-nosz': 5, 'json-cold-giveup': 100000, 'json-trk-cold': 1, 'json-cold': 6, 'json-cold-long': 21, 'json-cold-dead': 100000, 'launch-cold-long': 7}   # commands the host fails first: slot 0, slot 102 and the cue in slot 100, per try
 
 # The pause before a launch retry (start.S retry_wait at 0x10, in wait loop
 # turns of 104 cycles) is shortened for the bench in a copy of the firmware;
@@ -409,14 +420,14 @@ RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
 
 # Cases given the Chip32 loader's size block, and the most reads their boot
 # mount may take (the size probes alone are 13-19 reads each).
-SIZE_ARGS = {'json-trk-cold': ['+sizes', '+size0', '+no102'], 'json-cold': ['+sizes'], 'json-cold-long': ['+sizes'], 'json-cold-dead': ['+sizes', '+hold=12'], 'launch-cold-long': ['+sizes'], 'launch-none-sizes': ['+sizes'], 'launch-none-empty': ['+sizes', '+empty2'],
+SIZE_ARGS = {'json-cold-giveup': ['+sizes', '+mountlimit=40000000'], 'json-wake-102': ['+cold102=30'], 'json-trk-cold': ['+sizes', '+size0', '+no102'], 'json-cold': ['+sizes'], 'json-cold-long': ['+sizes'], 'json-cold-dead': ['+sizes', '+hold=12'], 'launch-cold-long': ['+sizes'], 'launch-none-sizes': ['+sizes'], 'launch-none-empty': ['+sizes', '+empty2'],
              'json-cold-open': ['+sizes', '+coldopen=2'],
              'json-slow': ['+sizes', '+apf_lat=20000'], 'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
              'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36'], 'json-data2': ['+sizes'],
              'launch-m3u-five': ['+menu2=4', '+slot2=101'],
              'stream-err': ['+serr=5', f'+spause={BENCH_WAIT//4*MIN_TURN}'], 'stream-err-open': ['+sopen=3', '+serr=2', f'+spause={BENCH_WAIT//4*MIN_TURN}'],
              'stream-stall': ['+sstall=1500000'], 'stream-dead-pick': ['+sdead'],
-             'stream-stale': ['+sstale=3'], 'stream-menu-err': ['+smenu'], 'stream-drop': ['+sdrop=3'], 'stream-hold': ['+shold']}
+             'stream-stale': ['+sstale=3'], 'stream-menu-err': ['+smenu'], 'stream-drop': ['+sdrop=3'], 'stream-giveup': ['+serr=12', '+sgiveup', f'+spause={BENCH_WAIT//4*MIN_TURN}'], 'stream-hold': ['+shold']}
 
 
 # Openfile commands the boot mount of a track-sizes case takes: with the
@@ -512,7 +523,7 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
         args.append('+bin')
     else:
         args.append('+fail')
-    args += SIZE_ARGS.get(name, [])
+    args += SIZE_ARGS.get(name, []) + os.environ.get('CUE_TB_EXTRA', '').split()
     out = subprocess.run([vvp, str(work/('tb_ch.vvp' if ch else 'tb_lc.vvp' if lc else 'tb.vvp')), *args], capture_output=True, text=True, timeout=1800)
     text = out.stdout + out.stderr
     ok = 'PASS' in text and 'FAIL' not in text
@@ -520,7 +531,7 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     if name in MOUNT_OPENS and (not opens or int(opens[1]) != MOUNT_OPENS[name]):
         ok = False; print(f'{name}: boot mount took {opens[1] if opens else "?"} openfiles, not {MOUNT_OPENS[name]}')
     print(f'{name}: {"pass" if ok else "FAIL"}  ' + ' '.join(l for l in text.splitlines() if l.startswith(("launch", "mount", "menu", "probe", "cheats", "stack", "stream"))), flush=True)
-    if not ok: print(text[-3000:])
+    if not ok or os.environ.get('CUE_TB_EXTRA'): print(text if os.environ.get('CUE_TB_EXTRA') else text[-3000:])
     return ok
 
 

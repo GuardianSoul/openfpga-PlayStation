@@ -123,7 +123,7 @@ module psx_cd_stream #(
     localparam integer TB=MAX_TRACKS>1 ? $clog2(MAX_TRACKS) : 1;
     localparam integer WORDS=588;
     localparam [19:0] PREGAP=20'd150;
-    localparam [1:0] K_DATA=0, K_ZERO=1, K_FILL=2;
+    localparam [1:0] K_DATA=0, K_ZERO=1, K_FILL=2, K_ERR=3;   // K_ERR (cd-fetch-err): a disc read APF failed; no sector
     localparam [1:0] B_EMPTY=0, B_FILLING=1, B_READY=2, B_SERVING=3;
 
     (* ramstyle="M10K" *) reg [31:0] sectors[0:NBUF*WORDS-1];
@@ -339,7 +339,7 @@ module psx_cd_stream #(
                     cmd_busy<=0;accepted<=0;
                     bstate[cmd_buf]<=bstale[cmd_buf] ? B_EMPTY : B_READY;
                     bstale[cmd_buf]<=0;
-                    bkind[cmd_buf]<=target_error!=0 ? K_FILL : K_DATA;
+                    bkind[cmd_buf]<=target_error==0 ? K_DATA : lc_cmd ? K_FILL : K_ERR;
                     lc_cmd<=0;
                     if(target_error!=0) begin if(lc_cmd && side_tb) tb_ok<=0; else if(lc_cmd) lc_bytes<=0; else read_error<=1; end
                 end
@@ -517,7 +517,7 @@ module psx_cd_stream #(
     wire c_mount_edge=c_mount_s[2]^c_mount_s[1];
 
     localparam C_IDLE=0, C_WAIT=1, C_GAP=2, C_DATA=3, C_TAIL=4, C_TRACK=5, C_TRACK_LOW=6,
-        C_LC_ADDR=7, C_LC_NEXT=8, C_LC_FIRST=9, C_LC_CHECK=10, C_LC_SCAN=11;
+        C_LC_ADDR=7, C_LC_NEXT=8, C_LC_FIRST=9, C_LC_CHECK=10, C_LC_SCAN=11, C_ERRACK=12;
     reg [3:0] cstate=C_IDLE;
     // LibCrypt mask from the .sbi in buffer 0, as MiSTer's HPS computes it
     // (Main_MiSTer support/psx/psx.cpp libCryptMask): 4-byte header, then
@@ -608,10 +608,16 @@ module psx_cd_stream #(
                         req_lba<=|cd_hps_lba[31:20] ? 20'hffffe : cd_hps_lba[19:0];
                         req_t<=~req_t;cstate<=C_WAIT;guest_idle<=0;
                     end
-                C_WAIT: if(c_resp_edge) begin
+                C_WAIT: if(c_resp_edge && resp_kind==K_ERR) begin
+                        // cd-fetch-err: the firmware gave the read up. No sector (never filler, which the
+                        // game would take as data): an acknowledge with no data, which cd_top takes as a
+                        // read error (INT5, drive idle).
+                        cd_hps_ack<=1;done_t<=~done_t;cstate<=C_ERRACK;
+                    end else if(c_resp_edge) begin
                         kind<=resp_kind;rd_addr<=base(resp_buf);
                         cd_hps_ack<=1;gap<=0;halfword<=0;cstate<=C_GAP;
                     end
+                C_ERRACK: begin cd_hps_ack<=0;cstate<=C_IDLE; end
                 C_GAP: cstate<=C_DATA;
                 C_DATA: begin
                     cd_hps_write<=1;

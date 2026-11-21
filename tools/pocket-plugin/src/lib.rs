@@ -183,7 +183,7 @@ fn run(core: &str, mode: Option<Mode>) -> PluginMessage {
                     mark *= 2;
                 }
             }
-        } else if line.starts_with("shared card ") {
+        } else if line.starts_with("shared card ") || line.starts_with("card ") {
             // Starting each shared card from a disc's save takes a while too.
             note(line);
             seeded += 1;

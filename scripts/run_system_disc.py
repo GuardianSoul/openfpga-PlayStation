@@ -20,7 +20,9 @@ def main():
     parser.add_argument('--cue',type=Path,required=True)
     parser.add_argument('--output',type=Path,default=ROOT/'build/sim/system-disc')
     parser.add_argument('--max-cycles',type=int,default=160000000)
+    parser.add_argument('--stop-pc',help='Stop when the CPU pc first equals this hex address (same dumps as at max-cycles)')
     parser.add_argument('--timeout',type=int,default=2400)
+    parser.add_argument('--reset',type=int,action='append',default=[],help='Pulse the core reset at this clk1x cycle (up to two; Restart game repro)')
     parser.add_argument('--fastboot',action='store_true',help='Enable upstream read-time BIOS logo skip; original file retained')
     parser.add_argument('--reuse',action='store_true')
     parser.add_argument('--trace-devices',action='store_true',help='Record CD/DMA/IRQ activity and final main RAM locally')
@@ -151,10 +153,11 @@ def main():
     with disc_image.open('rb') as file:
         for chunk in iter(lambda:file.read(4*1024*1024),b''):image_hash.update(chunk)
     started=time.monotonic();timed_out=False
-    command=[str(executable),*(['+bios'] if args.expected is None else []),f'+max_cycles={args.max_cycles}',f'+disc_file={disc["image"]}',
+    command=[str(executable),*(['+bios'] if args.expected is None else []),f'+max_cycles={args.max_cycles}',*([f'+stop_pc={args.stop_pc}'] if args.stop_pc else []),f'+disc_file={disc["image"]}',
         f'+disc_metadata={disc["metadata"]}',f'+disc_sectors={disc["sectors"]}',f'+disc_index={disc["index_sector"]}']
     command.append(f'+capture_interval={args.capture_interval}')
     if args.pad_file:command.append(f'+pad_file={args.pad_file.resolve()}')
+    command+=[f'+reset1={r}' for r in args.reset[:1]]+[f'+reset2={r}' for r in args.reset[1:2]]
     mode='authored reset diagnostic' if args.expected else 'private BIOS/disc'
     print(f'Running {mode}: cycles={args.max_cycles}, fastboot={args.fastboot}',flush=True)
     with (directory/'run.log').open('w') as log:

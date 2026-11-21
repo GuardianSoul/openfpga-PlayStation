@@ -108,13 +108,14 @@ module tb_cue_mount;
     // the stack (0x3E50-0x3FFF): the lowest firmware store in it
     always @(posedge clk) if(dut.a_we && dut.adr[13:0]>=14'h3E50 && dut.adr[13:0]<min_store) min_store=dut.adr[13:0];
 
-    integer apf_lat=0, coldopen=0, hold=0, errors=0, commands=0, opens=0, reads=0, cold=0, launch_tries=0, want_tries=0;
+    integer mount_lim=0, cold102=0, reads102=0, apf_lat=0, coldopen=0, hold=0, errors=0, commands=0, opens=0, reads=0, cold=0, launch_tries=0, want_tries=0;
     time last_cmd=0, retry_gap=0;
     // The stream's reads while APF is busy (a Memory being written): +serr=N answers the first N
     // commands into the stream's window with error 2, +sopen=N the first N opens after the mount
     // with error 5, +sstall=N leaves the first such command unanswered for N clocks. The firmware
     // must ask again after a pause (+spause=N clocks at least) and the stream must see no error.
     integer serr=0, sopen=0, sstall=0, spause=0, in_stream=0, s_failed=0, s_open_failed=0, s_stalled=0;
+    reg giveup_wait=0; integer s_giveups=0;   // +sgiveup
     // +sstale=N: a card write invalidates the open track files at the stream's Nth sector read: from
     // then every read in the stream's window answers error 2 until a track file is opened again
     // (drive-state.md; the firmware must reopen, not ask the same handle for ever).
@@ -161,6 +162,7 @@ module tb_cue_mount;
             repeat(5) @(negedge clk);
             repeat(apf_lat) @(negedge clk);     // +apf_lat=N: a slow answer that still succeeds
             if(commands<=cold) d_error=2;   // a cold card's failed read, getfile or open
+            else if(kind==0 && d_id==102 && reads102<cold102) begin reads102=reads102+1; d_error=2; end   // +cold102=N: slot 102's first N reads fail (a waking card, Mega Man Legends' Track 2)
             else if(kind==0) begin
                 reads=reads+1;
                 f=slot_of[d_id];
@@ -289,6 +291,11 @@ module tb_cue_mount;
             for(mk=0;mk<BOUND_COUNT;mk=mk+1) if(bounds[mk]!==32'hffffffff) begin
                 sec=bounds[mk];
                 stream_read(dslot,sec*2352,32'h24000000,2352);
+                // +sgiveup (with +serr above the firmware's 10 tries): the first sector read is given
+                // up with its error (cd-fetch-err), and asking again then reads it.
+                if(giveup_wait && u_error==0) fail("a read failing past the bound was not given up");
+                if(giveup_wait) begin giveup_wait=0; s_giveups=s_giveups+1; repeat(spause) @(negedge clk);   // the game's next ReadN (after INT5) asks later
+                    stream_read(dslot,sec*2352,32'h24000000,2352); end
                 if(u_error!=0) fail("sector read error");
                 for(mi=0;mi<588;mi=mi+1) begin
                     for(mj=0;mj<4;mj=mj+1) mw[8*mj+:8]=image[($test$plusargs("real_files") ? mk : sec)*2352+4*mi+mj];
@@ -324,7 +331,10 @@ module tb_cue_mount;
         if(!$value$plusargs("cold=%d",cold)) cold=0;
         if(!$value$plusargs("apf_lat=%d",apf_lat)) apf_lat=0;
         if(!$value$plusargs("coldopen=%d",coldopen)) coldopen=0;
+        if(!$value$plusargs("cold102=%d",cold102)) cold102=0;
+        if(!$value$plusargs("mountlimit=%d",mount_lim)) mount_lim=MOUNT_LIMIT;
         if(!$value$plusargs("serr=%d",serr)) serr=0;
+        giveup_wait=$test$plusargs("sgiveup");
         if(!$value$plusargs("sstale=%d",sstale)) sstale=0;
         if(!$value$plusargs("sdrop=%d",sdrop)) sdrop=0;
         if(!$value$plusargs("sopen=%d",sopen)) sopen=0;
@@ -366,7 +376,7 @@ module tb_cue_mount;
             end
             @(negedge clk); allcomplete=1; last_cmd=$time;
             tries=0;
-            while(!s_allcomplete && tries<MOUNT_LIMIT && !(hold && launch_tries>=hold)) begin @(negedge clk); tries=tries+1; end
+            while(!s_allcomplete && tries<mount_lim && !(hold && launch_tries>=hold)) begin @(negedge clk); tries=tries+1; end   // +mountlimit=N: a launch that retries to its bound (json-cold-giveup)
             if(hold) begin
                 if(s_allcomplete || launch_tries<hold) fail("a card that never answers must keep the stream waiting");
                 else $display("launch: %0d tries, still waiting",launch_tries);

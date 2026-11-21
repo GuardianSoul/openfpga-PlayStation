@@ -139,6 +139,154 @@ def memorymux_text(text, fault=None):
     return head + sep + body
 
 
+WBUF_DECL = """   -- ram-face store model: PS1 write buffer (docs/memctrl-redesign.md, "Stores rebuilt as a PS1 write buffer")
+   signal wb_qs          : std_logic_vector(7 downto 0) := (others => '0'); -- per entry: same 1 KiB page as the store before it
+   signal wb_head        : unsigned(2 downto 0) := (others => '0');
+   signal wb_tail        : unsigned(2 downto 0) := (others => '0');
+   signal wb_lastpg      : unsigned(12 downto 0) := (others => '0');
+   signal wb_busy        : std_logic := '0';
+   signal wb_isref       : std_logic := '0';
+   signal wb_open        : std_logic := '0';
+   signal wb_refp        : std_logic := '0';
+   signal wb_afterref    : std_logic := '1';
+   signal wb_left        : unsigned(3 downto 0) := (others => '0');
+   signal wb_t           : unsigned(7 downto 0) := (others => '0');
+   signal wb_gap         : unsigned(1 downto 0) := (others => '1');
+   signal wb_stl         : std_logic := '0';
+   signal wb_hold        : std_logic := '0';
+   signal wb_store       : std_logic;
+   signal wb_same_in     : std_logic;
+   signal wb_cnt         : unsigned(2 downto 0);
+   signal wb_fin         : std_logic;
+   signal wb_fin_w       : std_logic;
+   signal wb_left_cnt    : unsigned(2 downto 0);
+   signal wb_full_now    : std_logic;
+   signal wb_full        : std_logic;
+   signal wb_rd_early    : std_logic;
+   signal wb_rdblock     : std_logic;
+   signal wb_req_rnw     : std_logic;
+   signal wb_take        : std_logic;
+"""
+
+# Mutations for the equivalence check (scripts/check_store_wbuf.py); None is the release text.
+WBUF_MUTANTS = {
+    'cont3': ("wb_left <= to_unsigned(2, 4);", "wb_left <= to_unsigned(3, 4);"),
+    'nosame': ("(wb_open = '1' and same = '1')", "(wb_open = '1')"),
+    'refnodefer': ("refgo := free and wb_refp = '1' and not cont;", "refgo := free and wb_refp = '1';"),
+    'full4': ("wb_left_cnt >= 5 or (wb_left_cnt = 4", "wb_left_cnt >= 4 or (wb_left_cnt = 3"),
+    'early3': ("wb_left <= 2) else '0';", "wb_left <= 3) else '0';"),
+    'nohold': ("wb_full     <= wb_full_now or (wb_stl and wb_hold);", "wb_full     <= wb_full_now;"),
+    'nobypass': ("has_next := (wrem /= 0) or (wb_store = '1');", "has_next := (wrem /= 0);"),
+}
+
+
+def wbuf_body(mutant=None):
+    """The store model's concurrent statements and process (constants of rig WB11-best3:
+    F 4, continue 2, page-change / after-refresh precharge 2, refresh 8 every 256, CPU resumes one
+    cycle after a slot frees, reads may start with the last write 2 cycles from done)."""
+    body = """
+   -- ram-face store model: the R3000 write buffer's timing (Psy-Q table 2-5) decides when the CPU
+   -- stalls on a store and when a read may start; the FIFO/SDRAM path below only carries the data.
+   wb_store    <= '1' when (ce = '1' and mem_in_request = '1' and mem_in_rnw = '0' and mem_in_addressData(28 downto 0) < 16#800000#) else '0';
+   wb_same_in  <= '1' when (mem_in_addressData(22 downto 10) = wb_lastpg) else '0';
+   wb_cnt      <= wb_tail - wb_head;
+   wb_fin      <= '1' when (wb_busy = '1' and wb_left = 1) else '0';
+   wb_fin_w    <= wb_fin and not wb_isref;
+   wb_left_cnt <= wb_cnt - ("00" & wb_fin_w);
+   wb_full_now <= '1' when (wb_left_cnt >= 5 or (wb_left_cnt = 4 and wb_store = '1')) else '0';
+   wb_full     <= wb_full_now or (wb_stl and wb_hold);
+   wb_rd_early <= '1' when (wb_cnt = 1 and wb_busy = '1' and wb_isref = '0' and wb_left <= 2) else '0';
+   wb_rdblock  <= '1' when (wb_cnt /= 0 and wb_rd_early = '0') else '0';
+   wb_req_rnw  <= mem_save_rnw when (mem_save_request = '1') else mem_in_rnw;
+   wb_take     <= '1' when (writeFifo_busy = '0' and not (wb_rdblock = '1' and wb_req_rnw = '1')) else '0';
+
+   process (clk1x)
+      variable free, has_next, cont, refgo, need_ok : boolean;
+      variable same : std_logic;
+      variable wrem : unsigned(2 downto 0);
+   begin
+      if rising_edge(clk1x) then
+         if (ce = '1') then
+            free     := (wb_busy = '0') or (wb_fin = '1');
+            wrem     := wb_cnt - ("00" & wb_fin_w);
+            has_next := (wrem /= 0) or (wb_store = '1');
+            if (wrem /= 0) then same := wb_qs(to_integer(wb_head + ("00" & wb_fin_w))); else same := wb_same_in; end if;
+            cont     := (wb_fin_w = '1') and has_next and (wb_open = '1' and same = '1');
+            need_ok  := (wb_fin = '0' and wb_gap >= 2) or (same = '1' and wb_open = '1' and wb_afterref = '0' and not (wb_fin = '1' and wb_isref = '1'));
+            refgo := free and wb_refp = '1' and not cont;
+            wb_t <= wb_t + 1;
+            if (wb_t = 0) then wb_refp <= '1'; end if;
+            if (wb_busy = '1') then wb_left <= wb_left - 1; end if;
+            if (wb_fin = '1') then
+               wb_busy <= '0';
+               wb_gap  <= "01";
+            elsif (wb_busy = '0' and wb_gap /= 3) then
+               wb_gap  <= wb_gap + 1;
+            end if;
+            if (wb_store = '1') then
+               wb_qs(to_integer(wb_tail)) <= wb_same_in;
+               wb_lastpg <= mem_in_addressData(22 downto 10);
+               wb_tail   <= wb_tail + 1;
+            end if;
+            if (wb_fin_w = '1') then wb_head <= wb_head + 1; end if;
+            if (refgo) then
+               wb_busy <= '1'; wb_isref <= '1'; wb_left <= to_unsigned(8, 4); wb_refp <= '0'; wb_open <= '0'; wb_afterref <= '1';
+            elsif (free and has_next and (cont or need_ok)) then
+               wb_busy <= '1'; wb_isref <= '0'; wb_open <= '1'; wb_afterref <= '0';
+               if (cont) then wb_left <= to_unsigned(2, 4); else wb_left <= to_unsigned(4, 4); end if;
+            end if;
+            if (wb_full_now = '1') then
+               wb_stl  <= '1';
+               wb_hold <= '1';
+            elsif (wb_stl = '1') then
+               if (wb_hold = '1') then wb_hold <= '0'; else wb_stl <= '0'; end if;
+            end if;
+         end if;
+         if (reset = '1') then
+            wb_head <= (others => '0'); wb_tail <= (others => '0'); wb_busy <= '0'; wb_refp <= '0';
+            wb_open <= '0'; wb_hold <= '0'; wb_stl <= '0';
+         end if;
+      end if;
+   end process;
+"""
+    if mutant:
+        old, new = WBUF_MUTANTS[mutant]
+        body = once(body, old, new)
+    return body
+
+
+def memorymux_wbuf_text(text, mutant=None):
+    """memorymux.vhd, after memorymux_text: the PS1 write-buffer model owns store timing.
+    - the CPU's mem_fifofull is the model's full flag (ORed with the real FIFO's, which never
+      decides on the measured programs);
+    - a read (any kind) is taken from IDLE only when the model allows it;
+    - every RAM write goes straight out from IDLE (no WAITFORRAMWRITE / store-row wait: the model
+      has the timing, and the real path must not fall behind it)."""
+    head, sep, body = text.partition('\nbegin \n')
+    if not sep:
+        head, sep, body = text.partition('\nbegin\n')
+    head = once(head, "   signal writeFifo_busy         : std_logic;\n",
+                "   signal writeFifo_busy         : std_logic;\n" + WBUF_DECL)
+    body = wbuf_body(mutant) + body
+    body = once(body, "   mem_fifofull  <= writeFifo_NearFull;\n",
+                "   mem_fifofull  <= writeFifo_NearFull or wb_full; -- ram-face store model\n")
+    body = once(body, "((mem_request = '1' and writeFifo_busy = '0') or writeFifo_Empty = '0')) then\n",
+                "((mem_request = '1' and wb_take = '1') or writeFifo_Empty = '0')) then -- ram-face store model\n")
+    body = once(body, "                     if (mem_request = '1' and writeFifo_busy = '0') then\n",
+                "                     if (mem_request = '1' and wb_take = '1') then -- ram-face store model\n")
+    i = body.index("                              if (TURBO = '1' or (ram_page_open = '1' and mem_addressData(22 downto 10) = ram_page_addr)) then\n")
+    j = body.index("                           ram_be        <= mem_writeMask;\n", i)
+    old = body[i:j]
+    if 'store-row-timing' not in old or old.count('end if;') < 4:
+        raise ValueError('ram-face: memorymux write branch not as expected')
+    body = body[:i] + ("                              -- ram-face store model: every RAM write goes out from IDLE\n"
+                       "                              state    <= IDLE;\n"
+                       "                              ram_ena  <= '1';\n"
+                       "                              writeram <= '1';\n"
+                       "                           end if;\n") + body[j:]
+    return head + sep + body
+
+
 PSX_TOP_HINT = ("         if (mem_request = '1' and mem_rnw = '1' and mem_isData = '1' and dmaOn = '0' and mem_addressData(28 downto 0) < 16#800000#) then\n"
                 "            ram_hint_req <= '1';\n"
                 "         else\n"
@@ -225,7 +373,7 @@ def dma_text(text, fault=None):
     return text
 
 
-def dma_armed_text(text, fault=None):
+def dma_armed_text(text, fault=None, madr_arm=False):
     """dma.vhd for the armed DMA hint: the last MADR value written on the bus and an 'armed' flag (a
     CHCR write with start set that reads RAM), cleared when the channel runs; all registers."""
     text = dma_text(text, fault)
@@ -244,7 +392,9 @@ def dma_armed_text(text, fault=None):
                 "   ramHint_madr  <= ram_Adr when (hint_run = '1') else hint_madr;\n"
                 "   process (clk1x)\n   begin\n      if rising_edge(clk1x) then\n"
                 "         if (bus_write = '1' and bus_addr(6 downto 4) /= \"111\" and bus_addr(3 downto 2) = \"00\") then\n"
-                "            hint_madr <= bus_dataWrite(22 downto 2) & \"00\";\n         end if;\n"
+                "            hint_madr <= bus_dataWrite(22 downto 2) & \"00\";\n"
+                + (f"            hint_armed <= '1'; hint_run <= '0'; hint_idle <= 0; -- {TAG}: armed already by the MADR write\n" if madr_arm else '')
+                + "         end if;\n"
                 "         if (bus_write = '1' and bus_addr(6 downto 4) /= \"111\" and bus_addr(3 downto 2) = \"10\" and bus_dataWrite(24) = '1' and bus_dataWrite(0) = '1') then\n"
                 "            hint_armed <= '1'; hint_run <= '0'; hint_idle <= 0;\n"
                 "         elsif (hint_armed = '1') then\n"
@@ -263,6 +413,52 @@ def dma_armed_text(text, fault=None):
                 "   signal hint_run     : std_logic := '0';\n"
                 "   signal hint_idle    : integer range 0 to 63 := 0;\n")
     return text
+
+
+SIDE_EXPR = "dmaState /= OFF or dmaRequest = '1'"
+# planted faults for the side-reg step (the rig / whole-core rows must catch them or show them equivalent)
+SIDE_MUT = {'side-noreq': "dmaState /= OFF", 'side-noidle': "dmaRequest = '1'"}
+SIDE_TAG = TAG + ' (side-reg)'
+
+
+def dma_side_text(text, fault=None):
+    """Side-reg step on G4/G5's dma.vhd: export the hint select from registers. T5H failed
+    release_timing at psx_sdram_ctrl|hint_st (clk3x) from dmaOn, whose STOPPING/PAUSING term
+    compares REP_counter >= REP_target. Differs from dmaOn only in a STOPPING/PAUSING cycle
+    whose stop condition holds (the DMA side then still hints toDevice / ram_Adr)."""
+    if SIDE_TAG in text:
+        raise ValueError(f'dma.vhd already carries {SIDE_TAG}')
+    text = once(text, '      ramHint_madr         : out std_logic_vector(22 downto 0);\n',
+                '      ramHint_madr         : out std_logic_vector(22 downto 0);\n'
+                f'      ramHint_side         : out std_logic; -- {SIDE_TAG}\n')
+    text = once(text, "   ramHint_madr  <= ram_Adr when (hint_run = '1') else hint_madr;\n",
+                "   ramHint_madr  <= ram_Adr when (hint_run = '1') else hint_madr;\n"
+                f"   ramHint_side  <= '1' when ({SIDE_MUT.get(fault, SIDE_EXPR)}) else '0'; -- {SIDE_TAG}: registers only\n")
+    return text
+
+
+def psx_top_side_text(text, fault=None):
+    """Side-reg step on G4/G5's psx_top.vhd: the select from dma.vhd's ramHint_side, and save_mode
+    (clk2x, T5H s12 -0.042 ns into hint_st) through a clk1x register (the hint address only)."""
+    if SIDE_TAG in text:
+        raise ValueError(f'psx_top.vhd already carries {SIDE_TAG}')
+    text = once(text, '   signal dma_hint_madr          : std_logic_vector(22 downto 0);\n',
+                '   signal dma_hint_madr          : std_logic_vector(22 downto 0);\n'
+                f'   signal dma_hint_side          : std_logic; -- {SIDE_TAG}\n'
+                "   signal hint_save_mode         : std_logic := '0';\n")
+    text = once(text, '      ramHint_madr         => dma_hint_madr,\n',
+                '      ramHint_madr         => dma_hint_madr,\n'
+                '      ramHint_side         => dma_hint_side,\n')
+    i = text.index('   ram_hint_req <= dma_hint_ena when (dmaOn = \'1\' or dmaRequest = \'1\') else\n')
+    j = text.index('dma_hint_madr(20 downto 2) & "00";\n', i) + len('dma_hint_madr(20 downto 2) & "00";\n')
+    block = text[i:j]
+    if block.count("(dmaOn = '1' or dmaRequest = '1')") != 2 or block.count('save_mode & save_mode') != 3:
+        raise ValueError(f'{SIDE_TAG}: psx_top hint block changed')
+    block = block.replace("(dmaOn = '1' or dmaRequest = '1')", "(dma_hint_side = '1')").replace('save_mode & save_mode', 'hint_save_mode & hint_save_mode')
+    block += ("   process (clk1x)\n   begin\n      if rising_edge(clk1x) then\n"
+              f"         hint_save_mode <= {chr(39) + '0' + chr(39) if fault == 'side-save0' else 'save_mode'}; -- {SIDE_TAG}\n"
+              "      end if;\n   end process;\n")
+    return text[:i] + block + text[j:]
 
 
 def psx_top_armed_text(text, fault=None):
@@ -299,10 +495,11 @@ def controller_text(text, fault=None, early_refresh=True, miss_return=True, eqga
     return text
 
 
-def transforms(fault=None, early_refresh=True, miss_return=True, dma_direct=False, dma_armed=False):
-    return {'memorymux.vhd': lambda t: memorymux_text(t, fault),
-            'psx_top.vhd': (lambda t: psx_top_armed_text(t, fault)) if dma_armed else (lambda t: psx_top_text(t, fault, dma_direct)),
-            'dma.vhd': (lambda t: dma_armed_text(t, fault)) if dma_armed else (lambda t: dma_text(t, fault)),
+def transforms(fault=None, early_refresh=True, miss_return=True, dma_direct=False, dma_armed=False, store_wbuf=False, madr_arm=False, side_reg=False):
+    mm = (lambda t: memorymux_wbuf_text(memorymux_text(t, fault))) if store_wbuf else (lambda t: memorymux_text(t, fault))
+    return {'memorymux.vhd': mm,
+            'psx_top.vhd': (lambda t: psx_top_side_text(psx_top_armed_text(t, fault), fault) if side_reg else psx_top_armed_text(t, fault)) if dma_armed else (lambda t: psx_top_text(t, fault, dma_direct)),
+            'dma.vhd': (lambda t: dma_side_text(dma_armed_text(t, fault, madr_arm), fault) if side_reg else dma_armed_text(t, fault, madr_arm)) if dma_armed else (lambda t: dma_text(t, fault)),
             'cpu.vhd': lambda t: cpu_text(t, fault),
             'psx_sdram_ctrl.sv': lambda t: controller_text(t, fault, early_refresh, miss_return, dma_armed)}
 
@@ -317,9 +514,14 @@ if __name__ == '__main__':
     p.add_argument('--dma-hint-armed', action='store_true', help='DMA hint from registers: armed start MADR, ram_Adr (rig rel7b)')
     p.add_argument('--dma-hint-direct', action='store_true', help='DMA side of the hint unregistered (rig 161)')
     p.add_argument('--no-miss-return', action='store_true', help='drop K\'s row-conflict fast return (its clk3x ready crossing)')
+    p.add_argument('--store-wbuf', action='store_true', help='stores: PS1 write-buffer model in memorymux (rig WB11-best3)')
+    p.add_argument('--dma-madr-arm', action='store_true', help='with --dma-hint-armed: also arm at the MADR write (rig +madrarm)')
+    p.add_argument('--hint-side-reg', action='store_true', help='with --dma-hint-armed: hint select from dma.vhd registers, save_mode via clk1x (T5H hint_st setup; rig rel8s)')
     a = p.parse_args()
+    if a.hint_side_reg and not a.dma_hint_armed:
+        p.error('--hint-side-reg needs --dma-hint-armed')
     import prepare_save_checksum as cs
-    seed, changed = cs.prepare(a.source, a.output, a.seed, transforms(a.fault, not a.no_early_refresh, not a.no_miss_return, a.dma_hint_direct, a.dma_hint_armed))
+    seed, changed = cs.prepare(a.source, a.output, a.seed, transforms(a.fault, not a.no_early_refresh, not a.no_miss_return, a.dma_hint_direct, a.dma_hint_armed, a.store_wbuf, a.dma_madr_arm, a.hint_side_reg))
     print(f'{TAG}: snapshot {a.output.resolve()} (seed {seed})')
     for path, (old, new) in changed.items():
         print(f'{TAG}: patched {path} (sha256 {old[:16]} -> {new[:16]})')

@@ -523,6 +523,21 @@
     return newest[0];
   }
 
+  // Start Saves/<platform>/<core>/<name> from the newest per-disc card there. Never overwrites.
+  async function seedCoreCard(card, platform, core, stems, name) {
+    const target = ['Saves', platform, core, name];
+    if (await fileAt(card, target)) return null;
+    let newest = null;
+    for (const s of stems) {
+      if (s + '.sav' === name) continue;
+      const file = await fileAt(card, ['Saves', platform, core, s + '.sav']);
+      if (file && (!newest || file.lastModified > newest[1].lastModified)) newest = [s + '.sav', file];
+    }
+    if (!newest) return null;
+    await writeFile(card, target, newest[1]);
+    return newest[0];
+  }
+
   // Cores on the card that run PlayStation games: [{id, platform}].
   async function findCores(card) {
     const cores = await dirAt(card, ['Cores']);
@@ -840,6 +855,7 @@
     // has none): its Swap Discs list says how many.
     if (cueReader) discsDeclared = Math.max(discsDeclared, await menuDiscs(card, core));
     const discs = new Map();   // shared card name -> stems of its discs
+    const coreCards = new Map();   // multi-disc games whose card is in the core's folder: card name -> disc stems
     const games = new Map();   // game name -> Map(disc number -> [[cue, files, tags]])
     const named = new Set();   // game file names written this run
     const writeInstance = async (name, slots, prefix) => {
@@ -1011,7 +1027,9 @@
         }
         if (numbers.length <= MAX_DISCS && playlistSlot) {
           const dataPath = posix(root.slice(common.length)), prefix = dataPath !== '.' ? dataPath + '/' : '';
-          const useShared = sharedCards && shared;
+          // A shared card names only an existing common/ card; a new one goes to the core's folder.
+          const useShared = sharedCards && shared && !!await fileAt(card, ['Saves', platform, 'common', shared]);
+          if (sharedCards && shared && !useShared) coreCards.set(name + '.sav', numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
           const [cue1, files1] = parts.get(1);
           const slots = [{ id: 100, filename: name + '.m3u' },
                          ...files1.map(([f], k) => ({ id: 101 + k, filename: join(cue1.slice(0, -1), f).slice(root.length).join('/') }))];
@@ -1066,7 +1084,12 @@
       if (sizesFiles.has(cue1.join('/'))) slots.push({ id: TSZ_SLOT, filename: rel(cue1, sizesFiles.get(cue1.join('/'))) });   // disc 1's, for the boot mount
       const dataPath = posix(root.slice(common.length));
       let prefix = dataPath !== '.' ? dataPath + '/' : '';
-      const shared = sharedCards ? cardOf() : null;
+      // Named after disc 1 without its disc tag ("Final Fantasy VII (USA).json").
+      const name = title(cue1Stem);
+      let shared = sharedCards ? cardOf() : null;
+      if (shared && !await fileAt(card, ['Saves', platform, 'common', shared])) {   // a new card goes to the core's folder
+        coreCards.set(name + '.sav', numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0]))); shared = null;
+      }
       if (shared) {   // the same shared card as the per-disc files would use
         for (const s of slots) s.filename = prefix + s.filename;
         slots.push({ id: CARD_SLOT, filename: shared });
@@ -1074,8 +1097,6 @@
         discs.get(shared).push(...numbers.map((n) => stem(parts.get(n)[0].slice(-1)[0])));
         prefix = '';
       }
-      // Named after disc 1 without its disc tag ("Final Fantasy VII (USA).json").
-      const name = title(cue1Stem);
       await writeInstance(name, slots, prefix);
       for (const s of oldNames) {   // per-disc files and older names from earlier runs
         if (s + '.json' !== name + '.json') await removeFile(card, [...out, s + '.json']);
@@ -1105,9 +1126,13 @@
       const seeded = await seedSharedCard(card, platform, core, discs.get(name), name);
       if (seeded) say(`shared card ${name} starts from ${seeded}`);
     }
-    summary.shared = discs.size;
+    for (const name of [...coreCards.keys()].sort()) {
+      const seeded = await seedCoreCard(card, platform, core, coreCards.get(name), name);
+      if (seeded) say(`card ${name} starts from ${seeded}`);
+    }
+    summary.shared = discs.size + coreCards.size;
     say(`${summary.written} game files in ${out.join('/')}, ${summary.skipped} skipped`
-        + (discs.size ? `, ${discs.size} multi-disc games share a card` : ''));
+        + (summary.shared ? `, ${summary.shared} multi-disc games share a card` : ''));
     const hint = nothingMade(summary.written, summary.skipped, platform);
     if (hint) say(hint);
     return summary;

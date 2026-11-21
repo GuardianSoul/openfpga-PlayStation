@@ -14,7 +14,7 @@ MEMORY {
 SECTIONS {
     /* First: an input section goes to the first output section naming it. */
     .high : {
-        *(.text.parse) *(.text.msf) *(.text.sbi_mask) *(.text.playlist) *(.text.open_entry) *(.text.load_cheats) *(.text.mount_entry) *(.text.cmd_failed) *(.text.cnt) *(.text.fail_at)
+        *(.text.parse) *(.text.msf) *(.text.sbi_mask) *(.text.playlist) *(.text.open_entry) *(.text.load_cheats) *(.text.mount_entry) *(.text.cnt) *(.text.fail_at) *(.text.tsz_word)
         *(.rodata*) *(.srodata*) *(.data*) *(.sdata*) *(.sbss*) *(.bss*) *(COMMON)
     } > HIGH
     .text : { *(.init) *(.text*) } > CODE

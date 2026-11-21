@@ -288,10 +288,11 @@ def main():
                 (640, 576, 4, 3), (368, 240, 4, 3), (fw, 512 if args.pal_shape else 536, 10, 9))
         # prepare --height-slots: slot = {Fill, PAL, 480i}, every line at 640.
         heights = ((240, 4, 3), (480, 4, 3), (288, 4, 3), (576, 4, 3), (224, 10, 9), (448, 10, 9), (268, 10, 9), (536, 10, 9))
-        # Fill (10:9, the Pocket's own screen) fills a 16:9 TV when docked.
+        # No dock_aspect: a 16:9 dock_aspect on the 10:9 Fill slots crashes the
+        # Dock's CRT Trinitron mode at core start (#18). Docked Fill shows 10:9;
+        # the TV can stretch it.
         write('video.json', {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
-            dict({'width': w, 'height': h, 'aspect_w': a, 'aspect_h': b, 'rotation': 0, 'mirror': 0},
-                 **({'dock_aspect_w': 16, 'dock_aspect_h': 9} if (a, b) == (10, 9) else {}))
+            {'width': w, 'height': h, 'aspect_w': a, 'aspect_h': b, 'rotation': 0, 'mirror': 0}
             for w, h, a, b in w576]}} if args.weave_576 else {'video': {'magic': 'APF_VER_1', 'scaler_modes': [
             {'width': 640, 'height': h, 'aspect_w': a, 'aspect_h': b, 'rotation': 0, 'mirror': 0}
             for h, a, b in heights]}} if args.height_slots else {'video': {'magic': 'APF_VER_1', 'scaler_modes': [

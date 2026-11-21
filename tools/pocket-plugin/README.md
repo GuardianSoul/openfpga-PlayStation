@@ -6,8 +6,11 @@ Pocket Sync and pupdate. It generates the game files (`.json`) for the
 the SD card, the same way the core's `make_pocket_instances.py` script does:
 
 - one entry per multi-disc game, with every disc in it (switch discs in
-  *Core Settings → Swap Discs*) and one shared memory card,
-  `Saves/playstation/common/<game>.sav`, started from the newest per-disc card;
+  *Core Settings → Swap Discs*) and one shared memory card. A new card goes
+  in the core's own save folder, `Saves/playstation/GuardianSoul.PlayStation/`,
+  named after the game file and started from the newest per-disc card; a card
+  already in `Saves/playstation/common/` keeps being used there. Saves are
+  never moved, overwritten or deleted;
 - for cores from 0.5.3, which read the `.cue` themselves, game files that
   name the cue and disc 1's files (the core finds the other discs by
   itself), so merged and per-track discs are used as they are. From core

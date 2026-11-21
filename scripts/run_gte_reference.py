@@ -138,7 +138,8 @@ def build(directory, candidate=False):
     adapted = adapter_sources(directory / 'adapted')
     if candidate:
         candidate_transform(adapted)
-    originals = sorted(path for path in (UPSTREAM / 'rtl').iterdir() if path.suffix in ('.v', '.sv'))
+    overridden = {Path(s['path']).name for s in adapted if s.get('original', '').endswith('GTEMicrocodeStart.sv')}
+    originals = sorted(path for path in (UPSTREAM / 'rtl').iterdir() if path.suffix in ('.v', '.sv') and path.name not in overridden)
     sources = [str(path) for path in originals] + [s['path'] for s in adapted
                if s['assignment'] == 'SYSTEMVERILOG_FILE' and (s.get('original') or s['path'].endswith('adapter.sv'))]
     obj = directory / 'obj_dir'

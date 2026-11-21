@@ -137,6 +137,8 @@ static void setf(u32 f) { flags = f; IO[W_FLAGS] = f; }
 // after the first getfile, +5 and +6 the last 8 path bytes of that failed
 // getfile or open (first byte in bits 31:24), +7 the LibCrypt mask.
 #define W_DBG 8
+#define CLR_ABORT 256u   // W_CLR: give the running APF command up, error 7 (cmd-abort-bridge RTL; else nothing)
+extern const u32 retry_wait;   // start.S: the launch retry pause, in wait loop turns (0.42 s)
 #ifdef CUE_DEBUG   // only a debug readout build (psx_cue_mount DEBUG=1) shows the words below: code space
 static u32 ncmd, dbg_got;
 NOINLINE static u32 pack4(u32 i) { return (u32)PATH[i] << 24 | (u32)PATH[i + 1] << 16 | (u32)PATH[i + 2] << 8 | PATH[i + 3]; }
@@ -147,11 +149,22 @@ NOINLINE static u32 pack4(u32 i) { return (u32)PATH[i] << 24 | (u32)PATH[i + 1] 
 // the card only for a file the Chip32 loader's sizes list (known()), read in
 // range; an open's 2, 3 and 4 are no slot, no such file, a bad path, and its 5
 // a general error. Those card errors set again: this launch is tried again,
-// without end, the CPU waiting (the boot gate); no such error, no retry.
+// the CPU waiting (the boot gate), for up to CARD_TRIES tries (about 30 s).
+// A track file's open that still fails with 2, 3 or 4 (after the renamed-.bin
+// fallback) is treated the same: a cold card can answer so while it wakes.
+// A launch still failing then boots with no disc (F_ALLC; the BIOS CD player
+// shows no disc) instead of holding the CPU on a black screen.
+// launch-retry-bounded
+#define CARD_TRIES 18u
 static u32 again;
-static u32 known(u32 slot);
-NOINLINE static void cmd_failed(u32 kind, u32 id, u32 s) {
-    if (kind == K_OPEN ? s == 5 : kind == K_READ && s == 2 && known(id)) again = 1;
+NOINLINE static u32 known(u32 slot);
+#define TAB (1u << 31)   // known(TAB): the sizes table's magic on a boot mount, 0 without the table
+// launch-cold-nosizes: a boot mount without the loader's sizes table (a wake: the Chip32 loader did not run)
+// cannot tell a cold card from no file by the sizes, so a read's 2 on the launch slot (0) or the cue
+// (100), both defined (no file is APF's 1/3), is the card: tried again. Without it a multi-file cue was
+// left to APF (no disc: Mega Man Legends' wake, DISC_ID 0).
+NOINLINE static void cmd_failed(u32 kind, u32 id, u32 s, u32 off) {   // off: only a first word's 2 (size probes read past the end)
+    if (kind == K_OPEN ? s == 5 : kind == K_READ && s == 2 && (known(id) || (!off && !known(TAB) && (id == 0 || id == 100)))) again = 1;   // with the sizes, known() decides (launch-none-empty)
 }
 
 // One APF target command; its error (0 = done).
@@ -165,10 +178,11 @@ NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
     IO[W_IDLEN] = id | len << 16;
     IO[W_OFF] = off;
     IO[W_CMD] = kind;
-    u32 s;
-    while ((s = IO[R_STATUS]) & ST_CMD) ;
+    u32 s, n = retry_wait << 3;                   // cmd-abort-short: a command the Pocket never answers
+    while ((s = IO[R_STATUS]) & ST_CMD)           // (a dropped sector fetch: R-Type Delta #30) is given up
+        if (!--n) IO[W_CLR] = CLR_ABORT;          // with error 7 and asked again (cmd-abort-bridge RTL)
     s &= ST_ERR;
-    if (s) cmd_failed(kind, id, s);
+    if (s) cmd_failed(kind, id, s, off);
 #ifdef CUE_DEBUG
     u32 d = kind | id << 4 | s << 16 | ++ncmd << 20;
     IO[W_DBG + 1] = d;
@@ -214,12 +228,12 @@ static u32 probe(u32 slot, u32 unit, int k) {
 #define SIZE_MAGIC 0x53495A45u
 static u32 boot_sizes;
 static u32 bswap(u32 v) { return v >> 24 | (v >> 8 & 0xff00u) | (v << 8 & 0xff0000u) | v << 24; }
-static u32 known(u32 slot) {
+NOINLINE static u32 known(u32 slot) {
     if (!boot_sizes) return 0;
     u32 m = SIZES[0], i;
     if (m != SIZE_MAGIC && m != bswap(SIZE_MAGIC)) return 0;
     switch (slot) { case 0: i = 1; break; case 99: i = 2; break; case 100: i = 3; break;
-                    case 101: i = 4; break; case 102: i = 5; break; case 98: i = 6; break; default: return 0; }
+                    case 101: i = 4; break; case 102: i = 5; break; case 98: i = 6; break; case TAB: return m; default: return 0; }
     u32 v = SIZES[i];
     return m == SIZE_MAGIC ? v : bswap(v);
 }
@@ -271,7 +285,7 @@ static u32 number(int *ok) {
 
 // The current track's INDEX 00/01 and PREGAP into tstart and ti1; 0 if
 // it can't mount.
-static int finish(int has0, int has1, u32 i0, u32 i1, int audio, u32 pg) {
+__attribute__((minsize)) static int finish(int has0, int has1, u32 i0, u32 i1, int audio, u32 pg) {
     u32 r = ntracks - 1, f = nfiles - 1;
     if (!has1) return 0;
     if (pg) {
@@ -296,7 +310,7 @@ static int finish(int has0, int has1, u32 i0, u32 i1, int audio, u32 pg) {
 }
 
 // MM:SS:FF in frames; 0 with *ok clear on bad syntax.
-static u32 frames(int *ok) {
+__attribute__((minsize)) static u32 frames(int *ok) {
     u32 mm, ss, ff;
     mm = number(ok); if (!*ok || c != ':') return *ok = 0; adv();
     ss = number(ok); if (!*ok || c != ':') return *ok = 0; adv();
@@ -376,7 +390,7 @@ NOINLINE static int parse(void) {
 
 // Build "<cue folder><name of file k>" in the path struct and open it into
 // FILE_SLOT; its error (0 = open).
-NOINLINE static u32 open(u32 k) {
+__attribute__((minsize)) NOINLINE static u32 open(u32 k) {
     u32 off = fname[k] & 0xffff, len = fname[k] >> 16 & 0xff, at = off & 3, err;
     if (rd == DISC_SLOT) { open_file = k; return 0; }
     open_file = NONE;
@@ -396,6 +410,7 @@ NOINLINE static u32 open(u32 k) {
             err = opn(FILE_SLOT);
         }
     }
+    if (err > 1 && err < 5) again = 1;   // launch-retry-bounded: a track that does not open may be a waking card
     IO[W_CLR] = CLR_MENU;
     if (err) return err;
     open_file = k;
@@ -440,7 +455,7 @@ static int is_disc(u32 id) { return id == 101 || id == 201 || id == 301 || id ==
 
 // The pause before a launch retry: retry_wait (start.S, at 0x10 so the bench
 // can shorten it) in loop turns, doubling to 4 x retry_wait.
-extern const u32 retry_wait;
+// retry_wait: declared above cmd()
 
 #ifdef CUE_DEBUG
 #define fail(mode) fail_at(mode, __LINE__)
@@ -460,7 +475,7 @@ static void cue(u32 slot, u32 size, int mode);
 // A game JSON: APF loads its slots. One from make_pocket_instances.py has
 // the track table in TABLE_SLOT; Pocket Sync's and pupdate's have only the
 // cue in CUE_SLOT and its files, so the cue is read as if it had been picked.
-static void game_json(void) {
+__attribute__((minsize)) static void game_json(void) {
     // A track table is 1,600 bytes; a 0.5.2 JSON has track 2's .bin there.
     // No cue readable, none listed: left to APF. A listed one that does not
     // read is the card: tried again (cmd_failed).
@@ -476,7 +491,7 @@ static void game_json(void) {
     json = 0;
 }
 
-static void mount(u32 slot) {
+__attribute__((minsize)) static void mount(u32 slot) {   // launch-retry-bounded: minsize (mount-only) makes room for the bounded retry
     int mode = slot == LAUNCH_SLOT ? M_LAUNCH : M_PICK;
     pick = slot; cur = 0; m3u_n = 0;
     if (cmd(K_READ, slot, 0, 4)) {
@@ -792,6 +807,13 @@ static void menu_disc(u32 k) {
 // read past the disc, or for a read that still fails once a pick or a menu
 // Disc has been loaded (the disc changed; drive-state.md). A waiting pick is
 // taken while a read is outstanding; that read is not answered with filler.
+// cd-fetch-err (R-Type Delta #30): a sector read APF keeps failing (after a card write it can
+// fail every time) is asked SERVE_TRIES times, about 1 s, and then given up with its error. The
+// stream answers it with no sector (K_ERR); cd_top's fetch-error path ends the read like a drive
+// that gave up (INT5), and the game's next read asks again. Without the bound the request stayed
+// up for ever: the drive kept reading, every Pause got INT5, and a save state never found quiet.
+#define SERVE_TRIES 10u
+static u32 fails;
 static void serve(u32 final) {
     u32 il = IO[R_STATUS], id = il >> 10 & 0x1ff, len = il >> 19 & 0xfff, off = IO[R_UOFF] & 0x7fffffffu, err = 0;
     if ((flags & F_MOUNTED) && is_disc(id - 1)) {
@@ -811,11 +833,12 @@ static void serve(u32 final) {
     } else {
         err = cmd(K_READ | K_USEU, bin && is_disc(id) ? bin_slot : id, off, len);
     }
-    if (err && len == 2352 && !final) {                  // (every sector read is a disc's)
+    if (err && !final && ++fails < SERVE_TRIES) {   // cd-fetch-err: bounded (a past-the-disc read too: the stream never sends one)
         open_file = NONE;                                // card writes can leave the handle stale: open again
         for (u32 n = retry_wait >> 2; n; n--) __asm__ volatile("");
         return;
     }
+    fails = 0;                                           // the request stays the same until W_DONE
     IO[W_DONE] = err;
 }
 
@@ -933,10 +956,11 @@ void main(void) {
             IO[W_CLR] = ST_BOOT | CLR_MENU;
             setf(flags & ~F_FAILED);
             boot_sizes = 1;
-            for (u32 w = retry_wait;;) {
+            for (u32 w = retry_wait, t = CARD_TRIES;;) {
                 again = 0;
                 mount(LAUNCH_SLOT);
                 if (!again || !(flags & F_FAILED)) break;
+                if (!--t) { setf(flags | F_ALLC); break; }   // launch-retry-bounded: give up, boot with no disc
                 for (u32 n = w; n; n--) __asm__ volatile("");
                 if (w >> 2 < retry_wait) w <<= 1;
             }

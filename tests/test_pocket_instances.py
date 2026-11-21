@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 import os
 import subprocess
+import shutil
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -238,6 +239,7 @@ class TrackSizes(unittest.TestCase):
             slots = ([{'id': 0, 'extensions': ['json', 'cue', 'm3u']}, {'id': 16}, {'id': 100, 'extensions': ['cue', 'm3u']}, {'id': 97}]
                      + [{'id': n} for n in range(101, 105)] + [{'id': 201}, {'id': 202}])
             (core/'data.json').write_text(json.dumps({'data': {'data_slots': slots}}))
+            common_cards(card, 'Fight (USA) (Rev 1).sav')
             subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyTM'],
                            check=True, capture_output=True)
             instance = json.loads((card/'Assets/playstation/GuardianSoul.PSXEarlyTM/Fight (USA) (Rev 1).json').read_text())['instance']
@@ -284,6 +286,13 @@ class FiveDiscs(unittest.TestCase):
             self.assertIn('skip Mine/Mine.m3u: 5 discs (the core takes 4)', run)
 
 
+def common_cards(card, *names):
+    """Shared cards already in Saves/playstation/common (earlier runs): the
+    game files keep naming them."""
+    saves = card/'Saves/playstation/common'; saves.mkdir(parents=True, exist_ok=True)
+    for name in names: (saves/name).write_bytes(b'card')
+
+
 class MultiDiscGroup(unittest.TestCase):
     def test_discs_of_a_game_share_one_instance(self):
         with TemporaryDirectory() as tmp:
@@ -323,6 +332,7 @@ class MultiDiscGroup(unittest.TestCase):
             core = card/'Cores/GuardianSoul.PSXEarlyMD'; core.mkdir(parents=True)
             declared = [{'id': 0}, {'id': 16}, {'id': 100}] + [{'id': 101+k} for k in range(19)] + [{'id': 201}, {'id': 202}]
             (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            common_cards(card, 'Star Wars Rebel Assault II.sav', 'Riven.sav', 'Myst (USA).sav')
             subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
                            check=True, capture_output=True)
             out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
@@ -350,6 +360,7 @@ class MultiDiscGroup(unittest.TestCase):
             declared = ([{'id': 0}, {'id': 16}, {'id': 100}] + [{'id': 101+k} for k in range(19)]
                         + [{'id': 100*n + k} for n in (2, 3, 4) for k in (1, 2, 3)])
             (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+            common_cards(card, 'Riven.sav', 'Lost.sav')
             run = subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
                                  check=True, capture_output=True, text=True).stdout
             out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'
@@ -381,6 +392,7 @@ class MultiDiscGroup(unittest.TestCase):
             (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
             out = card/'Assets/playstation/GuardianSoul.PSXEarlyMD'; out.mkdir(parents=True)
             (out/'Gran Turismo 2 (USA) (Arcade Mode).json').write_text('{}')   # from an earlier run
+            common_cards(card, 'Gran Turismo 2 (USA) (Arcade Mode).sav')
             subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'PSXEarlyMD'],
                            check=True, capture_output=True)
             self.assertEqual(sorted(p.name for p in out.iterdir()), ['Gran Turismo 2 (USA).json'])
@@ -550,3 +562,73 @@ class OneFile(unittest.TestCase):
             self.assertEqual(self.words(game/'Ape.trk')[3], (2 << 16) | 0x8001)
             slots = json.loads((out/'Ape.json').read_text())['instance']['data_slots']
             self.assertEqual([s['id'] for s in slots], [100, 101, 102])
+
+
+class CardInCoreFolder(unittest.TestCase):
+    """A multi-disc game with one game file names its shared card only while
+    Saves/playstation/common/<card> exists; otherwise the Pocket keeps the card
+    in the core's folder, named after the game file."""
+
+    def card(self, tmp):
+        card = Path(tmp); common = card/'Assets/playstation/common'
+        for n in (1, 2):
+            game = common/f'Game (USA) (Disc {n})'; game.mkdir(parents=True)
+            (game/f'Game (USA) (Disc {n}).bin').write_bytes(sectors(n, 4))
+            (game/f'Game (USA) (Disc {n}).cue').write_text(f'FILE "Game (USA) (Disc {n}).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+        core = card/'Cores/GuardianSoul.MD'; core.mkdir(parents=True)
+        declared = [{'id': 0}, {'id': 16}, {'id': 100}] + [{'id': 101+k} for k in range(19)] + [{'id': 201}]
+        (core/'data.json').write_text(json.dumps({'data': {'data_slots': declared}}))
+        return card
+
+    def run_script(self, card):
+        return subprocess.run([sys.executable, str(ROOT/'scripts/make_pocket_instances.py'), str(card), '--core', 'MD'],
+                              check=True, capture_output=True, text=True).stdout
+
+    def slots(self, card):
+        return json.loads((card/'Assets/playstation/GuardianSoul.MD/Game (USA).json').read_text())['instance']
+
+    def test_existing_common_card_is_kept(self):
+        with TemporaryDirectory() as tmp:
+            card = self.card(tmp); common_cards(card, 'Game (USA).sav')
+            self.run_script(card)
+            instance = self.slots(card)
+            self.assertEqual(instance['data_path'], '')
+            self.assertEqual(instance['data_slots'][-1], {'id': 16, 'filename': 'Game (USA).sav'})
+            self.assertEqual((card/'Saves/playstation/common/Game (USA).sav').read_bytes(), b'card')
+
+    def test_new_game_names_no_card(self):
+        with TemporaryDirectory() as tmp:
+            card = self.card(tmp)
+            out = self.run_script(card)
+            instance = self.slots(card)
+            self.assertNotIn(16, [s['id'] for s in instance['data_slots']])
+            self.assertEqual(instance['data_path'], '')   # discs in two folders: their common folder is common/
+            self.assertEqual(instance['data_slots'][0], {'id': 100, 'filename': 'Game (USA) (Disc 1)/Game (USA) (Disc 1).cue'})
+            self.assertFalse((card/'Saves/playstation/common').exists())
+            self.assertIn('1 multi-disc games share a card', out)
+
+    def test_new_card_starts_from_the_newest_disc_card_never_overwritten(self):
+        with TemporaryDirectory() as tmp:
+            card = self.card(tmp)
+            saves = card/'Saves/playstation/GuardianSoul.MD'; saves.mkdir(parents=True)
+            (saves/'Game (USA) (Disc 1).sav').write_bytes(b'old')
+            (saves/'Game (USA) (Disc 2).sav').write_bytes(b'new')
+            os.utime(saves/'Game (USA) (Disc 1).sav', (400000000, 400000000))
+            self.assertIn('card Game (USA).sav starts from Game (USA) (Disc 2).sav', self.run_script(card))
+            self.assertEqual((saves/'Game (USA).sav').read_bytes(), b'new')
+            (saves/'Game (USA).sav').write_bytes(b'played')
+            self.run_script(card)
+            self.assertEqual((saves/'Game (USA).sav').read_bytes(), b'played')
+            self.assertEqual((saves/'Game (USA) (Disc 2).sav').read_bytes(), b'new')
+
+    def test_card_the_user_moved_is_used(self):
+        with TemporaryDirectory() as tmp:
+            card = self.card(tmp); common_cards(card, 'Game (USA).sav')
+            self.run_script(card)
+            self.assertIn(16, [s['id'] for s in self.slots(card)['data_slots']])
+            saves = card/'Saves/playstation/GuardianSoul.MD'; saves.mkdir(parents=True)
+            shutil.move(card/'Saves/playstation/common/Game (USA).sav', saves/'Game (USA).sav')   # the user moves it
+            self.run_script(card)
+            self.assertNotIn(16, [s['id'] for s in self.slots(card)['data_slots']])
+            self.assertEqual((saves/'Game (USA).sav').read_bytes(), b'card')
+            self.assertFalse((card/'Saves/playstation/common/Game (USA).sav').exists())

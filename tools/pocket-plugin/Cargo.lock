@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "playstation-game-files"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "chd",
  "extism-pdk",

@@ -325,10 +325,28 @@ wire cpu_hint_request=read_hint_active && !reset &&
 BENCH_PORT_OLD = ".ram_hint_req(cpu_hint_request),.ram_hint_addr({4'b0,cpu_hint_address[20:0]}),"
 
 
+# rel8s select check: the new side differs from dmaOn || dmaRequest only in a STOPPING (5) /
+# PAUSING (6) cycle whose stop condition holds (dmaOn low) with no request
+SIDE_CHECK = '''reg [31:0] side_diff=0, side_bad=0;
+wire side_old=core.component_core.dmaon || core.component_core.idma.dmarequest;
+wire side_ok=(core.component_core.idma.dmastate==3'd5 || core.component_core.idma.dmastate==3'd6) && !core.component_core.dmaon && !core.component_core.idma.dmarequest;
+always @(posedge clk1x) if (!reset && dma_side!=side_old) begin if (side_ok) side_diff<=side_diff+1; else side_bad<=side_bad+1; end
+final $display("SIDECHK expected_diff=%0d unexpected=%0d", side_diff, side_bad);
+'''
+
+
 def bench_text(text, cpu_hint='decode', dma_hint=True, face=True, fault=None):
     """cpu_hint: 'decode' (stage-3 operands, this design) or 'k4' (K4's clk1x-registered request)."""
     if TAG in text:
         raise ValueError('already carries ' + TAG)
+    # rel8s: rel8 with the DMA-side select from dma.vhd registers (dmaState /= OFF or dmaRequest),
+    # not dmaOn (its REP_counter >= REP_target compare missed clk3x setup at hint_st in T5H)
+    side_reg = cpu_hint.startswith('rel8s')  # rel8s-noreq / rel8s-noidle: planted faults
+    side_expr = {'rel8s': "core.component_core.idma.dmastate!=3'd0 || core.component_core.idma.dmarequest",
+                 'rel8s-noreq': "core.component_core.idma.dmastate!=3'd0",
+                 'rel8s-noidle': "core.component_core.idma.dmarequest"}.get(cpu_hint)
+    if side_reg:
+        cpu_hint = 'rel8'
     text = once(text, BENCH_HINT, BENCH_HINT + f"""// {TAG}: hint sources
 wire [31:0] dh_v1=core.component_core.icpu.decodevalue1;
 wire [15:0] dh_imm=core.component_core.icpu.decodeimmdata;
@@ -367,10 +385,11 @@ always @(posedge clk1x) begin rel2_side_q<=dma_side; rel2_dma_q<=read_hint_activ
 wire rel2_req=REL_DMA_UNREG ? (dma_side ? (read_hint_active && !reset && rel_dma_ena) : (read_hint_active && !reset && REL_CPU_REQ)) : rel2_side_q ? rel2_dma_q : (!dma_side && read_hint_active && !reset && REL_CPU_REQ);
 wire [20:0] rel2_adr=REL_DMA_UNREG ? (dma_side ? rel_dma_adr : {{m4_addr[20:2],2'b00}}) : rel2_side_q ? rel2_dma_adr_q : {{m4_addr[20:2],2'b00}};
 // release form 7: the DMA's first read address from registers (the last MADR written on the bus, armed
-// by a CHCR start write that reads RAM); a working channel's ram_Adr direct; the CPU's pending load first
+// by a CHCR start write that reads RAM, or with +madrarm already by the MADR write); a working channel's
+// ram_Adr direct; the CPU's pending load first
 reg [20:0] dmah_madr=0; reg dmah_armed=0;
 always @(posedge clk1x) begin
-  if (core.component_core.idma.bus_write && core.component_core.idma.bus_addr[6:4]!=3'd7 && core.component_core.idma.bus_addr[3:2]==2'd0) dmah_madr<={{core.component_core.idma.bus_datawrite[20:2],2'b00}};
+  if (core.component_core.idma.bus_write && core.component_core.idma.bus_addr[6:4]!=3'd7 && core.component_core.idma.bus_addr[3:2]==2'd0) begin dmah_madr<={{core.component_core.idma.bus_datawrite[20:2],2'b00}};{" if (REL8) begin dmah_armed<=1; dmah_run<=0; dmah_idle<=0; end" if 'madrarm' in (fault or '') else ''} end
   if (core.component_core.idma.bus_write && core.component_core.idma.bus_addr[6:4]!=3'd7 && core.component_core.idma.bus_addr[3:2]==2'd2 && core.component_core.idma.bus_datawrite[24] && core.component_core.idma.bus_datawrite[0]) begin dmah_armed<=1; dmah_run<=0; dmah_idle<=0; end
   else if (REL8 && dmah_armed) begin
     if (core.component_core.idma.dmastate!=3'd0 || dma_side) begin dmah_run<=1; dmah_idle<=0; end
@@ -394,6 +413,9 @@ wire face_ram_early=core.component_core.imemorymux.state==4'd1;
 """ + ('''always @(posedge clk1x) if ((dh_op>=6'h20 && dh_op<=6'h26 || m4_hint || rel_req_q) && (dec_hint_adr==21'h4710||dec_hint_adr==21'h714||dec_hint_adr==21'h140000||dec_hint_adr==21'h180000||rel_adr_q==21'h4710||rel_adr_q==21'h714||dh_addr[20:0]==21'h4710||dh_addr[20:0]==21'h714||dh_addr[20:0]==21'h140000||dh_addr[20:0]==21'h180000)) $display("BH t=%0t dec %h req=%0d fwd=%0d m4=%0d m4a=%h m4req=%0d infl=%0d relq=%0d rela=%h", $time, dh_addr[20:0], dec_hint_req, dh_fwd, m4_hint, m4_addr[20:0], core.component_core.icpu.mem4_request, m4_inflight, rel_req_q, rel_adr_q);
 ''' if fault == 'trace' else ''))
     text = text.replace('REL8', "1'b1" if cpu_hint == 'rel8' else "1'b0")
+    if side_reg:
+        text = once(text, 'wire dma_side=core.component_core.dmaon || core.component_core.idma.dmarequest;\n',
+                    f"wire dma_side={side_expr};\n" + SIDE_CHECK)
     if cpu_hint == 'rel8':
         cpu_hint = 'rel7'
     text = text.replace('REL_DMA_UNREG', "1'b1" if cpu_hint == 'rel5' else "1'b0")
@@ -414,7 +436,7 @@ wire face_ram_early=core.component_core.imemorymux.state==4'd1;
     return text
 
 
-def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99, Wc=2, Wr=2, RP=1, Q=2, RF=1, KE=0):
+def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99, Wc=2, Wr=2, RP=1, Q=2, RF=1, KE=0, DW=0, QP=0):
     """PS1 write-buffer timing model inside memorymux_Barch (rig only). Offline twin:
     docs/measurements/memctrl-redesign/wbmodel.py.
 
@@ -426,7 +448,9 @@ def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99
     page. psx-spx DRAM_CTRL 0B88h: a refresh every P cycles, cost C, run when the RAM is free
     (RP: not while a burst can continue; refprio: before a waiting write), closing the page.
     Reads wait until the model is empty plus Kr, or (KE) until only the last write is left and
-    it has at most KE cycles to go. CPU: resumes X cycles after a slot frees,
+    it has at most KE cycles to go. DW: the real path issues every RAM write straight from IDLE
+    (no WAITFORRAMWRITE cycle on a page change; the model owns store timing). QP: phase of the
+    Q=2 resume grid (wb_t parity). CPU: resumes X cycles after a slot frees,
     rounded to a multiple of Q cycles; FE: a slot freeing at this edge is free for a store.
     The real FIFO/SDRAM path keeps running; its own full flag is ORed in when RF (RF=0: the
     model alone stalls the CPU; real-FIFO overflows are counted and must stay 0). D0..D1: trace
@@ -434,7 +458,7 @@ def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99
     override every constant at run time (one build per sweep).
     """
     old_full = 'assign mem_fifofull = writefifo_nearfull; //(module output)'
-    names = dict(F=F, C=C, Kr=Kr, X=X, W=W, P=P, RPR=refprio, FE=FE, L=L, Wc=Wc, Wr=Wr, RP=RP, Q=Q, RF=RF, KE=KE, D0=0, D1=0)
+    names = dict(F=F, C=C, Kr=Kr, X=X, W=W, P=P, RPR=refprio, FE=FE, L=L, Wc=Wc, Wr=Wr, RP=RP, Q=Q, RF=RF, KE=KE, D0=0, D1=0, TT=0, DW=DW, QP=QP)
     decl = ', '.join(f'wbp_{k} = {v}' for k, v in names.items())
     plus = '\n'.join(f'    if ($value$plusargs("wb_{k}=%d", wbp_{k})) ;' for k in names)
     show = ' '.join(f'{k}=%0d' for k in names)
@@ -462,9 +486,14 @@ def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99
   wire wb_tr = wb_nstore >= wbp_D0 && wb_nstore <= wbp_D1 && wbp_D1 != 0;
   wire wb_fin = wb_busy && wb_left == 6'd1;
   wire wb_fin_w = wb_fin && !wb_isref;
-  wire [2:0] wb_left_cnt = wb_cnt - {{2'b0, wbp_FE != 0 && wb_fin_w}};
+  // FE: for the CPU's full flag the draining head counts as free once it has at most FE cycles
+  // left (FE=1: at its completing edge); larger values cover the native CPU's stall-release latency.
+  wire wb_head_free = wb_busy && !wb_isref && {{26'd0, wb_left}} <= wbp_FE;
+  wire [2:0] wb_left_cnt = wb_cnt - {{2'b0, wb_head_free}};
   wire wb_full_now = ({{1'b0, wb_left_cnt}} + {{3'b0, wb_store}}) >= 4'd5;
-  wire wb_full = wb_full_now || wb_hold != 3'd0;
+  reg wb_stl = 1'b0, wb_full_q = 1'b0;           // a stall is being released: X cycles, then the Q grid
+  wire wb_q_ok = wbp_Q != 2 || wb_t[0] == wbp_QP[0];
+  wire wb_full = wb_full_now || (wb_stl && !(wb_hold == 3'd0 && wb_q_ok));
   wire wb_rd_early = wb_cnt == 3'd1 && wb_busy && !wb_isref && {{26'd0, wb_left}} <= wbp_KE;
   wire wb_rdblock = (wb_cnt != 3'd0 && !wb_rd_early) || {{28'd0, wb_since}} < wbp_Kr;
   always @(posedge clk1x) begin : ps1wb
@@ -494,7 +523,14 @@ def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99
       wb_cyc <= wb_cyc + 32'd1;
       if (wb_tr && wb_store) $display("WB c=%0d store pg=%h cnt=%0d full=%0d realnf=%0d", wb_cyc, mem_in_addressdata[22:10], wb_cnt, wb_full_now, writefifo_nearfull);
       if (wb_tr && refgo) $display("WB c=%0d refresh", wb_cyc);
+      wb_full_q <= wb_full;
+      if (wb_tr && wb_full != wb_full_q) $display("WB c=%0d full=%0d", wb_cyc, wb_full);
       if (wb_rfull && writefifo_wr) wb_ovf <= wb_ovf + 32'd1;
+      // TT: trace around timer-0 reads (Peip's measurement reads)
+      if (wbp_TT != 0 && wb_store) $display("WT c=%0d S pg=%h cnt=%0d st=%0d rr=%0d wr=%0d", wb_cyc, mem_in_addressdata[22:10], wb_cnt, state, readram, writeram);
+      if (wbp_TT != 0 && mem_save_request && mem_save_addressdata[28:0] == 29'h1F801100)
+        $display("WT c=%0d R blk=%0d busy=%0d empty=%0d st=%0d cnt=%0d left=%0d mwr=%0d rdone=%0d", wb_cyc, wb_rdblock, writefifo_busy, writefifo_empty, state, wb_cnt, wb_left, writeram, ram_done);
+      if (wbp_TT != 0 && ram_ena && !ram_rnw && wb_cyc != 0) $display("WT c=%0d E", wb_cyc);
       if (refgo) begin
         wb_busy <= 1'b1; wb_isref <= 1'b1; wb_left <= wbp_C[5:0]; wb_refp <= 1'b0; wb_open <= 1'b0;
         wb_afterref <= 1'b1; wb_nref <= wb_nref + 32'd1;
@@ -507,16 +543,17 @@ def wbuf_text(mm, F=4, C=11, Kr=0, X=1, W=0, P=256, refprio=1, FE=1, dbg=0, L=99
       if (wb_cnt != 3'd0 || wb_busy && !wb_isref) wb_since <= 4'd0;
       else if (wb_since != 4'd15) wb_since <= wb_since + 4'd1;
       // CPU resume: X cycles after the slot frees, then to the next multiple of Q (global timer)
-      if (wb_full_now) wb_hold <= wbp_X[2:0] + ((wbp_Q == 2 && wb_t[0] == (wbp_X[0] ? 1'b1 : 1'b0)) ? 3'd1 : 3'd0);
-      else if (wb_hold != 3'd0) wb_hold <= wb_hold - 3'd1;
+      if (wb_full_now) begin wb_stl <= 1'b1; wb_hold <= wbp_X[2:0]; end
+      else if (wb_stl) begin if (wb_hold != 3'd0) wb_hold <= wb_hold - 3'd1; else if (wb_q_ok) wb_stl <= 1'b0; end
       if (writefifo_nearfull && !wb_full) wb_realfull <= wb_realfull + 32'd1;
     end
-    if (reset) begin wb_head <= 3'd0; wb_tail <= 3'd0; wb_busy <= 1'b0; wb_refp <= 1'b0; wb_open <= 1'b0; wb_hold <= 3'd0; end
+    if (reset) begin wb_head <= 3'd0; wb_tail <= 3'd0; wb_busy <= 1'b0; wb_refp <= 1'b0; wb_open <= 1'b0; wb_hold <= 3'd0; wb_stl <= 1'b0; end
   end
   final $display("PS1WB stores=%0d refreshes=%0d realfifo_limited_cycles=%0d realfifo_overflows=%0d", wb_nstore, wb_nref, wb_realfull, wb_ovf);
   assign mem_fifofull = (wbp_RF != 0 && writefifo_nearfull) | wb_full; // ps1wb"""
     mm = once(mm, old_full, model)
     mm = once(mm, '    .full(),\n    .nearfull(writefifo_nearfull),', '    .full(wb_rfull),\n    .nearfull(writefifo_nearfull),')
+    mm = once(mm, 'assign n630 = turbo | n629;', 'assign n630 = turbo | n629 | (wbp_DW != 0); // ps1wb DW')
     for n in ('n458', 'n463'):
         mm = once(mm, f'assign {n} = ~writefifo_busy;', f'assign {n} = ~writefifo_busy & ~(wb_rdblock & n347); // ps1wb')
     return mm

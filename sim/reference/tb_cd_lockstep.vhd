@@ -15,7 +15,8 @@ entity tb_cd_lockstep is
    generic (SEED : integer := 1; RUN_CYCLES : integer := 2000000; SECTORS : integer := 40;
             METADATA : string := "metadata.hex"; FASTCD_IN : integer := 0;
             PAUSE_READ : integer := 0;   -- 1: also Pause mid-sector while reading or playing
-            SUBCHANNEL_READS : integer := 0);
+            SUBCHANNEL_READS : integer := 0;
+            SEEK_SPEED : integer := 0);   -- 1: also speed switches, far seeks (seek clamp) and Init during a seek
 end entity;
 
 architecture sim of tb_cd_lockstep is
@@ -201,11 +202,32 @@ begin
          wait until falling_edge(clk1x) and ce = '1'; bus_addr <= to_unsigned(adr, 4); bus_read <= '1';
          wait until falling_edge(clk1x); bus_read <= '0';
       end procedure;
+      procedure ack is begin wr(0, 1); wr(3, 31); wr(0, 0); end procedure;
+      -- a command once the last IRQ is cleared, then wait for its acknowledge (reference side; both sides
+      -- are identical until a mismatch) so no command is held or overwritten
+      procedure cmdw(c : integer) is
+      begin
+         ack; wr(1, c);
+         wait until a.irqOut = '1' for 6 ms;
+         tick(200); ack;
+      end procedure;
+      -- Setloc to sector sec (absolute, 150 = 00:02:00)
+      procedure setloc(sec : integer) is
+      begin
+         ack;
+         wr(2, ((sec / 4500) / 10) * 16 + (sec / 4500) mod 10);
+         wr(2, (((sec / 75) mod 60) / 10) * 16 + ((sec / 75) mod 60) mod 10);
+         wr(2, ((sec mod 75) / 10) * 16 + (sec mod 75) mod 10);
+         cmdw(16#02#);
+      end procedure;
       type tcmds is array(natural range <>) of integer;
       constant cmds : tcmds := (16#01#, 16#02#, 16#03#, 16#06#, 16#07#, 16#08#, 16#09#, 16#0A#, 16#0B#, 16#0C#,
                                 16#0D#, 16#0E#, 16#0F#, 16#10#, 16#11#, 16#12#, 16#13#, 16#14#, 16#15#, 16#16#,
                                 16#19#, 16#1A#, 16#1B#, 16#1E#, 16#02#, 16#06#, 16#1B#, 16#09#, 16#15#);
+      constant twostage : tcmds := (16#1A#, 16#1E#, 16#0A#, 16#09#, 16#08#, 16#07#);   -- GetID, ReadTOC, Init, Pause, Stop, MotorOn
       variable c, sec, n : integer;
+      variable spd : integer := 0;
+      variable ts_i : integer := 0;
    begin
       reset <= '1'; tick(12); reset <= '0';
       wait until hasCD = '1'; tick(100);
@@ -275,6 +297,38 @@ begin
             wr(1, 16#09#); n_cmds <= n_cmds + 1;
             for i in 0 to 20 loop
                uniform(s1, s2, r); tick(2000 + pick(r, 20000));
+               wr(0, 1); rd(3); rd(1); wr(3, 31); wr(0, 0);
+            end loop;
+         elsif SEEK_SPEED = 1 and r < 0.90 then   -- speed switch, seek clamp, Init during a seek (driveDelay loads)
+            -- Pause first; every command waits for its acknowledge (cmdw).
+            uniform(s1, s2, r); n := pick(r, 6);
+            cmdw(16#09#); n_cmds <= n_cmds + 1;
+            for i in 0 to 10 loop uniform(s1, s2, r); tick(2000 + pick(r, 30000)); ack; end loop;
+            if n >= 4 then   -- a two-stage command (2 of 6), both IRQs acknowledged ~200 clocks after they rise (games do)
+               c := twostage(ts_i); ts_i := (ts_i + 1) mod twostage'length;   -- each in turn (ReadTOC's 26M INT2 is rare otherwise)
+               cmdw(c); n_cmds <= n_cmds + 1;
+               wait until a.irqOut = '1' for 60 ms;
+               tick(200); ack;
+            elsif n = 1 then   -- Init (head to 0), far SeekL, then a second far SeekL during it: seek clamp
+               cmdw(16#0A#); n_cmds <= n_cmds + 1;
+               for i in 0 to 40 loop tick(20000); ack; end loop;
+               uniform(s1, s2, r); setloc(250000 + pick(r, 109000)); cmdw(16#15#); n_cmds <= n_cmds + 3;
+               uniform(s1, s2, r); tick(20000 + pick(r, 100000));
+               uniform(s1, s2, r); setloc(250000 + pick(r, 109000)); cmdw(16#15#);
+            else
+               if n = 0 or n = 3 then   -- Setmode with the speed bit flipped, straight into the next command
+                  spd := 1 - spd; ack; wr(2, 16#80# * spd); cmdw(16#0E#); n_cmds <= n_cmds + 1;
+               end if;
+               uniform(s1, s2, r);
+               if n = 2 then setloc(250000 + pick(r, 109000)); else setloc(150 + pick(r, SECTORS)); end if;
+               if n = 3 then cmdw(16#06#); else cmdw(16#15#); end if; n_cmds <= n_cmds + 2;
+               if n = 2 then   -- Init while the far seek runs (implicit seek back to 0)
+                  uniform(s1, s2, r); tick(40000 + pick(r, 200000));
+                  cmdw(16#0A#); n_cmds <= n_cmds + 1;
+               end if;
+            end if;
+            for i in 0 to 80 loop
+               uniform(s1, s2, r); tick(2000 + pick(r, 30000));
                wr(0, 1); rd(3); rd(1); wr(3, 31); wr(0, 0);
             end loop;
          elsif r < 0.995 then   -- idle

@@ -60,6 +60,7 @@ def main():
     ap.add_argument('--no-fault', action='store_true')
     ap.add_argument('--pause-read', action='store_true', help='bench also pauses mid-sector while reading or playing')
     ap.add_argument('--subchannel-reads', action='store_true', help='poll every GetlocP response after each command sequence')
+    ap.add_argument('--seek-speed', action='store_true', help='bench also switches speed, seeks far (seek clamp) and Inits during a seek')
     ap.add_argument('--extra-fault', nargs=2, metavar=('OLD', 'NEW'), help='also plant OLD->NEW in the candidate; must be caught')
     args = ap.parse_args()
     ghdl = find_tool('ghdl')
@@ -111,7 +112,7 @@ def main():
     def sim(dirname, seed):
         out = subprocess.run([ghdl, '-r', *opts, f'--workdir={dirname}', '-Pref', *base, 'tb_cd_lockstep',
                               f'-gSEED={seed}', f'-gRUN_CYCLES={args.cycles}', f'-gSECTORS={sum(TRACKS)}', f'-gPAUSE_READ={int(args.pause_read)}',
-                              f'-gSUBCHANNEL_READS={int(args.subchannel_reads)}', '--ieee-asserts=disable'],
+                              f'-gSUBCHANNEL_READS={int(args.subchannel_reads)}', f'-gSEEK_SPEED={int(args.seek_speed)}', '--ieee-asserts=disable'],
                              cwd=w, capture_output=True, text=True, timeout=7200)
         text = out.stdout + out.stderr
         m = re.search(r'LOCKSTEP (PASS.*|MISMATCH.*)', text)

@@ -44,6 +44,7 @@ def main():
     parser.add_argument('--immediate', action='store_true', help='request a scalar read that follows one on the edge that sees its ready')
     parser.add_argument('--ctrl', type=Path, default=ROOT/'rtl/memory/psx_sdram_ctrl.sv', help='controller source (e.g. a prepare step\'s output)')
     parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--main4', type=int, choices=(0, 1, 2), default=0, help='bench map for a prepare_main_4bank.py controller (1 plain, 2 --hash)')
     parser.add_argument('--cas', type=int, choices=(2, 3), default=2, help='controller and chip CAS latency (the reference runs only at 2)')
     parser.add_argument('--dclk', type=float, default=2.0, help='ns: chip clock delay from the FPGA clock edge to the chip')
     parser.add_argument('--tret', type=float, default=2.0, help='ns: data return delay from the chip to the FPGA input register')
@@ -67,7 +68,7 @@ def main():
                ROOT/'sim/memory/tb_psx_sdram_ctrl.sv']
     params = [f'-Ptb_psx_sdram_ctrl.OPS={args.ops}', f'-Ptb_psx_sdram_ctrl.SEED={args.seed}',
               f'-Ptb_psx_sdram_ctrl.CAS={args.cas}', f'-Ptb_psx_sdram_ctrl.SPU_FIRST={args.spu_first_param}',
-              f'-Ptb_psx_sdram_ctrl.OPEN_ROW={int(args.open_row)}', f'-Ptb_psx_sdram_ctrl.IMMEDIATE={int(args.immediate)}',
+              f'-Ptb_psx_sdram_ctrl.OPEN_ROW={int(args.open_row)}', f'-Ptb_psx_sdram_ctrl.MAIN4={args.main4}', f'-Ptb_psx_sdram_ctrl.IMMEDIATE={int(args.immediate)}',
               f'-Ptb_psx_sdram_ctrl.DCLK={args.dclk}',
               f'-Ptb_psx_sdram_ctrl.TAC={tac}', f'-Ptb_psx_sdram_ctrl.TOH={args.toh}', f'-Ptb_psx_sdram_ctrl.TRET={args.tret}']
     subprocess.run([iverilog, '-g2012', '-o', str(work/'tb.vvp'), '-s', 'tb_psx_sdram_ctrl', *params, *(['-DHINT_PORTS'] if args.hint else []),

@@ -80,6 +80,15 @@ these instances use an empty data_path and give the disc files with their
 folder. The shared card is Saves/<platform>/common/<game>.sav; when it does
 not exist yet it starts as a copy of the core's newest per-disc card.
 
+A multi-disc game with one game file (discs swapped in the core) names that
+card only while Saves/<platform>/common/<card> exists, so existing cards keep
+working where they are. Without one, its game file names no card, and the
+Pocket keeps the card in the core's folder like a single-disc game's,
+Saves/<platform>/GuardianSoul.<core>/<game file name>.sav (seeded from the
+newest per-disc card there, never overwritten). A card the user moves from
+common/ into the core's folder (named like the game file) is used after the
+next run. Per-disc game files still need the shared name in common/.
+
   python3 scripts/make_pocket_instances.py /path/to/sd-card --core PSXEarlyTracks
   python3 scripts/make_pocket_instances.py /path/to/sd-card --convert
 """
@@ -192,6 +201,24 @@ def seed_shared_card(card, platform, core, stems, name):
     newest = max(own, key=lambda f: f.stat().st_mtime)
     shared.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(newest, shared)
+    return newest
+
+
+def common_card(card, platform, name):
+    """Does Saves/<platform>/common/<name> exist (a shared card in use)?"""
+    return (card/'Saves'/platform/'common'/name).is_file()
+
+
+def seed_core_card(card, platform, core, stems, name):
+    """Start Saves/<platform>/GuardianSoul.<core>/<name> from the newest
+    per-disc card there. Never overwrites."""
+    folder = card/'Saves'/platform/f'GuardianSoul.{core}'
+    target = folder/name
+    if target.exists(): return None
+    own = [f for f in (folder/(s + '.sav') for s in stems) if f.is_file() and f != target]
+    if not own: return None
+    newest = max(own, key=lambda f: f.stat().st_mtime)
+    shutil.copy2(newest, target)
     return newest
 
 
@@ -738,6 +765,7 @@ def main():
     skipped += write_lone_cues(common)[1]
     skipped += report_other_images(common)
     discs = {}
+    core_cards = {}   # multi-disc games whose card is in the core's folder: card name -> disc stems
     games = {}   # --disc-menu cores: game name -> {disc number: (cue, files, tracks)}
     sizes_files = {}   # cue -> its track sizes file (cores that declare slot 97)
     track_sizes_slot = args.cue_reader and any(s.get('id') == TSZ_SLOT for s in (declared or []))
@@ -867,6 +895,8 @@ def main():
                 if cue1 in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': (cue1.parent/sizes_files[cue1]).relative_to(root).as_posix()})
                 prefix = data_path + '/' if data_path != '.' else ''
                 shared = card_of() if args.shared_cards else None
+                if shared and not common_card(args.card, args.platform, shared):   # a new card goes to the core's folder
+                    core_cards[name + '.sav'] = [parts[n][0].stem for n in numbers]; shared = None
                 if shared:
                     for s in slots: s['filename'] = prefix + s['filename']
                     slots.append({'id': CARD_SLOT, 'filename': shared})
@@ -904,7 +934,12 @@ def main():
         if cue1 in sizes_files: slots.append({'id': TSZ_SLOT, 'filename': rel(cue1, sizes_files[cue1])})   # disc 1's, for the boot mount
         data_path = root.relative_to(common).as_posix()
         prefix = data_path + '/' if data_path != '.' else ''
+        # Named after disc 1 without its disc tag, as before tags were ignored
+        # ("Final Fantasy VII (USA).json").
+        name = title(cue1)
         shared = card_of() if args.shared_cards else None
+        if shared and not common_card(args.card, args.platform, shared):   # a new card goes to the core's folder
+            core_cards[name + '.sav'] = [parts[n][0].stem for n in numbers]; shared = None
         if shared:   # the same shared card as the per-disc files would use
             for s in slots: s['filename'] = prefix + s['filename']
             slots.append({'id': CARD_SLOT, 'filename': shared})
@@ -912,9 +947,6 @@ def main():
             prefix = ''
         instance = {'instance': {'magic': 'APF_VER_1', 'data_path': prefix, 'data_slots': slots}}
         out.mkdir(parents=True, exist_ok=True)
-        # Named after disc 1 without its disc tag, as before tags were ignored
-        # ("Final Fantasy VII (USA).json").
-        name = title(cue1)
         (out/(name + '.json')).write_text(json.dumps(instance, indent=2) + '\n')
         named.add(name)
         for stale in old_names:   # per-disc files and older names from earlier runs (not this one: an untagged disc 1 has its name)
@@ -942,8 +974,11 @@ def main():
     for name, stems in sorted(discs.items()):
         seeded = seed_shared_card(args.card, args.platform, args.core, stems, name)
         if seeded: print(f'shared card {name} starts from {seeded.name}')
+    for name, stems in sorted(core_cards.items()):
+        seeded = seed_core_card(args.card, args.platform, args.core, stems, name)
+        if seeded: print(f'card {name} starts from {seeded.name}')
     print(f'{written} game files in {out}, {skipped} skipped'
-          + (f', {len(discs)} multi-disc games share a card' if discs else ''))
+          + (f', {len(discs) + len(core_cards)} multi-disc games share a card' if discs or core_cards else ''))
     hint = nothing_made(written, skipped, args.platform)
     if hint: print(hint)
 

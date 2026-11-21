@@ -1,7 +1,8 @@
 # PlayStation core for Analogue Pocket
 
 An FPGA core that runs original PlayStation games on the Analogue Pocket,
-built on the MiSTer PSX core.
+built on the MiSTer PSX core. Since 0.6.0 its timing is measured against a
+real PlayStation (a PAL SCPH-5502); see [TIMING.md](TIMING.md).
 
 > Most games tried so far play with sound, FMVs and CD music. Some may still glitch or not boot. See the
 > [game list](https://guardiansoul.github.io/openfpga-PlayStation/compatibility.html)
@@ -198,8 +199,11 @@ DMA moves data, and it lets the GPU fill plain and see-through shapes as
 fast as it can. The clocks stay the same, and sound, CD drive and geometry
 chip keep the console's speed; only less time is spent waiting.
 Most games are locked to the TV's frame rate, so they don't run faster
-overall: busy scenes just slow down less, for example in Bloody Roar II or
-Crash Bandicoot.
+overall: busy scenes just slow down less, for example in parts of Crash
+Bandicoot.
+
+With Turbo Mode off, the timings match a real PlayStation measured with test
+discs (see [TIMING.md](TIMING.md)).
 
 That speed comes at the cost of accuracy: with Turbo Mode on, games no
 longer run with the console's timing. A game that depends on the exact
@@ -290,6 +294,25 @@ Memories and memory cards are separate:
 - Memories are not a replacement for memory card saves. A Memory made with
   one version of the core may be refused by another, so keep your progress
   on the memory card too.
+
+## Timing accuracy
+
+With Turbo Mode off, the core runs each part of the console at the speed
+measured on a real PlayStation (a PAL SCPH-5502): CPU and memory, GPU
+drawing, DMA, the CD drive, the video decoder, the GTE, timers and the
+sound chip. The measurements and how close the core is are in
+[TIMING.md](TIMING.md). Where the console and the core still differ, the
+core errs on the fast side, so games don't slow down.
+
+A PlayStation has separate memory chips for the CPU's main memory, the
+GPU's video memory and the sound chip's memory, so each part can use its own
+memory at the same time. The Pocket has fewer memory chips, so the core
+shares them: the CPU's main memory and the sound memory sit on one chip, and
+the video memory on another. When several parts want the same chip at once,
+for example the CPU running the game while the CD streams data and the sound
+chip plays music, they have to take turns. The core schedules those turns so
+each part gets the console's timing; in the test disc's busiest mix the CPU
+keeps up with a real console. Turbo Mode removes the remaining waits.
 
 ## Known issues
 

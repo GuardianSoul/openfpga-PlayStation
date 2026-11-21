@@ -10,13 +10,18 @@ from reference_cpu_gte_program import write_program
 from tool_paths import ROOT, find_tool
 
 
-def main(name='cpu-gte-adapter', transform=None):
+def tools():
     ghdl=find_tool('ghdl'); verilator=shutil.which('verilator')
     if not verilator:
         path=ROOT/'build/tools/oss-cad-suite/bin/verilator'
         if path.is_file(): verilator=str(path)
     if not ghdl or not verilator: raise SystemExit('GHDL synthesis and Verilator are required')
-    directory=ROOT/'build/sim'/name; directory.mkdir(parents=True,exist_ok=True)
+    return ghdl,verilator
+
+
+def cpu_verilog(directory, ghdl):
+    """Transcode the pinned MiSTer CPU to Verilog in directory; returns build facts."""
+    directory.mkdir(parents=True,exist_ok=True)
     shutil.copy2(UPSTREAM/'LICENSE',directory/'COPYING.GPL2')
     # GHDL cannot synthesize package signals, which only serve upstream debug.
     package=UPSTREAM/'rtl/export.vhd'; text=package.read_text().split('end package;')[0]
@@ -36,6 +41,15 @@ def main(name='cpu-gte-adapter', transform=None):
                 stdout=translated,stderr=output,timeout=120,check=True)
     from ghdl_verilog import normalize_generated_verilog
     normalization=normalize_generated_verilog(verilog)
+    return {'sources':sources,'verilog':verilog,'normalization':normalization,'original':original,'package':package,'log':log}
+
+
+def main(name='cpu-gte-adapter', transform=None):
+    ghdl,verilator=tools()
+    directory=ROOT/'build/sim'/name
+    built=cpu_verilog(directory,ghdl)
+    sources,verilog,normalization,original,package,log=(built[k] for k in
+        ('sources','verilog','normalization','original','package','log'))
     adapted=adapter_sources(directory/'adapted')
     if transform: transform(adapted)
     program=write_program(directory/'cpu-gte')

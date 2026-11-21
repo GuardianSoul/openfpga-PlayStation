@@ -1247,6 +1247,37 @@ fn playlist_check(m3u: &Path, card: &Path, discs: usize) -> Option<String> {
     }
     None
 }
+/// Start Saves/<platform>/<core>/<name> from the newest per-disc card there. Never overwrites.
+fn seed_core_card(card: &Path, platform: &str, core: &str, stems: &[String], name: &str) -> Option<String> {
+    let folder = card.join("Saves").join(platform).join(core);
+    if folder.join(name).exists() {
+        return None;
+    }
+    let mut newest: Option<(String, std::time::SystemTime)> = None;
+    for s in stems {
+        let file_name = format!("{s}.sav");
+        if file_name == name {
+            continue;
+        }
+        let Ok(meta) = fs::metadata(folder.join(&file_name)) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if newest.as_ref().map_or(true, |n| modified > n.1) {
+            newest = Some((file_name, modified));
+        }
+    }
+    let (newest, _) = newest?;
+    let data = fs::read(folder.join(&newest)).ok()?;
+    write_bytes(&folder.join(name), &data).ok()?;
+    Some(newest)
+}
+
+/// Does Saves/<platform>/common/<name> exist (a shared card in use)?
+fn common_card(card: &Path, platform: &str, name: &str) -> bool {
+    is_file(&card.join("Saves").join(platform).join("common").join(name))
+}
 
 /// What a game file needs to know about the core, and the shared cards so far.
 struct Writer<'a> {
@@ -1258,6 +1289,7 @@ struct Writer<'a> {
     one_file: bool,
     cue_reader: bool,
     discs: BTreeMap<String, Vec<String>>, // shared card -> disc stems
+    core_cards: BTreeMap<String, Vec<String>>, // multi-disc games whose card is in the core's folder: card name -> disc stems
     sizes: HashMap<PathBuf, String>,      // cue -> its track sizes file
     named: std::cell::RefCell<std::collections::HashSet<String>>, // game file names written this run
 }
@@ -1360,7 +1392,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
     let (mut written, mut skipped) = (0, report_chds(&common, log));
     skipped += write_lone_cues(&common, log);
     skipped += report_other_images(&common, log);
-    let mut writer = Writer { out: &out, common: &common, shared_cards, libcrypt, cheats, one_file, cue_reader, discs: BTreeMap::new(), sizes: HashMap::new(), named: Default::default() };
+    let mut writer = Writer { out: &out, common: &common, shared_cards, libcrypt, cheats, one_file, cue_reader, discs: BTreeMap::new(), core_cards: BTreeMap::new(), sizes: HashMap::new(), named: Default::default() };
     let mut games: BTreeMap<String, BTreeMap<u64, Vec<Part>>> = BTreeMap::new();
     // An untagged cue counts as disc 1 when another cue of the same title has a
     // disc 2+ tag and none has disc 1's ("X.cue" with "X Disc2.cue").
@@ -1519,6 +1551,7 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
                 let root: PathBuf = folders[0][..depth].iter().collect();
                 let m3u = root.join(format!("{name}.m3u"));
                 let shown = rel(&m3u, &common);
+                let card_root = card;
                 let card = card_of.clone();
                 if numbers.len() <= MAX_DISCS {
                     let text: String = numbers.iter().map(|n| rel(&parts[n].0, &root) + "\n").collect();
@@ -1527,7 +1560,12 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
                 if numbers.len() <= MAX_DISCS && playlist_slot {
                     let data_path = rel(&root, &common);
                     let prefix = if data_path != "." { format!("{data_path}/") } else { String::new() };
-                    let shared = card.clone().filter(|_| shared_cards);
+                    let mut shared = card.clone().filter(|_| shared_cards);
+                    // A shared card names only an existing common/ card; a new one goes to the core's folder.
+                    if shared.as_ref().is_some_and(|s| !common_card(card_root, platform, s)) {
+                        writer.core_cards.insert(format!("{name}.sav"), numbers.iter().map(|n| stem(&name_of(&parts[n].0)).to_string()).collect());
+                        shared = None;
+                    }
                     let (cue1, files1, _, _) = parts[&1];
                     let mut slots = vec![(100, format!("{name}.m3u"))];
                     slots.extend(
@@ -1617,7 +1655,15 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
         }
         let data_path = rel(&root, &common);
         let mut prefix = if data_path != "." { format!("{data_path}/") } else { String::new() };
-        if let Some(shared) = card_of.clone().filter(|_| shared_cards) {
+        // Named after disc 1 without its disc tag ("Final Fantasy VII (USA).json").
+        let name = title(&cue1_stem);
+        let mut shared = card_of.clone().filter(|_| shared_cards);
+        if shared.as_ref().is_some_and(|s| !common_card(card, platform, s)) {
+            // a new card goes to the core's folder
+            writer.core_cards.insert(format!("{name}.sav"), numbers.iter().map(|n| stem(&name_of(&parts[n].0)).to_string()).collect());
+            shared = None;
+        }
+        if let Some(shared) = shared {
             // the same shared card as the per-disc files would use
             for s in &mut slots {
                 s.1 = format!("{prefix}{}", s.1);
@@ -1627,8 +1673,6 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
             entry.extend(numbers.iter().map(|n| stem(&name_of(&parts[n].0)).to_string()));
             prefix = String::new();
         }
-        // Named after disc 1 without its disc tag ("Final Fantasy VII (USA).json").
-        let name = title(&cue1_stem);
         writer.write_instance(&name, &prefix, &slots)?;
         for s in old_names.iter().filter(|s| **s != name) {
             // per-disc files and older names from earlier runs
@@ -1670,13 +1714,19 @@ pub fn make_instances(card: &Path, core: &str, platform: &str, log: &mut dyn FnM
             log(&format!("shared card {name} starts from {seeded}"));
         }
     }
+    for (name, stems) in &writer.core_cards {
+        if let Some(seeded) = seed_core_card(card, platform, core, stems, name) {
+            log(&format!("card {name} starts from {seeded}"));
+        }
+    }
+    let shared = discs.len() + writer.core_cards.len();
     let shown_out = rel(&out, card);
     log(&format!(
         "{written} game files in {shown_out}, {skipped} skipped{}",
-        if discs.is_empty() { String::new() } else { format!(", {} multi-disc games share a card", discs.len()) }
+        if shared == 0 { String::new() } else { format!(", {shared} multi-disc games share a card") }
     ));
     if let Some(hint) = nothing_made(written, skipped, platform) {
         log(&hint);
     }
-    Ok(Summary { written, shared: discs.len() })
+    Ok(Summary { written, shared })
 }

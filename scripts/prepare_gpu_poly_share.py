@@ -1,152 +1,128 @@
-"""Share the polygon edge-stepping and half-setup adders in gpu_poly.
+#!/usr/bin/env python3
+"""Room census GPU items 7 and 10: gpu_poly's mul9s pair as one difference, shared drawing-area compares (area; gpu_poly.vhd).
 
-xStart/xEnd step by +/-xStep in three states, always subtracting exactly when
-decMode = 1 (PREPAREDECMODE is entered only with decMode = 1), so each now
-uses one add/subtract with a conditional complement and carry-in. The first
-and second polygon halves compute `baseCoord + vo/vp_diff_base` and the edge
-start from vt(vo)/vt(1+vp) in mutually exclusive branches of PREPAREHALF; one
-adder serves both. Every assignment receives the same value in the same cycle.
+`mul` (census 7). imul9s1 / imul9s2 form p1 = muldiv1In1 * muldiv1In2 and
+p2 = muldiv2In1 * muldiv2In2 (9 x 13 signed, 22 bits); both are registered
+(muldivResult1clk / 2clk) in the same CALCCOLOR2 / CALCTEXTURE2 branches, and
+their only reader is cse_gradDiff = resize(clk1 - clk2, 21). Here the 22-bit
+difference p1 - p2 (mod 2^22, as the old 22-bit subtract) is registered once
+where the two products were, and cse_gradDiff = resize(diff, 21): the same
+value in every cycle, one register bank and one subtractor fewer, and Quartus
+can map a*b - c*d to one DSP in sum-of-two mode (frees one DSP).
+
+`area` (census 10). PREPARELINE compares xStart with drawingAreaLeft and
+drawingAreaRight (xPosInLeft / xPosInRight, and `skip` when xStart > right);
+PROCPIXELS compares xPos + 1 with the same two. The states are exclusive, so
+one comparator pair takes cmpX = xPos + 1 in PROCPIXELS and max(xStart, 0)
+elsewhere. For xStart < 0 the old code set xPosInLeft = (left = 0) and
+xPosInRight = 1, which are the compares of 0; xStart > right is false for
+xStart < 0 either way. And the 1024 - xStart size becomes (1023 - xStart) + 1,
+one subtractor with a minuend mux instead of two.
+
+POLY_SHARE_PARTS=mul,area (default both). POLY_SHARE_MUTANT (self test):
+`add` (p1 + p2), `noclamp` (PREPARELINE compares the unclamped xStart).
+
+    python3 scripts/prepare_gpu_poly_share.py PROJECT --output OUT [--seed N]
+    run_gpu_bench.py --patch scripts/prepare_gpu_poly_share.py
 """
-import json
+import os, re, sys
 from pathlib import Path
-import re
 
-if __package__:
-    from .prepare_resource_targets import digest
-else:
-    from prepare_resource_targets import digest
+MARK = 'gpu-poly-share'
+MUTANT = os.environ.get('POLY_SHARE_MUTANT', '')
+PARTS = set(os.environ.get('POLY_SHARE_PARTS', 'mul,area').split(','))
+
+M_DECL = "   signal muldivResult2clk    : signed(21 downto 0) := (others => '0');    \n"
+M_CSE = "   cse_gradDiff <= resize(muldivResult1clk - muldivResult2clk, 21);   -- lab-cse gpu-grad\n"
+M_REG = "muldivResult1clk <= muldivResult1; muldivResult2clk <= muldivResult2;"
+M_INST = re.compile(r"   imul9s1 : entity work\.mul9s\n.*?result   => muldivResult2\n   \);\n", re.S)
+
+A_PL = ("                  if (xStart(43 downto 32) < 0) then\n"
+        "                     xPos  <= (others => '0');\n"
+        "                     if (drawingAreaLeft = 0) then xPosInLeft <= '1'; else xPosInLeft <= '0'; end if;\n"
+        "                     xPosInRight <= '1';\n"
+        "                  else\n"
+        "                     xPos  <= xStart(43 downto 32);\n"
+        "                     if (xStart(43 downto 32) >= to_integer(drawingAreaLeft)) then xPosInLeft <= '1'; else xPosInLeft <= '0'; end if;\n"
+        "                     if (xStart(43 downto 32) <= to_integer(drawingAreaRight)) then xPosInRight <= '1'; else xPosInRight <= '0'; end if;\n"
+        "                  end if;\n")
+A_SIZE = ("                  elsif (xStart(43 downto 32) >= 0 and xEnd(43 downto 32) > 1023) then\n"
+          "                     xSize <= to_unsigned(1024, 11) - unsigned(xStart(41 downto 32));\n"
+          "                  else \n"
+          "                     xSize <= ('0' & (unsigned(xEnd(41 downto 32)) - unsigned(xStart(41 downto 32)))) + 1;\n"
+          "                  end if;\n")
+A_SKIP = ("                  if (to_integer(xStart(43 downto 32)) > drawingAreaRight) then\n"
+          "                     skip := '1';\n"
+          "                  end if;                  \n")
+A_PP = ("                     if (xPos + 1 >= to_integer(drawingAreaLeft)) then xPosInLeft <= '1'; else xPosInLeft <= '0'; end if;\n"
+        "                     if (xPos + 1 <= to_integer(drawingAreaRight)) then xPosInRight <= '1'; else xPosInRight <= '0'; end if;\n")
+A_DECL = "   signal xSize               : unsigned(10 downto 0) := (others => '0'); \n"
 
 
-def _replace(text, old, new, count=1):
-    if text.count(old) != count:
-        raise ValueError(f'gpu_poly source changed ({text.count(old)} matches): ' + old.strip()[:70])
-    return text.replace(old, new)
-
-
-def poly_share_text(text):
-    text = _replace(text, '   signal xStepEnd            : signed(44 downto 0) := (others => \'0\');\n',
-                    '''   signal xStepEnd            : signed(44 downto 0) := (others => '0');
-   -- Shared edge stepping: subtract exactly when decMode = 1.
-   signal xStepSub            : std_logic;
-   signal xStepMask           : signed(44 downto 0);
-   signal xStepOne            : signed(1 downto 0);
-   signal xStartNext          : signed(44 downto 0);
-   signal xEndNext            : signed(44 downto 0);
-   -- Shared half setup: first half uses vo, second half vp.
-   signal halfDiffBase        : signed(44 downto 0);
-   signal halfDiff            : integer range -4096 to 4095;
-   signal halfCoord           : signed(44 downto 0);
-   signal halfX               : integer range -2048 to 2047;
-   signal halfStart           : signed(44 downto 0);
-''')
-    marker = 'begin \n'
-    if marker not in text: marker = 'begin\n'
-    concurrent = '''
-   xStepSub   <= '1' when decMode = 1 else '0';
-   xStepMask  <= (others => xStepSub);
-   xStepOne   <= '0' & xStepSub;
-   xStartNext <= xStart + (xStepStart xor xStepMask) + xStepOne;
-   xEndNext   <= xEnd   + (xStepEnd   xor xStepMask) + xStepOne;
-   halfDiff     <= vo_diff when firsthalf = '1' else vp_diff;
-   halfDiffBase <= resize(halfDiff * baseStep, 45);
-   halfCoord    <= baseCoord + halfDiffBase;
-   halfX        <= vt(vo).x when firsthalf = '1' else vt(1 + vp).x;
-   halfStart    <= HALFSTART;
-'''
-    arch = text.index('architecture')
-    pos = text.index('\nbegin', arch) + len('\nbegin') 
-    text = text[:pos] + '\n' + concurrent + text[pos:]
-    for old in ('xStart <= xStart - xStepStart;', 'xStart <= xStart + xStepStart;'):
-        text = text.replace(old, 'xStart <= xStartNext;')
-    for old in ('xEnd   <= xEnd   - xStepEnd;', 'xEnd   <= xEnd   + xStepEnd;'):
-        text = text.replace(old, 'xEnd   <= xEndNext;')
-    if text.count('xStart <= xStartNext;') != 5 or text.count('xEnd   <= xEndNext;') != 5:
-        raise ValueError('gpu_poly edge stepping changed')
-    calc1 = re.findall(r'^                     calc1      := (.*);\n', text, re.M)
-    calc3 = re.findall(r'^                     calc3      := (.*);\n', text, re.M)
-    if len(calc1) != 1 or len(calc3) != 1 or calc1[0].replace('vt(vo).x', 'X') != calc3[0].replace('vt(1 + vp).x', 'X'):
-        raise ValueError('gpu_poly half setup changed')
-    text = text.replace('HALFSTART', calc1[0].replace('vt(vo).x', 'halfX'))
-    text = _replace(text, '                     calc1      := ' + calc1[0] + ';\n', '                     calc1      := halfStart;\n')
-    text = _replace(text, '                     calc3      := ' + calc3[0] + ';\n', '                     calc3      := halfStart;\n')
-    text = _replace(text, '                     calc2      := baseCoord + vo_diff_base;\n', '                     calc2      := halfCoord;\n')
-    text = _replace(text, '                     calc4      := baseCoord + vp_diff_base;\n', '                     calc4      := halfCoord;\n')
-    # Edge slope dividends: (dx << 32) +/- (dy - 1). The low 32 bits of
-    # dx << 32 are zero and |dy - 1| < 2**13, so the 45-bit add reduces to the
-    # sign-extended small term plus a borrow into the 13-bit integer part.
-    for n in (1, 2, 3):
-        block = (f'                  if    (dx{n} < 0) then dx{n} := dx{n} - (dy{n} - 1); \n'
-                 f'                  elsif (dx{n} > 0) then dx{n} := dx{n} + (dy{n} - 1); end if;\n')
-        if text.count(block) != 1: raise ValueError('gpu_poly slope rounding changed')
-        text = text.replace(block, f'                  dx{n} := slopeDividend(dx{n}, dy{n});\n')
-    function = """
-   -- Equal to: d < 0 -> d - (dy - 1); d > 0 -> d + (dy - 1); else d, where d = high << 32.
-   function slopeDividend(d : signed(44 downto 0); dy : signed(12 downto 0)) return signed is
-      variable term : signed(13 downto 0);
-      variable high : signed(12 downto 0);
-      variable result : signed(44 downto 0);
-   begin
-      term := (others => '0');
-      if    (d < 0) then term := -resize(dy - 1, 14);
-      elsif (d > 0) then term :=  resize(dy - 1, 14); end if;
-      high := d(44 downto 32);
-      if (term < 0) then high := high - 1; end if;
-      result(44 downto 32) := high;
-      result(31 downto 0)  := resize(term, 32);
-      return result;
-   end function;
-"""
-    arch = text.index('architecture')
-    sig = text.index('\n   signal', arch)
-    text = text[:sig] + '\n' + function + text[sig:]
-    # The per-half edge offsets are formed when PREPAREHALF needs them: vo_diff,
-    # vp_diff and baseStep are only written in CALCBOUNDARY2, which waits for
-    # the divider batch, so the stored products equal the late ones.
-    for half in ('vo', 'vp'):
-        text = _replace(text, f'                  {half}_diff_base <= resize({half}_diff * baseStep, 45);\n', '')
-    # One gradient multiplexer for both the per-line and the setup multiplies.
-    start = text.index('   lineGradient <= dxR when lineMulStep=0')
-    end = text.index('   mulIn2 <= lineCoordinate when state=CALCLINE else')
-    if 'mulIn1 <= lineGradient when state=CALCLINE else' not in text[start:end]:
-        raise ValueError('gpu_poly multiplier inputs changed')
-    lc_start = text.index('   lineCoordinate <=', start)
-    line_coordinate = text[lc_start:text.index('   mulIn1 <=', lc_start)]
-    shared = """   gradientIndex <= lineMulStep when state = CALCLINE else
-                    6 when (state = CALCTEXTURE4 and mulStep = 0) else
-                    8 when (state = CALCTEXTURE4 and mulStep = 1) else
-                    7 when (state = CALCTEXTURE4 and mulStep = 2) else
-                    9 when (state = CALCTEXTURE4 and mulStep = 3) else
-                    0 when (mulStep = 0) else
-                    2 when (mulStep = 1) else
-                    4 when (mulStep = 2) else
-                    1 when (mulStep = 3) else
-                    3 when (mulStep = 4) else
-                    5;
-   lineGradient <= dxR when gradientIndex=0 else dyR when gradientIndex=1 else
-                   dxG when gradientIndex=2 else dyG when gradientIndex=3 else
-                   dxB when gradientIndex=4 else dyB when gradientIndex=5 else
-                   dxU when gradientIndex=6 else dyU when gradientIndex=7 else
-                   dxV when gradientIndex=8 else dyV;
-""" + line_coordinate + """   mulIn1 <= lineGradient;
-
-"""
-    text = text[:start] + shared + text[end:]
-    text = _replace(text, '   signal lineGradient        : unsigned(31 downto 0);\n',
-                    '   signal lineGradient        : unsigned(31 downto 0);\n   signal gradientIndex       : integer range 0 to 9;\n')
+def transform(text):
+    if MARK in text: raise SystemExit(f'{MARK}: already applied')
+    if 'mul' in PARTS:
+        for a in (M_DECL, M_CSE):
+            if text.count(a) != 1: raise SystemExit(f'{MARK}: gpu_poly anchor changed: {a.strip()[:60]}')
+        n = text.count(M_REG)
+        if n != 10 or len(M_INST.findall(text)) != 1: raise SystemExit(f'{MARK}: mul9s pair layout changed ({n} result registers)')
+        op = '+' if MUTANT == 'add' else '-'
+        text = text.replace(M_DECL, M_DECL +
+            f"   signal mulDiff, mulDiffClk : signed(21 downto 0) := (others => '0'); -- {MARK}: p1 - p2 (mod 2^22), registered once\n")
+        text = M_INST.sub(f"   -- {MARK}: imul9s1 / imul9s2 as one difference (one DSP in sum-of-two mode)\n"
+                          f"   mulDiff <= (muldiv1In1 * muldiv1In2) {op} (muldiv2In1 * muldiv2In2);\n", text)
+        text = text.replace(M_REG, "mulDiffClk <= mulDiff;")   # no comment: the rest of the line follows
+        text = text.replace(M_CSE, f"   cse_gradDiff <= resize(mulDiffClk, 21);   -- lab-cse gpu-grad, {MARK}\n")
+        for w in ('muldivResult1clk', 'muldivResult2clk', 'muldivResult1 ', 'muldivResult2 '):
+            rest = [l for l in text.splitlines() if w in l and 'signal' not in l]
+            if rest: raise SystemExit(f'{MARK}: {w.strip()} still used: {rest[0].strip()[:80]}')
+    if 'area' in PARTS:
+        for a in (A_PL, A_SIZE, A_SKIP, A_PP, A_DECL):
+            if text.count(a) != 1: raise SystemExit(f'{MARK}: gpu_poly anchor changed: {a.strip()[:60]}')
+        clamp = "xStart(43 downto 32)" if MUTANT == 'noclamp' else "(others => '0') when xStart(43 downto 32) < 0 else xStart(43 downto 32)"
+        text = text.replace(A_DECL, A_DECL +
+            f"   signal cmpX                : signed(11 downto 0); -- {MARK}: one drawing-area comparator pair\n"
+            f"   signal cmpGeL, cmpLeR      : std_logic; -- {MARK}\n"
+            f"   signal sizeMin             : unsigned(9 downto 0); -- {MARK}: 1023 or xEnd, one subtractor\n")
+        k = re.compile(r"\nbegin[ \t]*\n").search(text, text.index('architecture')).end()
+        text = text[:k] + (
+            f"   -- {MARK}: PREPARELINE / PROCPIXELS share one comparator pair and one size subtractor\n"
+            f"   cmpX   <= xPos + 1 when state = PROCPIXELS else {clamp};\n"
+            "   cmpGeL <= '1' when cmpX >= to_integer(drawingAreaLeft) else '0';\n"
+            "   cmpLeR <= '1' when cmpX <= to_integer(drawingAreaRight) else '0';\n"
+            "   sizeMin <= to_unsigned(1023, 10) when (xStart(43 downto 32) >= 0 and xEnd(43 downto 32) > 1023) else unsigned(xEnd(41 downto 32));\n\n") + text[k:]
+        text = text.replace(A_PL,
+            "                  if (xStart(43 downto 32) < 0) then\n"
+            "                     xPos  <= (others => '0');\n"
+            "                  else\n"
+            "                     xPos  <= xStart(43 downto 32);\n"
+            "                  end if;\n"
+            f"                  xPosInLeft <= cmpGeL; xPosInRight <= cmpLeR; -- {MARK}: compares of max(xStart, 0)\n")
+        text = text.replace(A_SIZE,
+            "                  else\n"
+            f"                     xSize <= ('0' & (sizeMin - unsigned(xStart(41 downto 32)))) + 1; -- {MARK}: 1024 - x = (1023 - x) + 1\n"
+            "                  end if;\n")
+        text = text.replace(A_SKIP,
+            f"                  if (cmpLeR = '0') then -- {MARK}: xStart > right (false for xStart < 0 either way)\n"
+            "                     skip := '1';\n"
+            "                  end if;\n")
+        text = text.replace(A_PP, f"                     xPosInLeft <= cmpGeL; xPosInRight <= cmpLeR; -- {MARK}: compares of xPos + 1\n")
     return text
 
 
-def apply_gpu_poly_share(manifest):
-    target = manifest['targets']['psx_top']
-    index = next(i for i, s in enumerate(target['quartus_sources']) if Path(s['path']).name == 'gpu_poly.vhd')
-    previous = Path(target['quartus_sources'][index]['path'])
-    directory = Path(target['directory']); out = directory / 'gpu-poly-share'; out.mkdir(parents=True, exist_ok=True)
-    path = out / 'gpu_poly.vhd'; path.write_text(poly_share_text(previous.read_text()))
-    target['quartus_sources'][index] = dict(target['quartus_sources'][index], path=str(path), sha256=digest(path),
-        original=str(previous), original_sha256=digest(previous), transform='Shared edge-step and half-setup adders')
-    qsf = directory / (target['top'] + '.qsf'); q = qsf.read_text()
-    if q.count(str(previous)) != 1: raise ValueError('Expected one gpu_poly assignment')
-    qsf.write_text(q.replace(str(previous), str(path))); target['project_sha256']['.qsf'] = digest(qsf)
-    target['gpu_poly_share'] = True; manifest['gpu_poly_share'] = True
-    (directory.parent / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    return manifest
+def patch_file(name, text):   # run_gpu_bench.py --patch hook
+    return transform(text) if name == 'gpu_poly.vhd' else text
+
+
+def project(src, out, seed=None):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from prepare_save_checksum import prepare
+    seed, changed = prepare(src, out, seed, {'gpu_poly.vhd': transform})
+    print(f'{MARK}: snapshot {Path(out).resolve()} (seed {seed}) parts {sorted(PARTS)}{" mutant " + MUTANT if MUTANT else ""}')
+    for path, (old, new) in changed.items(): print(f'{MARK}: patched {path} (sha256 {old[:16]} -> {new[:16]})')
+
+
+if __name__ == '__main__':
+    if '--output' not in sys.argv: raise SystemExit(__doc__)
+    seed = int(sys.argv[sys.argv.index('--seed') + 1]) if '--seed' in sys.argv else None
+    project(sys.argv[1], sys.argv[sys.argv.index('--output') + 1], seed)

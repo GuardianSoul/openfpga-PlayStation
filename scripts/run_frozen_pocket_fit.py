@@ -31,6 +31,24 @@ def require(condition, message):
         raise ValueError(message)
 
 
+VQM_OPTION = '# frozen-option: export-vqm'   # in apf_top.qsf: map mode also writes apf_top.vqm (quartus_cdb)
+MAP_COLUMNS = {'aluts': 'Combinational ALUTs', 'registers': 'Dedicated Logic Registers',
+               'memory_bits': 'Block Memory Bits', 'dsp': 'DSP Blocks'}
+
+
+def map_totals(text):
+    """apf_top's totals from the map report's 'Resource Utilization by Entity' table, columns found by header name (a
+    design partition adds a column, so positions are not fixed)."""
+    cells = lambda line: [c.strip() for c in line.split(';')[1:-1]]
+    header = next((cells(l) for l in text.splitlines() if l.startswith('; Compilation Hierarchy Node ')), None)
+    require(header is not None, 'Missing map hierarchy header')
+    root = [cells(l) for l in text.splitlines() if l.startswith('; |apf_top ')]
+    require(len(root) == 1 and len(root[0]) == len(header), 'Missing map hierarchy totals')
+    index = {name: header.index(col) for name, col in MAP_COLUMNS.items() if col in header}
+    require(len(index) == len(MAP_COLUMNS), f'Map hierarchy columns missing: {sorted(set(MAP_COLUMNS) - set(index))}')
+    return {name: int(root[0][i].split()[0].replace(',', '')) for name, i in index.items()}
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -1136,14 +1154,18 @@ def run(args):
         counts = {}
         if rc == 0:
             text = (output / 'output_files/apf_top.map.rpt').read_text(errors='replace')
-            root = [[v.strip() for v in line.split(';')[1:-1]] for line in text.splitlines()
-                    if line.startswith('; |apf_top ')]
-            require(len(root) == 1 and len(root[0]) == 10, 'Missing map hierarchy totals')
-            counts = {name: int(root[0][i].split()[0].replace(',', '')) for i, name in
-                      [(1, 'aluts'), (2, 'registers'), (3, 'memory_bits'), (4, 'dsp')]}
+            counts = map_totals(text)
+        vqm_rc = None
+        if rc == 0 and VQM_OPTION in (output / 'apf_top.qsf').read_text(errors='replace'):
+            # post-synthesis netlist as text (per-node LUT names), for netlist comparisons; opt-in per project
+            command = [str(Path(find_tool('quartus_sh')).parent / 'quartus_cdb'), 'apf_top', '--vqm=apf_top.vqm']
+            with (output / 'vqm.log').open('w') as stream:
+                vqm_rc = subprocess.run(command, cwd=output, stdout=stream, stderr=subprocess.STDOUT,
+                                        timeout=1800).returncode
         write_json(output / 'frozen-fit-result.json', dict(mode='map', exit_code=rc, counts=counts, jenkins=provenance,
-                   source_inputs=target['quartus_sources'], fit_verified=False, selected=False))
-        summary = f'RESULT {output.name}: map-only rc={rc}, {counts}; no physical-fit claim'
+                   source_inputs=target['quartus_sources'], fit_verified=False, selected=False, vqm_exit_code=vqm_rc))
+        summary = (f'RESULT {output.name}: map-only rc={rc}, {counts}' + (f', vqm rc={vqm_rc}' if vqm_rc is not None else '')
+                   + '; no physical-fit claim')
         print(summary, flush=True)
         if args.result_file:
             args.result_file.write_text(summary + '\n')
