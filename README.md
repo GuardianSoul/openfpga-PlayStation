@@ -201,8 +201,7 @@ DMA moves data, and it lets the GPU fill plain and see-through shapes as
 fast as it can. The clocks stay the same, and sound, CD drive and geometry
 chip keep the console's speed; only less time is spent waiting.
 Most games are locked to the TV's frame rate, so they don't run faster
-overall: busy scenes just slow down less, for example in parts of Crash
-Bandicoot.
+overall: scenes that slow down on a real PlayStation just slow down less.
 
 With Turbo Mode off, the timings match a real PlayStation measured with test
 discs (see [TIMING.md](TIMING.md)).
