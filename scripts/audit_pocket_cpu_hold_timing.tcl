@@ -13,6 +13,17 @@ project_open apf_top
 try {
 create_timing_netlist
 read_sdc
+# pocket_cpu_hold_scope.tcl (since 5b657c10) records the three related CPU clocks by name and no
+# longer leaves a collection behind; rebuild it the way the scope applies its margin (per name).
+if {![info exists pocket_cpu_hold_clocks] && [info exists pocket_cpu_hold_names]} {
+    foreach pocket_cpu_hold_name $pocket_cpu_hold_names {
+        set pocket_cpu_hold_one [get_clocks $pocket_cpu_hold_name]
+        if {[get_collection_size $pocket_cpu_hold_one]!=1} {error "CPU hold clock $pocket_cpu_hold_name resolves to [get_collection_size $pocket_cpu_hold_one] clocks"}
+        if {[info exists pocket_cpu_hold_clocks]} {
+            set pocket_cpu_hold_clocks [add_to_collection $pocket_cpu_hold_clocks $pocket_cpu_hold_one]
+        } else {set pocket_cpu_hold_clocks $pocket_cpu_hold_one}
+    }
+}
 if {![info exists pocket_cpu_hold_clocks] || [get_collection_size $pocket_cpu_hold_clocks]!=3} {error "Missing related CPU hold request"}
 proc cpu_hold_request {value} {
     global pocket_cpu_hold_clocks

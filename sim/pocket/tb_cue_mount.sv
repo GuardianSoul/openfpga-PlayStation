@@ -109,6 +109,7 @@ module tb_cue_mount;
     always @(posedge clk) if(dut.a_we && dut.adr[13:0]>=14'h3E50 && dut.adr[13:0]<min_store) min_store=dut.adr[13:0];
 
     integer mount_lim=0, cold102=0, reads102=0, apf_lat=0, coldopen=0, hold=0, errors=0, commands=0, opens=0, reads=0, cold=0, launch_tries=0, want_tries=0;
+    integer mount_drop_slot=-1, mount_drop_offset=0, mount_drops=1, mount_dropped=0;
     time last_cmd=0, retry_gap=0;
     // The stream's reads while APF is busy (a Memory being written): +serr=N answers the first N
     // commands into the stream's window with error 2, +sopen=N the first N opens after the mount
@@ -161,7 +162,21 @@ module tb_cue_mount;
             repeat(3) @(negedge clk); d_done=0; d_error=0;
             repeat(5) @(negedge clk);
             repeat(apf_lat) @(negedge clk);     // +apf_lat=N: a slow answer that still succeeds
-            if(commands<=cold) d_error=2;   // a cold card's failed read, getfile or open
+            // Drop metadata reads before allcomplete, exactly as the host can on wake.
+            if(!s_allcomplete && kind==0 && d_id==mount_drop_slot && d_offset==mount_drop_offset &&
+               d_length==4 && mount_dropped<mount_drops) begin
+                mount_dropped=mount_dropped+1;
+                wait(d_abort);
+                d_error=7;
+                if($test$plusargs("mount_hold")) begin
+                    save_hold=1;
+                    repeat(100000) begin
+                        @(negedge clk);
+                        if(d_read || d_getfile || d_openfile) $fatal(1,"mount retry issued while a save held the drive");
+                    end
+                    save_hold=0;
+                end
+            end else if(commands<=cold) d_error=2;   // a cold card's failed read, getfile or open
             else if(kind==0 && d_id==102 && reads102<cold102) begin reads102=reads102+1; d_error=2; end   // +cold102=N: slot 102's first N reads fail (a waking card, Mega Man Legends' Track 2)
             else if(kind==0) begin
                 reads=reads+1;
@@ -329,6 +344,10 @@ module tb_cue_mount;
         launch=$test$plusargs("launch");
         expect_json=$test$plusargs("json");
         if(!$value$plusargs("cold=%d",cold)) cold=0;
+        if($value$plusargs("mount_drop=%d",mount_drop_slot)) begin
+            if(!$value$plusargs("mount_drop_offset=%d",mount_drop_offset)) mount_drop_offset=0;
+            if(!$value$plusargs("mount_drops=%d",mount_drops)) mount_drops=1;
+        end
         if(!$value$plusargs("apf_lat=%d",apf_lat)) apf_lat=0;
         if(!$value$plusargs("coldopen=%d",coldopen)) coldopen=0;
         if(!$value$plusargs("cold102=%d",cold102)) cold102=0;
@@ -402,6 +421,7 @@ module tb_cue_mount;
             while(!got_update && tries<MOUNT_LIMIT) begin @(negedge clk); tries=tries+1; end
             if(!got_update) begin fail("no slot update for the stream"); $finish; end
         end
+        if(mount_drop_slot>=0 && mount_dropped!=mount_drops) fail("bench: planned mount read was not dropped");
         mount_time=$time; mount_commands=commands; mount_opens=opens; mount_reads=reads;
         $display("mount_cost: cycles=%0d reads=%0d opens=%0d commands=%0d",mount_time/10,mount_reads,mount_opens,mount_commands);
         if($value$plusargs("maxreads=%d",mi) && mount_reads>mi) fail("boot mount probed sizes the Chip32 loader gave");
@@ -586,3 +606,10 @@ module tb_cue_mount;
         $finish;
     end
 endmodule
+
+`ifdef CUE_HOLD_CELL
+// The frozen project uses a vendor identity LUT for hold closure.
+module psx_hold_cell(input wire i, output wire o);
+    assign o = i;
+endmodule
+`endif

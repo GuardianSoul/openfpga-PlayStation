@@ -5,6 +5,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent/'scripts'))
 import package_release as pr
 
 
+class OptionalCredits(unittest.TestCase):
+    ROWS = '| A | x |\n| Analogizer interface (only in builds with the Analogizer option) | y |\n| B | z |\n'
+
+    def test_dropped_without_the_option(self):
+        out = pr.notices_for(self.ROWS, 'set_global_assignment -name SYSTEMVERILOG_FILE "a/psx_top.sv"')
+        self.assertEqual(out, '| A | x |\n| B | z |\n')
+
+    def test_kept_with_the_option(self):
+        self.assertEqual(pr.notices_for(self.ROWS, 'SYSTEMVERILOG_FILE "rtl/pocket/psx_analogizer.sv"'), self.ROWS)
+
+
 class ArchiveChecks(unittest.TestCase):
     def make(self, tmp, sleep=True, updaters=None):
         path = Path(tmp)/'r.zip'

@@ -1210,6 +1210,20 @@ def run(args):
         passed = verdict
     report.update(hold_gate='enforced' if enforced else 'report-only', hold_only_miss=hold_only,
                   release_timing_passed=release_passed, release_timing_failures=release_failures)
+    # m10k-sharing guard (area-061, 2026-11-26): an over-subscribed M10K made Quartus pack the XA zigzag ROM into
+    # the GTE FastDiv ROM's block and XA streamed audio turned noisy on the Pocket. A fit with any M10K block that
+    # holds two RAMs fails (scripts/check_m10k_sharing.py).
+    m10k_shared = None
+    fit_rpt = output / 'output_files/apf_top.fit.rpt'
+    if result.get('fit_verified') and fit_rpt.is_file():
+        from check_m10k_sharing import ram_rows, shared_blocks
+        try:
+            m10k_shared = {loc: [r['Name'] for r in rs] for loc, rs in shared_blocks(ram_rows(fit_rpt)).items()}
+        except ValueError as error:
+            m10k_shared = {'unreadable': [str(error)]}
+        report['m10k_shared_blocks'] = m10k_shared
+        if m10k_shared:
+            passed = False
     report['passed'] = passed
     write_json(output / 'frozen-fit-result.json', report)
     capacity = (f"fits {result.get('required_LABs')} / 1848" if result['fit_verified'] else
@@ -1217,6 +1231,8 @@ def run(args):
     summary = (f"RESULT {output.name}: {capacity}, "
                f"{gate} {'PASS' if passed else 'FAIL'}, "
                f"initial_hold {timing.get('worst_hold_slack_ns')} ns")
+    if m10k_shared:
+        summary += f"; M10K SHARED: {len(m10k_shared)} block(s) hold two RAMs (check_m10k_sharing), FAIL"
     if gate == 'release_timing':
         summary += (f"; retained150ps MISS (report-only: no {HOLD_GATE_MARKER} in pocket.sdc); "
                     f"not assembled, sign-off assembles")

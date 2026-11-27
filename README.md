@@ -4,6 +4,8 @@ An FPGA core that runs original PlayStation games on the Analogue Pocket,
 built on the MiSTer PSX core. Since 0.6.0 its timing is measured against a
 real PlayStation (a PAL SCPH-5502); see [TIMING.md](TIMING.md).
 
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/guardiansoul7)
+
 > Most games tried so far play with sound, FMVs and CD music. Some may still glitch or not boot. See the
 > [game list](https://guardiansoul.github.io/openfpga-PlayStation/compatibility.html)
 > and vote how your games run.

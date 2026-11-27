@@ -59,6 +59,17 @@ Setup, controls and source: {repo}. The core is GPL-2.0; see the licenses folder
 
 
 DECLARE_AI = ('Claude', 'Codex')
+# THIRD_PARTY_NOTICES rows for code only some builds compile, and a file each such build compiles.
+# Credit only code that is in the bitstream (owner, 2026-11-27): a build without it ships without those rows.
+OPTIONAL_CREDITS = (('(only in builds with the Analogizer option)', 'psx_analogizer.sv'),)
+
+
+def notices_for(text, qsf):
+    """THIRD_PARTY_NOTICES text for a build whose apf_top.qsf is qsf: rows of options it doesn't compile dropped."""
+    for mark, source in OPTIONAL_CREDITS:
+        if source not in qsf:
+            text = ''.join(l for l in text.splitlines(keepends=True) if mark not in l)
+    return text
 
 
 def check_archive(path):
@@ -144,7 +155,8 @@ def main():
 
     notices = core/'licenses'; shutil.rmtree(notices, ignore_errors=True); notices.mkdir()
     for source, name in LICENSES: shutil.copyfile(source, notices/name)
-    shutil.copyfile(ROOT/'THIRD_PARTY_NOTICES.md', notices/'THIRD_PARTY_NOTICES.md')
+    (notices/'THIRD_PARTY_NOTICES.md').write_text(notices_for((ROOT/'THIRD_PARTY_NOTICES.md').read_text(),
+        (Path(report['project'])/'apf_top.qsf').read_text()))
 
     (sd/'Platforms').mkdir(parents=True)
     (sd/'Platforms/_images').mkdir()

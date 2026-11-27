@@ -70,7 +70,7 @@ def main():
     good.mkdir()
     (good / 'psx_cue_mount.sv').write_text(celled)
     build(good, good / 'psx_cue_mount.sv', iverilog)
-    cases = [c for c in bench.CASES if not args.cases or c[0] in args.cases]
+    cases = [c for c in bench.CASES if (c[0] in args.cases if args.cases else c[0] not in bench.CASE_FEATURES)]
     results = [bench.run_case(good, iverilog, vvp, *case) for case in cases]
     print(f'celled: {sum(results)}/{len(results)} cases pass', flush=True)
     failed = not all(results)

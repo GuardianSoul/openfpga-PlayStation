@@ -137,6 +137,7 @@ static void setf(u32 f) { flags = f; IO[W_FLAGS] = f; }
 // after the first getfile, +5 and +6 the last 8 path bytes of that failed
 // getfile or open (first byte in bits 31:24), +7 the LibCrypt mask.
 #define W_DBG 8
+#define ERR_ABORTED 7u   // APF command timed out and the bridge gave it up
 #define CLR_ABORT 256u   // W_CLR: give the running APF command up, error 7 (cmd-abort-bridge RTL; else nothing)
 extern const u32 retry_wait;   // start.S: the launch retry pause, in wait loop turns (0.42 s)
 #ifdef CUE_DEBUG   // only a debug readout build (psx_cue_mount DEBUG=1) shows the words below: code space
@@ -174,14 +175,21 @@ NOINLINE static u32 cmd(u32 kind, u32 id, u32 off, u32 len) {
     // the read-out is never answered (drive-state.md, audit-059 #16: every command, not only the
     // stream's). A core without the RTL reads the status word there, never 0x10000 (its LIBCRYPT
     // bit or a length while a read waits; the boot, pick and menu paths read with a length too).
-    while (IO[R_CHEAT] == 0x10000u) ;
+    // A dropped metadata read can hide the CUE or make a track look like a
+    // prebuilt table on wake. Ask once more before interpreting its result.
+    // Sector reads already have their own recovery in serve().
+    u32 s;
     IO[W_IDLEN] = id | len << 16;
     IO[W_OFF] = off;
-    IO[W_CMD] = kind;
-    u32 s, n = retry_wait << 3;                   // cmd-abort-short: a command the Pocket never answers
-    while ((s = IO[R_STATUS]) & ST_CMD)           // (a dropped sector fetch: R-Type Delta #30) is given up
-        if (!--n) IO[W_CLR] = CLR_ABORT;          // with error 7 and asked again (cmd-abort-bridge RTL)
-    s &= ST_ERR;
+    for (u32 retry = kind == K_READ;; retry = 0) {
+        while (IO[R_CHEAT] == 0x10000u) ;
+        IO[W_CMD] = kind;
+        u32 n = retry_wait << 3;
+        while ((s = IO[R_STATUS]) & ST_CMD)
+            if (!--n) IO[W_CLR] = CLR_ABORT;
+        s &= ST_ERR;
+        if (s != ERR_ABORTED || !retry) break;
+    }
     if (s) cmd_failed(kind, id, s, off);
 #ifdef CUE_DEBUG
     u32 d = kind | id << 4 | s << 16 | ++ncmd << 20;
@@ -208,7 +216,7 @@ NOINLINE static u32 opn(u32 slot) {
 }
 
 // The largest n < 2^(k+1) whose word ending at n*unit reads (n >= 1, or 0).
-static u32 probe(u32 slot, u32 unit, int k) {
+__attribute__((minsize)) static u32 probe(u32 slot, u32 unit, int k) {
     u32 n = 0;
     for (; k >= 0; k--) {
         u32 t = n | 1u << k, end = t * unit;
@@ -261,7 +269,8 @@ NOINLINE static u32 tsz_word(u32 i) {
 // ---------------- cue text ----------------
 NOINLINE static int getb(void) {
     if (cpos >= cue_size) return -1;
-    if (cpos < cbase || cpos >= cbase + clen) {
+    // A backwards seek wraps the unsigned offset beyond the 256-byte window.
+    if (cpos - cbase >= clen) {
         u32 base = cpos & ~3u, left = cue_size - base;
         u32 len = left >= 256 ? 256 : left & ~3u;
         if (!len) { base = cue_size - 4; len = 4; }   // under a word left: the last word
@@ -427,7 +436,7 @@ static u32 msf(u32 v) {   // bcd(min) << 8 | bcd(sec) of v sectors, one BCD digi
     u32 r = cnt(&v, 45000) << 12; r |= cnt(&v, 4500) << 8;
     return r | cnt(&v, 750) << 4 | cnt(&v, 75);
 }
-NOINLINE static u32 table_word(u32 w) {
+__attribute__((minsize)) NOINLINE static u32 table_word(u32 w) {
     if (w == 0) return bcd(ntracks) << 8 | ntracks;
     if (w == 1) return total + 150;
     if (w == 2) return msf(total + 150);

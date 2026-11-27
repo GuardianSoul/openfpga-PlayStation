@@ -177,6 +177,10 @@ CASES = [
     # the first reads (slot 0 and the cue): tried again and mounted, not left to APF without a disc
     # (Mega Man Legends' wake; reproduced with run_cue_media.py on the real cue).
     ('json-wake-nosz', *REDUMP, 'ok', 'json-052'),
+    ('json-wake-drop-cue', *REDUMP, 'ok', 'json-052'),
+    ('json-wake-drop-save-hold', *REDUMP, 'ok', 'json-052'),
+    ('json-wake-drop-table-end', *REDUMP, 'ok', 'json-052'),
+    ('json-wake-drop-twice', *REDUMP, 'json', 'json-052'),
     ('json-cold-open', *REDUMP, 'ok', 'json-cue'),
     ('launch-cold-long', *REDUMP, 'ok', 'launch'),
     ('json-slow', *REDUMP, 'ok', 'json-cue'),
@@ -421,6 +425,10 @@ RETRY_WAIT_AT, BENCH_WAIT, MIN_TURN = 0x10, 3000, 100
 # Cases given the Chip32 loader's size block, and the most reads their boot
 # mount may take (the size probes alone are 13-19 reads each).
 SIZE_ARGS = {'json-cold-giveup': ['+sizes', '+mountlimit=40000000'], 'json-wake-102': ['+cold102=30'], 'json-trk-cold': ['+sizes', '+size0', '+no102'], 'json-cold': ['+sizes'], 'json-cold-long': ['+sizes'], 'json-cold-dead': ['+sizes', '+hold=12'], 'launch-cold-long': ['+sizes'], 'launch-none-sizes': ['+sizes'], 'launch-none-empty': ['+sizes', '+empty2'],
+             'json-wake-drop-cue': ['+mount_drop=100'],
+             'json-wake-drop-save-hold': ['+mount_drop=100', '+mount_hold'],
+             'json-wake-drop-table-end': ['+mount_drop=102', '+mount_drop_offset=1600'],
+             'json-wake-drop-twice': ['+mount_drop=100', '+mount_drops=2'],
              'json-cold-open': ['+sizes', '+coldopen=2'],
              'json-slow': ['+sizes', '+apf_lat=20000'], 'json-sizes': ['+sizes', '+maxreads=8'], 'json-sizes-swap': ['+sizes_swap', '+maxreads=8'],
              'json-cheats-sizes': ['+sizes', '+maxreads=8'], 'launch-sizes': ['+sizes', '+maxreads=36'], 'json-data2': ['+sizes'],
@@ -535,10 +543,23 @@ def run_case(work, iverilog, vvp, name, folder, cue_name, cue_text, sizes, expec
     return ok
 
 
-# CUE_MOUNT_SV: another psx_cue_mount.sv (e.g. with prepare_save_cmd_abort.py); it is compiled with CMD_ABORT
-# when it has the d_abort port (case stream-drop needs it).
-_cm = os.environ.get('CUE_MOUNT_SV')
-CUE_MOUNT = [f'-DCMD_ABORT'] * bool(_cm and 'd_abort' in Path(_cm).read_text()) + ['-DSAVE_HOLD'] * bool(_cm and 'save_hold' in Path(_cm).read_text()) + ['-DDISC_REPORT'] * bool(_cm and 'cur_disc_o' in Path(_cm).read_text()) + [str(Path(_cm).resolve()) if _cm else str(ROOT/'rtl/pocket/psx_cue_mount.sv')]
+# Captured release RTL includes optional signals and identity LUTs that are
+# absent from the base source. Use the same bench with either input.
+CUE_MOUNT = Path(os.environ.get('CUE_MOUNT_SV', ROOT/'rtl/pocket/psx_cue_mount.sv')).resolve()
+MOUNT_FEATURES = {
+    'd_abort': '-DCMD_ABORT',
+    'save_hold': '-DSAVE_HOLD',
+    'cur_disc_o': '-DDISC_REPORT',
+    'psx_hold_cell': '-DCUE_HOLD_CELL',
+}
+CASE_FEATURES = {
+    'stream-drop': {'-DCMD_ABORT'},
+    'stream-hold': {'-DSAVE_HOLD'},
+    'json-wake-drop-cue': {'-DCMD_ABORT'},
+    'json-wake-drop-table-end': {'-DCMD_ABORT'},
+    'json-wake-drop-twice': {'-DCMD_ABORT'},
+    'json-wake-drop-save-hold': {'-DCMD_ABORT', '-DSAVE_HOLD'},
+}
 
 
 def main():
@@ -549,14 +570,20 @@ def main():
     serv = ROOT/'references/serv/rtl'
     if not (serv/'serv_rf_top.v').is_file(): raise SystemExit('references/serv is missing: git submodule update --init references/serv')
     fw = bench_firmware(work)
+    mount_text = CUE_MOUNT.read_text()
+    features = [define for signal, define in MOUNT_FEATURES.items() if signal in mount_text]
     for vvp_name, lc, ch in (('tb.vvp', 0, 0), ('tb_lc.vvp', 1, 0), ('tb_ch.vvp', 1, 1)):
         subprocess.run([iverilog, '-g2012', '-o', str(work/vvp_name), f'-Ptb_cue_mount.FW="{fw}"',
-                        f'-Ptb_cue_mount.LC={lc}', f'-Ptb_cue_mount.CH={ch}', *[str(p) for p in SERV_FILES(serv)], *CUE_MOUNT,
+                        f'-Ptb_cue_mount.LC={lc}', f'-Ptb_cue_mount.CH={ch}', *[str(p) for p in SERV_FILES(serv)], *features, str(CUE_MOUNT),
                         str(ROOT/'sim/pocket/tb_cue_mount.sv')], check=True)
-    only = sys.argv[1:]   # case names, or all
-    # cases that need a psx_cue_mount step (CUE_MOUNT_SV): left out of a full run without it
-    needs = {'stream-drop': '-DCMD_ABORT', 'stream-hold': '-DSAVE_HOLD'}
-    cases = [c for c in CASES if (c[0] in only) if only] or [c for c in CASES if needs.get(c[0], CUE_MOUNT[0]) in CUE_MOUNT]
+    only = sys.argv[1:]
+    cases = [case for case in CASES if (case[0] in only if only else CASE_FEATURES.get(case[0], set()).issubset(features))]
+    missing = set(only) - {case[0] for case in cases}
+    if missing:
+        raise SystemExit(f'unknown cue cases: {sorted(missing)}')
+    unsupported = [case[0] for case in cases if not CASE_FEATURES.get(case[0], set()).issubset(features)]
+    if unsupported:
+        raise SystemExit(f'cue RTL lacks the features for: {unsupported}')
     results = [run_case(work, iverilog, vvp, *case) for case in cases]
     print(f'{sum(results)}/{len(results)} cases pass')
     if not all(results): raise SystemExit(1)
